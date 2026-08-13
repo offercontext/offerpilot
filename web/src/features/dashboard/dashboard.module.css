@@ -429,43 +429,102 @@
 }
 
 .weeklyMissionPanel {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  position: relative;
+  overflow: hidden;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--op-primary) 12%, var(--op-border));
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 90% -20%, color-mix(in srgb, var(--op-info) 11%, transparent) 0 30%, transparent 31%),
+    linear-gradient(135deg, color-mix(in srgb, var(--op-primary) 5%, var(--op-surface)) 0%, var(--op-surface) 55%, color-mix(in srgb, var(--op-info) 5%, var(--op-surface)) 100%);
+  box-shadow: var(--op-shadow-md);
 }
 
-@media (max-width: 900px) {
-  .weeklyMissionPanel {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.weeklyProgressHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.weeklyProgressEyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.weeklyProgressTitle {
+  margin: 0;
+  color: var(--op-ink);
+  font-size: 21px;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.weeklyProgressTitle strong {
+  color: var(--op-primary-strong);
+}
+
+.weeklyProgressHint {
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  text-align: right;
+}
+
+.weeklyProgressTrack {
+  height: 7px;
+  overflow: hidden;
+  margin-bottom: 17px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--op-muted) 15%, transparent);
+}
+
+.weeklyProgressFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--op-primary) 0%, color-mix(in srgb, var(--op-info) 72%, #66d9e8) 100%);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--op-primary) 24%, transparent);
+  width: 100%;
+  opacity: 0.72;
+}
+
+.weeklyMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
 }
 
 .missionMetric {
-  min-height: 112px;
+  min-height: 66px;
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  padding: 14px;
-  border: none;
-  border-radius: 18px;
-  background: var(--op-surface);
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--op-surface) 76%, transparent);
   color: inherit;
   text-align: left;
   cursor: pointer;
-  box-shadow:
-    0 0 0 1px rgba(31, 29, 58, 0.06),
-    0 2px 10px rgba(99, 102, 241, 0.08);
-  transition-property: transform, box-shadow, background-color;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--op-ink) 5%, transparent);
+  transition-property: transform, box-shadow, background-color, border-color;
   transition-duration: 0.18s;
   transition-timing-function: var(--op-ease);
 }
 
 .missionMetric:hover,
 .missionMetric:focus-visible {
-  outline: none;
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
   transform: translateY(-1px);
-  box-shadow: var(--op-shadow-lg);
+  border-color: color-mix(in srgb, var(--op-primary) 24%, transparent);
+  background: var(--op-surface);
+  box-shadow: var(--op-focus-ring), 0 8px 22px color-mix(in srgb, var(--op-primary) 10%, transparent);
 }
 
 .missionMetric:active {
@@ -473,13 +532,13 @@
 }
 
 .metricIcon {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
-  background: var(--op-layout-bg);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--op-primary) 9%, var(--op-surface));
   color: var(--op-primary-strong);
   font-size: 18px;
 }
@@ -488,32 +547,42 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .metricLabel {
-  color: var(--op-muted-strong);
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--op-ink);
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .metricValue {
   color: var(--op-ink);
-  font-size: 24px;
-  line-height: 1;
-  font-weight: 800;
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .metricReason {
   color: var(--op-muted-strong);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.35;
   text-wrap: pretty;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metricSummary {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
 }
 
 .metricState {
-  min-width: 42px;
-  padding: 4px 7px;
+  min-width: 38px;
+  padding: 3px 6px;
   border-radius: 999px;
   color: var(--op-muted-strong);
   background: var(--op-layout-bg);
@@ -542,6 +611,12 @@
   color: var(--op-info);
 }
 
+.metric-unavailable .metricIcon,
+.metric-unavailable .metricState {
+  color: var(--op-muted-strong);
+  background: color-mix(in srgb, var(--op-muted) 10%, var(--op-surface));
+}
+
 @media (max-width: 700px) {
   .missionHeader {
     flex-direction: column;
@@ -557,7 +632,30 @@
   }
 
   .weeklyMissionPanel {
+    padding: 17px;
+  }
+
+  .weeklyProgressHeader {
+    align-items: flex-start;
+  }
+
+  .weeklyProgressHint {
+    max-width: 110px;
+  }
+
+  .weeklyMetricGrid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .missionMetric {
+    transition-duration: 0.01ms;
+  }
+
+  .missionMetric:hover,
+  .missionMetric:focus-visible {
+    transform: none;
   }
 }
 

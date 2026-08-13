@@ -8,6 +8,11 @@ import type { Application } from '@/types/application';
 
 const state = vi.hoisted(() => ({
   material: { status: 'success' as 'loading' | 'error' | 'success', kits: [] as unknown[] },
+  queryStatus: {
+    events: 'success' as 'loading' | 'error' | 'success',
+    offers: 'success' as 'loading' | 'error' | 'success',
+    practice: 'success' as 'loading' | 'error' | 'success',
+  },
   applications: [] as unknown[],
   setOnboardingForceOpen: vi.fn(),
   writes: {
@@ -50,9 +55,9 @@ vi.mock('@tanstack/react-query', () => ({
   useQuery: (options: { queryKey?: unknown[] }) => {
     const key = options.queryKey?.[0];
     if (key === 'applications') return { data: state.applications, isLoading: false, isError: false, isSuccess: true };
-    if (key === 'events') return { data: [], isLoading: false, isError: false, isSuccess: true };
-    if (key === 'offers') return { data: [], isLoading: false, isError: false, isSuccess: true };
-    if (key === 'questions') return { data: { total: 0, new: 0, practicing: 0, mastered: 0, due: 0, today_reviews: 0, streak_days: 0 }, isLoading: false, isError: false, isSuccess: true };
+    if (key === 'events') return { data: [], isLoading: state.queryStatus.events === 'loading', isError: state.queryStatus.events === 'error', isSuccess: state.queryStatus.events === 'success' };
+    if (key === 'offers') return { data: [], isLoading: state.queryStatus.offers === 'loading', isError: state.queryStatus.offers === 'error', isSuccess: state.queryStatus.offers === 'success' };
+    if (key === 'questions') return { data: { total: 0, new: 0, practicing: 0, mastered: 0, due: 0, today_reviews: 0, streak_days: 0 }, isLoading: state.queryStatus.practice === 'loading', isError: state.queryStatus.practice === 'error', isSuccess: state.queryStatus.practice === 'success' };
     if (key === 'onboarding') return { data: null, isLoading: false, isError: false, isSuccess: true };
     if (key === 'mission-control') {
       return {
@@ -162,7 +167,11 @@ vi.mock('./widgets/ConversionFunnel', () => ({ default: () => null }));
 vi.mock('./widgets/MomentumChart', () => ({ default: () => null }));
 vi.mock('./widgets/UpcomingSchedule', () => ({ default: () => null }));
 vi.mock('./widgets/MissionHeader', () => ({ default: () => null }));
-vi.mock('./widgets/WeeklyMissionPanel', () => ({ default: () => null }));
+vi.mock('./widgets/WeeklyMissionPanel', () => ({
+  default: (props: { unavailableKinds?: string[] }) => (
+    <output data-testid="weekly-unavailable-kinds">{props.unavailableKinds?.join(',') ?? ''}</output>
+  ),
+}));
 vi.mock('./widgets/TodayActionPlan', () => ({ default: () => null }));
 vi.mock('./widgets/ApplicationReadinessStrip', () => ({ default: () => null }));
 vi.mock('./widgets/FocusWorkspace', () => ({ default: () => null }));
@@ -228,6 +237,7 @@ function renderDashboard(
 
 beforeEach(() => {
   state.material = { status: 'success', kits: [] };
+  state.queryStatus = { events: 'success', offers: 'success', practice: 'success' };
   state.applications = [app];
   resumeVersion = 'v1';
   Object.values(state.writes).forEach((write) => write.mockClear());
@@ -255,6 +265,16 @@ describe('DashboardView next-step facts', () => {
     state.material = { status: 'success', kits: [] };
     const { view } = renderDashboard();
     expect(view?.querySelector('[data-testid="candidate-id"]')?.textContent).toBe('application_detail');
+  });
+
+  it('passes loading and failed query domains to the weekly summary as unavailable', () => {
+    state.queryStatus = { events: 'loading', offers: 'error', practice: 'success' };
+    state.material = { status: 'error', kits: [] };
+    const { view } = renderDashboard();
+
+    expect(view?.querySelector('[data-testid="weekly-unavailable-kinds"]')?.textContent).toBe(
+      'interviews,offers,materials',
+    );
   });
 
   it('lets the real Dashboard effect report a stale candidate state key', () => {

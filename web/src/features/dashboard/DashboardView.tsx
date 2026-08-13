@@ -17,6 +17,7 @@ import { deriveMissionControl } from '@/lib/missionControl';
 import { computeKpis, computeFunnel, computeMomentum } from '@/lib/insights';
 import type { ViewMode } from '@/layout/navigation';
 import type { MaterialKitViewModel } from '@/types/materialKit';
+import type { MissionMetricKind } from '@/lib/missionControl';
 import ActionDetailDrawer from '@/features/pipeline/ActionDetailDrawer';
 import KpiCards from './widgets/KpiCards';
 import ConversionFunnel from './widgets/ConversionFunnel';
@@ -166,6 +167,24 @@ export default function DashboardView({
       }),
     [apps, events, offers, missionMaterialKits, practiceStatsQ.data, insights, health.label, now],
   );
+  const missionUnavailableKinds = useMemo(() => {
+    const kinds: MissionMetricKind[] = [];
+    if (eventsQ.isLoading || eventsQ.isError) kinds.push('interviews');
+    if (offersQ.isLoading || offersQ.isError) kinds.push('offers');
+    if (practiceStatsQ.isLoading || practiceStatsQ.isError) kinds.push('practice');
+    if (hasPartialMaterialKitCoverage || materialKitsQ.isLoading || materialKitsQ.isError) kinds.push('materials');
+    return kinds;
+  }, [
+    eventsQ.isError,
+    eventsQ.isLoading,
+    hasPartialMaterialKitCoverage,
+    materialKitsQ.isError,
+    materialKitsQ.isLoading,
+    offersQ.isError,
+    offersQ.isLoading,
+    practiceStatsQ.isError,
+    practiceStatsQ.isLoading,
+  ]);
 
   const effectiveFocusApplicationId = focusApplicationId ?? mission.focusApplicationId;
   const focusApplication = effectiveFocusApplicationId
@@ -318,7 +337,11 @@ export default function DashboardView({
         onRunAction={handleAction}
         onAddApplication={onAddApplication}
       />
-      <WeeklyMissionPanel metrics={mission.metrics} onNavigate={onNavigate} />
+      <WeeklyMissionPanel
+        metrics={mission.metrics}
+        unavailableKinds={missionUnavailableKinds}
+        onNavigate={onNavigate}
+      />
       <div className={styles.missionWorkspaceGrid}>
         <TodayActionPlan
           groups={mission.actionGroups}

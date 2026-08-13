@@ -6,7 +6,7 @@ import { listAdaptivePracticeRecommendations } from '@/services/adaptiveIntervie
 import type { InterviewIndexItem } from '@/types/interviewIndex';
 import type { AdaptivePracticeFocus, AdaptivePracticeRecommendation } from '@/types/adaptiveInterviewPractice';
 import workflowStyles from './ui/WorkflowSurface.module.css';
-import practiceStyles from './AdaptiveInterviewPracticeWorkspace.module.css';
+import actionStyles from './InterviewNextActionCard.module.css';
 
 const { Paragraph, Title } = Typography;
 
@@ -58,15 +58,19 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
         {onOpenStoryLibrary ? <Button type="primary" data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
       </div>
       {practice && onOpenAdaptivePractice ? (
-        <section className={practiceStyles.hero} style={{ marginBottom: 20 }}>
-          <div className={practiceStyles.heroIcon}><CompassOutlined /></div>
-          <div>
-            <span className={practiceStyles.eyebrow}>下一项复盘训练</span>
-            <h2>{practice.title}</h2>
-            <p>{practice.observation}</p>
+        <section className={actionStyles.card} aria-labelledby="interview-next-action-title">
+          <div className={actionStyles.content}>
+            <span className={actionStyles.eyebrow}>下一项行动</span>
+            <h2 id="interview-next-action-title" className={actionStyles.title}>{practice.title}</h2>
+            <p className={actionStyles.observation}>{practice.observation}</p>
+            <div className={actionStyles.meta} aria-label="训练说明">
+              <span className={actionStyles.metaItem}>来自已保存复盘</span>
+              <span className={actionStyles.metaItem}>适合一次短时训练</span>
+              <span className={actionStyles.metaItem}>不会自动写入故事库</span>
+            </div>
           </div>
-          <Button type="primary" size="large" onClick={() => onOpenAdaptivePractice({ proposalId: practice.proposal_id, focusId: practice.focus_id })}>
-            查看并开始 <ArrowRightOutlined />
+          <Button className={actionStyles.action} type="primary" size="large" onClick={() => onOpenAdaptivePractice({ proposalId: practice.proposal_id, focusId: practice.focus_id })}>
+            <CompassOutlined /> 开始这项训练 <ArrowRightOutlined />
           </Button>
         </section>
       ) : null}

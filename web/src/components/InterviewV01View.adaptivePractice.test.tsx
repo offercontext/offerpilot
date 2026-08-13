@@ -36,12 +36,15 @@ describe('InterviewV01View adaptive practice entry', () => {
     const open = vi.fn();
     act(() => root?.render(<InterviewV01View onOpenAdaptivePractice={open} />));
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(container?.textContent).toContain('下一项复盘训练');
+    expect(container?.textContent).toContain('下一项行动');
     expect(container?.textContent).toContain('拆解卡住的关键一步');
+    expect(container?.textContent).toContain('来自已保存复盘');
+    expect(container?.textContent).toContain('适合一次短时训练');
+    expect(container?.textContent).toContain('不会自动写入故事库');
     expect(open).not.toHaveBeenCalled();
-    act(() => [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('查看并开始'))?.click());
+    act(() => [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('开始这项训练'))?.click());
     expect(open).toHaveBeenCalledWith({ proposalId: 4, focusId: 'focus-1' });
-    const entry = [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('查看并开始'));
+    const entry = [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('开始这项训练'));
     expect(entry?.className).toContain('ant-btn-lg');
   });
 
