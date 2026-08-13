@@ -14,6 +14,7 @@ export type VoiceSessionState =
 type Dependencies = {
   now: () => number;
   transcribe: (pcm: Float32Array) => Promise<string>;
+  cancelTranscription?: () => void;
   onState: (state: VoiceSessionState) => void;
   onInterimTranscript: (text: string) => void;
   chunkMs?: number;
@@ -25,6 +26,7 @@ type Dependencies = {
 export interface VoiceSessionController {
   start(generation: number, sampleRate: number): void;
   acceptFrame(frame: Float32Array, atMs: number): void;
+  acceptLevels(levels: { atMs: number; durationMs: number; rms: number; peak: number }): void;
   finish(): Promise<void>;
   pause(): void;
   resume(): void;
@@ -34,7 +36,7 @@ export interface VoiceSessionController {
   getMode(): 'segment' | 'batch';
 }
 
-function concat(left: Float32Array, right: Float32Array): Float32Array {
+function concat(left: Float32Array, right: Float32Array): Float32Array<ArrayBuffer> {
   const result = new Float32Array(left.length + right.length);
   result.set(left);
   result.set(right, left.length);
@@ -60,14 +62,13 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
   let detector = new VoiceActivityDetector({ calibrationMs: dependencies.calibrationMs });
   let generation = 0;
   let sampleRate = 16_000;
-  let startedAtMs = 0;
   let elapsedMs = 0;
   let voicedMs = 0;
   let paused = false;
   let finalizing = false;
   let disposed = false;
   let mode: 'segment' | 'batch' = 'segment';
-  let buffered = new Float32Array();
+  let buffered: Float32Array<ArrayBufferLike> = new Float32Array();
   let sequence = 0;
   let running = false;
   let runningPromise: Promise<void> | undefined;
@@ -76,6 +77,30 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
   let voicedRanges: Array<[number, number]> = [];
 
   const emitRecording = () => dependencies.onState({ status: 'recording', elapsedMs, voicedMs, transcriptionMode: mode });
+
+  const acceptActivity = (atMs: number, durationMs: number, rms: number, peak: number) => {
+    elapsedMs = Math.max(elapsedMs, atMs + durationMs);
+    const events = detector.accept({ atMs, durationMs, rms, peak });
+    const active = rms >= detector.threshold || peak >= detector.threshold * 2;
+    if (active) {
+      voicedMs += durationMs;
+      const previous = voicedRanges[voicedRanges.length - 1];
+      if (previous && atMs <= previous[1]) previous[1] = Math.max(previous[1], atMs + durationMs);
+      else voicedRanges.push([atMs, atMs + durationMs]);
+    }
+    const longPause = events.find((event) => event.type === 'long_pause');
+    if (longPause?.type === 'long_pause') {
+      dependencies.onState({ status: 'speech_paused', elapsedMs, pauseMs: longPause.toMs - longPause.fromMs, transcriptionMode: mode });
+    } else if (events.every((event) => event.type === 'calibrating') && !voicedRanges.length) {
+      dependencies.onState({ status: 'waiting_for_speech', elapsedMs });
+    } else {
+      emitRecording();
+    }
+    if (elapsedMs >= maxDurationMs) {
+      finalizing = true;
+      dependencies.onState({ status: 'finalizing' });
+    }
+  };
 
   const runNext = () => {
     if (running || mode === 'batch' || queue.length === 0 || disposed) return;
@@ -133,7 +158,6 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
   const reset = (nextGeneration: number, nextSampleRate: number) => {
     generation = nextGeneration;
     sampleRate = nextSampleRate;
-    startedAtMs = dependencies.now();
     elapsedMs = 0;
     voicedMs = 0;
     paused = false;
@@ -157,28 +181,15 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
     acceptFrame(frame, atMs) {
       if (disposed || paused || finalizing || frame.length === 0) return;
       const durationMs = frame.length / sampleRate * 1_000;
-      elapsedMs = Math.max(elapsedMs, atMs + durationMs);
       buffered = concat(buffered, frame);
       const { rms, peak } = levels(frame);
-      const events = detector.accept({ atMs, durationMs, rms, peak });
-      const active = rms >= detector.threshold || peak >= detector.threshold * 2;
-      if (active) {
-        voicedMs += durationMs;
-        const previous = voicedRanges.at(-1);
-        if (previous && atMs <= previous[1]) previous[1] = Math.max(previous[1], atMs + durationMs);
-        else voicedRanges.push([atMs, atMs + durationMs]);
-      }
-      const longPause = events.find((event) => event.type === 'long_pause');
-      if (longPause?.type === 'long_pause') {
-        dependencies.onState({ status: 'speech_paused', elapsedMs, pauseMs: longPause.toMs - longPause.fromMs, transcriptionMode: mode });
-      } else {
-        emitRecording();
-      }
+      acceptActivity(atMs, durationMs, rms, peak);
+      if (finalizing) return;
       enqueueChunks();
-      if (elapsedMs >= maxDurationMs) {
-        finalizing = true;
-        dependencies.onState({ status: 'finalizing' });
-      }
+    },
+    acceptLevels(levelFrame) {
+      if (disposed || paused || finalizing) return;
+      acceptActivity(levelFrame.atMs, levelFrame.durationMs, levelFrame.rms, levelFrame.peak);
     },
     async finish() {
       finalizing = true;
@@ -192,6 +203,7 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
       generation += 1;
       queue = [];
       buffered = new Float32Array();
+      dependencies.cancelTranscription?.();
       dependencies.onState({ status: 'idle' });
     },
     dispose() {
@@ -199,6 +211,7 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
       generation += 1;
       queue = [];
       buffered = new Float32Array();
+      dependencies.cancelTranscription?.();
     },
     getVoicedRanges: () => voicedRanges.map((range) => [...range] as [number, number]),
     getMode: () => mode,

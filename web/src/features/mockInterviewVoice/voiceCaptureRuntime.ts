@@ -1,5 +1,6 @@
 export type VoiceCaptureFrame = {
   pcm?: Float32Array;
+  sampleRate: number;
   atMs: number;
   durationMs: number;
   rms: number;
@@ -89,6 +90,7 @@ export async function createVoiceCaptureRuntime(
           if (!(data.pcm instanceof Float32Array)) return;
           onFrame({
             pcm: data.pcm,
+            sampleRate: context.sampleRate,
             atMs: Number.isFinite(data.atMs) ? Number(data.atMs) : dependencies.now(),
             durationMs: Number.isFinite(data.durationMs) ? Number(data.durationMs) : data.pcm.length / context.sampleRate * 1_000,
             rms: Number.isFinite(data.rms) ? Number(data.rms) : levels(data.pcm).rms,
@@ -114,7 +116,7 @@ export async function createVoiceCaptureRuntime(
         if (!paused) {
           analyser!.getFloatTimeDomainData(samples);
           const measured = levels(samples);
-          onFrame({ atMs: currentAt, durationMs: Math.max(0, currentAt - previousAt), ...measured });
+          onFrame({ sampleRate: context.sampleRate, atMs: currentAt, durationMs: Math.max(0, currentAt - previousAt), ...measured });
         }
         previousAt = currentAt;
         animationHandle = dependencies.requestFrame(sample);

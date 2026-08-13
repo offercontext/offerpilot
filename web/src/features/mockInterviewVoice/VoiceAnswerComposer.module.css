@@ -172,6 +172,41 @@
   flex-wrap: wrap;
 }
 
+.waveform {
+  --voice-level: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 64px;
+  padding: 10px 16px;
+  overflow: hidden;
+  background: linear-gradient(100deg, color-mix(in srgb, var(--op-primary) 7%, var(--op-surface)), color-mix(in srgb, #54d6d2 8%, var(--op-surface)));
+  border: 1px solid color-mix(in srgb, var(--op-primary) 16%, var(--op-border));
+  border-radius: 14px;
+}
+
+.waveform span {
+  width: 4px;
+  height: max(8px, calc(10px + var(--voice-level) * 32px));
+  max-height: 44px;
+  background: linear-gradient(180deg, #54d6d2, var(--op-primary));
+  border-radius: 999px;
+  opacity: calc(.45 + var(--voice-level) * .5);
+  transform-origin: center;
+  transition: height 100ms linear, opacity 100ms linear;
+}
+
+.temporaryTranscript {
+  padding: 12px 14px;
+  background: color-mix(in srgb, #54d6d2 8%, var(--op-surface));
+  border: 1px dashed color-mix(in srgb, #2ea8a4 34%, var(--op-border));
+  border-radius: 13px;
+}
+
+.temporaryTranscript span { color: #288b88; font-size: 11px; font-weight: 720; letter-spacing: .05em; }
+.temporaryTranscript p { margin: 6px 0 0; color: var(--op-text); line-height: 1.7; overflow-wrap: anywhere; }
+
 .composer :global(.ant-btn),
 .composer :global(.ant-segmented-item-label) {
   min-height: 40px;
@@ -251,4 +286,6 @@
   .voiceStatus[data-state='recording'] .micOrb {
     animation: none;
   }
+
+  .waveform span { transition: none; }
 }

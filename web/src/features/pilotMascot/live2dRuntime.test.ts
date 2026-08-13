@@ -232,6 +232,15 @@ describe('createLive2dPilotMascotRuntime', () => {
     expect(fixture.model.expression).toHaveBeenCalledWith('f01');
     expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 0, expect.any(Number));
 
+    controller.setActivity('waiting_for_speech');
+    await Promise.resolve();
+    expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 0, expect.any(Number));
+
+    controller.setActivity('speech_paused');
+    await Promise.resolve();
+    expect(fixture.model.expression).toHaveBeenCalledWith('f03');
+    expect(fixture.model.motion).toHaveBeenCalledWith('Tap', 1, expect.any(Number));
+
     controller.setActivity('transcribing');
     await Promise.resolve();
     expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 1, expect.any(Number));

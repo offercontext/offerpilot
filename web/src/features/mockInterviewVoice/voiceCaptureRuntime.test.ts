@@ -45,7 +45,7 @@ describe('voice capture runtime', () => {
     expect(target.context.audioWorklet?.addModule).toHaveBeenCalledWith('local-worklet.js');
     const pcm = new Float32Array([0.1, -0.2]);
     target.port.onmessage?.({ data: { pcm, atMs: 12, durationMs: 0.125, rms: 0.15, peak: 0.2 } } as MessageEvent);
-    expect(frames).toHaveBeenCalledWith(expect.objectContaining({ pcm, atMs: 12 }));
+    expect(frames).toHaveBeenCalledWith(expect.objectContaining({ pcm, atMs: 12, sampleRate: 16_000 }));
     await runtime.dispose();
     expect(target.worklet.disconnect).toHaveBeenCalledOnce();
     expect(target.context.close).toHaveBeenCalledOnce();
@@ -57,9 +57,10 @@ describe('voice capture runtime', () => {
     const runtime = await createVoiceCaptureRuntime({} as MediaStream, frames, target.dependencies);
     expect(runtime.batchOnly).toBe(true);
     target.runFrame();
-    const emitted = frames.mock.calls[0][0] as { rms: number; peak: number };
+    const emitted = frames.mock.calls[0][0] as { rms: number; peak: number; sampleRate: number };
     expect(emitted.rms).toBeCloseTo(0.1);
     expect(emitted.peak).toBeCloseTo(0.1);
+    expect(emitted.sampleRate).toBe(16_000);
     await runtime.dispose();
     expect(target.dependencies.cancelFrame).toHaveBeenCalledWith(4);
     expect(target.analyser.disconnect).toHaveBeenCalledOnce();

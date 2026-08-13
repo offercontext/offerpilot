@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { act, createRef } from 'react';
+import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import VoiceDeliverySummaryCard from './VoiceDeliverySummaryCard';

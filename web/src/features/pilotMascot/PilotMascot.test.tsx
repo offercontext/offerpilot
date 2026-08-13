@@ -64,7 +64,9 @@ describe('PilotMascot', () => {
   it.each([
     ['preparing_voice', '正在准备离线语音'],
     ['speaking', '正在朗读'],
+    ['waiting_for_speech', '等你开口'],
     ['listening', '正在聆听'],
+    ['speech_paused', '检测到停顿'],
     ['transcribing', '正在整理语音'],
   ] as const)('describes the %s voice activity', async (activity, label) => {
     await renderMascot({ activity });

@@ -31,7 +31,7 @@ describe('voice session controller', () => {
     expect(transcribe).toHaveBeenCalledTimes(2);
     expect((transcribe.mock.calls[1][0] as Float32Array).length).toBe(200);
     for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
-    expect(interim.at(-1)).toBe('我先定位日志，完成回滚并复盘');
+    expect(interim[interim.length - 1]).toBe('我先定位日志，完成回滚并复盘');
   });
 
   it('switches to batch mode under backlog and never starts concurrent inference', async () => {
@@ -53,7 +53,7 @@ describe('voice session controller', () => {
 
     expect(transcribe).toHaveBeenCalledTimes(1);
     expect(controller.getMode()).toBe('batch');
-    expect(states.at(-1)).toMatchObject({ status: 'recording', transcriptionMode: 'batch' });
+    expect(states[states.length - 1]).toMatchObject({ status: 'recording', transcriptionMode: 'batch' });
     release('第一段');
     await Promise.resolve();
     expect(transcribe).toHaveBeenCalledTimes(1);
@@ -82,7 +82,7 @@ describe('voice session controller', () => {
     expect(interim).not.toHaveBeenCalledWith('旧结果');
 
     controller.acceptFrame(frame(2), 0);
-    expect(states.at(-1)?.status).toBe('finalizing');
+    expect(states[states.length - 1]?.status).toBe('finalizing');
   });
 
   it('tracks voiced ranges and long pauses without ending the answer', () => {

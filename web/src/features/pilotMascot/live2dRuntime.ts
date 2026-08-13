@@ -5,7 +5,9 @@ export type PilotMascotActivity =
   | 'thinking'
   | 'preparing_voice'
   | 'speaking'
+  | 'waiting_for_speech'
   | 'listening'
+  | 'speech_paused'
   | 'transcribing'
   | 'success'
   | 'error';
@@ -234,9 +236,14 @@ export function createLive2dPilotMascotRuntime(
             void runMotion('Tap', 0);
             return;
           }
-          if (activity === 'listening') {
+          if (activity === 'listening' || activity === 'waiting_for_speech') {
             setExpression('f01');
             void runMotion('Idle', 0);
+            return;
+          }
+          if (activity === 'speech_paused') {
+            setExpression('f03');
+            void runMotion('Tap', 1);
             return;
           }
           if (activity === 'success') {

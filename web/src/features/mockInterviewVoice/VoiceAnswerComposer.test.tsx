@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import VoiceAnswerComposer, { type VoiceAnswerBrowser } from './VoiceAnswerComposer';
 import type { SpeechRecognitionLike } from './voiceInterviewCapability';
 import type { OfflineModelState, OfflineWhisperController } from './offlineWhisperTypes';
+import type { VoiceCaptureFrame } from './voiceCaptureRuntime';
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -279,7 +280,7 @@ describe('VoiceAnswerComposer', () => {
     await act(async () => { click('完成录音'); });
     const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
     changeTextarea(textarea, '旧文字');
-    click('重录');
+    await act(async () => { click('重录'); await Promise.resolve(); });
 
     expect(browser.revokeObjectURL).toHaveBeenCalledWith('blob:voice');
     expect(host!.querySelector('audio')).toBeNull();
@@ -329,5 +330,114 @@ describe('VoiceAnswerComposer', () => {
 
     expect(browser.revokeObjectURL).toHaveBeenCalledWith('blob:voice');
     expect(host!.querySelector('audio')).toBeNull();
+  });
+
+  it('shows local interim coaching, long-pause guidance and a review only after explicit confirmation', async () => {
+    let frameCallback: ((frame: VoiceCaptureFrame) => void) | undefined;
+    const captureRuntime = { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
+    const createCaptureRuntime = vi.fn(async (_stream, onFrame: (frame: VoiceCaptureFrame) => void) => {
+      frameCallback = onFrame;
+      return captureRuntime;
+    });
+    const offlineController = offlineControllerFixture();
+    let now = 10_000;
+    const fixture = browserFixture();
+    fixture.browser.now = vi.fn(() => now);
+    const { props } = await renderComposer({
+      browser: fixture.browser,
+      createCaptureRuntime,
+      offlineController,
+      decodeAudio: vi.fn(async () => new Float32Array([0.1, 0.2])),
+    });
+
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+    await act(async () => {
+      frameCallback?.({ pcm: new Float32Array(12_800), sampleRate: 16_000, atMs: 0, durationMs: 800, rms: 0, peak: 0 });
+      frameCallback?.({ pcm: new Float32Array(320_000).fill(0.08), sampleRate: 16_000, atMs: 800, durationMs: 20_000, rms: 0.08, peak: 0.08 });
+      for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+    });
+    expect(host!.textContent).toContain('临时字幕 · 仅供当前页面参考');
+    await act(async () => {
+      frameCallback?.({ pcm: new Float32Array(48_000), sampleRate: 16_000, atMs: 20_800, durationMs: 3_000, rms: 0, peak: 0 });
+    });
+    expect(host!.textContent).toContain('检测到停顿');
+    expect(host!.textContent).toContain('可以继续，也可以完成回答');
+    expect(props.onConfirmTranscript).not.toHaveBeenCalled();
+
+    now = 82_000;
+    await act(async () => { click('完成录音'); for (let turn = 0; turn < 8; turn += 1) await Promise.resolve(); });
+    expect(captureRuntime.dispose).toHaveBeenCalledOnce();
+    const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    changeTextarea(textarea, '嗯我先定位日志，然后完成回滚。');
+    click('确认使用这段文字');
+    expect(props.onConfirmTranscript).toHaveBeenCalledOnce();
+    expect(host!.textContent).toContain('表达节奏复盘');
+    expect(host!.textContent).toContain('01:12');
+  });
+
+  it('stops at the five-minute boundary without confirming and keeps batch fallback explicit', async () => {
+    let frameCallback: ((frame: VoiceCaptureFrame) => void) | undefined;
+    const createCaptureRuntime = vi.fn(async (_stream, onFrame: (frame: VoiceCaptureFrame) => void) => {
+      frameCallback = onFrame;
+      return { batchOnly: true, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
+    });
+    const { props, recorder } = await renderComposer({ createCaptureRuntime });
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+    expect(host!.textContent).toContain('录完后批量转写');
+    await act(async () => {
+      frameCallback?.({ sampleRate: 16_000, atMs: 0, durationMs: 300_000, rms: 0.08, peak: 0.08 });
+      await Promise.resolve();
+    });
+    expect(recorder.stop).toHaveBeenCalledOnce();
+    expect(props.onConfirmTranscript).not.toHaveBeenCalled();
+  });
+
+  it('pauses local capture when the page becomes hidden', async () => {
+    const captureRuntime = { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
+    const { recorder } = await renderComposer({
+      createCaptureRuntime: vi.fn(async () => captureRuntime),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+
+    expect(recorder.pause).toHaveBeenCalledOnce();
+    expect(captureRuntime.pause).toHaveBeenCalledOnce();
+    expect(host!.textContent).toContain('录音已暂停');
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+  });
+
+  it('resamples worklet PCM to the offline model sample rate', async () => {
+    let frameCallback: ((frame: VoiceCaptureFrame) => void) | undefined;
+    const offlineController = offlineControllerFixture();
+    await renderComposer({
+      offlineController,
+      createCaptureRuntime: vi.fn(async (_stream, onFrame: (frame: VoiceCaptureFrame) => void) => {
+        frameCallback = onFrame;
+        return { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
+      }),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+
+    await act(async () => {
+      frameCallback?.({
+        pcm: new Float32Array(48_000 * 20).fill(0.08),
+        sampleRate: 48_000,
+        atMs: 0,
+        durationMs: 20_000,
+        rms: 0.08,
+        peak: 0.08,
+      });
+      for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+    });
+
+    expect(offlineController.transcribe).toHaveBeenCalled();
+    const pcm = vi.mocked(offlineController.transcribe).mock.calls[0][0];
+    expect(pcm.length).toBe(320_000);
   });
 });

@@ -32,7 +32,7 @@ function normalizedRanges(input: VoiceDeliverySummaryInput): Array<[number, numb
     .sort((left, right) => left[0] - right[0] || left[1] - right[1]);
   const merged: Array<[number, number]> = [];
   for (const range of ranges) {
-    const previous = merged.at(-1);
+    const previous = merged[merged.length - 1];
     if (previous && range[0] <= previous[1]) previous[1] = Math.max(previous[1], range[1]);
     else merged.push([...range]);
   }

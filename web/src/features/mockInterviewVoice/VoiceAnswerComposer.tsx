@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Alert, Button, Input, Tag } from 'antd';
 import {
   AudioOutlined,
@@ -16,16 +16,20 @@ import {
   type SpeechRecognitionConstructorLike,
   type SpeechRecognitionLike,
 } from './voiceInterviewCapability';
-import { decodeAudioBlob } from './audioDecoder';
+import { decodeAudioBlob, downmixAndResample } from './audioDecoder';
 import OfflineWhisperModelCard from './OfflineWhisperModelCard';
 import {
   offlineWhisperController,
   useOfflineWhisperState,
 } from './offlineWhisperController';
 import type { OfflineWhisperController } from './offlineWhisperTypes';
+import { createVoiceCaptureRuntime, type VoiceCaptureRuntime, type VoiceCaptureFrame } from './voiceCaptureRuntime';
+import { createVoiceSessionController, type VoiceSessionController, type VoiceSessionState } from './voiceSessionController';
+import { buildVoiceDeliverySummary, type VoiceDeliverySummary } from './voiceDeliverySummary';
+import VoiceDeliverySummaryCard from './VoiceDeliverySummaryCard';
 import styles from './VoiceAnswerComposer.module.css';
 
-export type VoiceAnswerActivity = 'idle' | 'preparing_voice' | 'speaking' | 'listening' | 'transcribing' | 'success' | 'error';
+export type VoiceAnswerActivity = 'idle' | 'preparing_voice' | 'speaking' | 'waiting_for_speech' | 'listening' | 'speech_paused' | 'transcribing' | 'success' | 'error';
 type AnswerMode = 'text' | 'voice';
 
 interface MediaRecorderLike {
@@ -78,6 +82,7 @@ interface Props {
   browser?: VoiceAnswerBrowser;
   offlineController?: OfflineWhisperController;
   decodeAudio?: (blob: Blob) => Promise<Float32Array>;
+  createCaptureRuntime?: typeof createVoiceCaptureRuntime;
 }
 
 function defaultBrowser(): VoiceAnswerBrowser {
@@ -132,6 +137,7 @@ export default function VoiceAnswerComposer({
   browser: suppliedBrowser,
   offlineController = offlineWhisperController,
   decodeAudio = decodeAudioBlob,
+  createCaptureRuntime = createVoiceCaptureRuntime,
 }: Props) {
   const browser = useMemo(() => suppliedBrowser ?? defaultBrowser(), [suppliedBrowser]);
   const capabilities = useMemo(() => detectVoiceInterviewCapabilities({
@@ -149,6 +155,11 @@ export default function VoiceAnswerComposer({
   const [localLanguageState, setLocalLanguageState] = useState<LocalSpeechLanguageState>('unavailable');
   const [error, setError] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] = useState<'idle' | 'decoding' | 'transcribing' | 'success' | 'error'>('idle');
+  const [sessionState, setSessionState] = useState<VoiceSessionState>({ status: 'idle' });
+  const [temporaryTranscript, setTemporaryTranscript] = useState('');
+  const [batchOnly, setBatchOnly] = useState(false);
+  const [waveLevel, setWaveLevel] = useState(0);
+  const [deliverySummary, setDeliverySummary] = useState<VoiceDeliverySummary>();
   const offlineModelState = useOfflineWhisperState(offlineController);
   const recorderRef = useRef<MediaRecorderLike>();
   const streamRef = useRef<MediaStream>();
@@ -163,6 +174,17 @@ export default function VoiceAnswerComposer({
   const activityTimeoutRef = useRef<number>();
   const latestAudioUrlRef = useRef<string | null>(null);
   const disposedRef = useRef(false);
+  const captureRuntimeRef = useRef<VoiceCaptureRuntime>();
+  const sessionControllerRef = useRef<VoiceSessionController>();
+  const captureOriginRef = useRef<number>();
+  const recordingStartedAtRef = useRef(0);
+  const recordingEndedAtRef = useRef(0);
+  const voicedRangesRef = useRef<ReadonlyArray<readonly [number, number]>>([]);
+  const audioElementRef = useRef<HTMLAudioElement>(null);
+  const transcriptPanelRef = useRef<HTMLDivElement>(null);
+  const transcriptTextAreaRef = useMemo(() => ({
+    get current() { return transcriptPanelRef.current?.querySelector('textarea') ?? null; },
+  }), []);
 
   const emitActivity = (activity: VoiceAnswerActivity) => onActivityChange?.(activity);
 
@@ -190,18 +212,33 @@ export default function VoiceAnswerComposer({
     chunksRef.current = [];
   };
 
+  const disposeVoiceAnalysis = () => {
+    const runtime = captureRuntimeRef.current;
+    captureRuntimeRef.current = undefined;
+    if (runtime) void runtime.dispose();
+    sessionControllerRef.current?.dispose();
+    sessionControllerRef.current = undefined;
+    captureOriginRef.current = undefined;
+  };
+
   const resetVoiceDraft = () => {
     clearTimer();
     stopStream();
     recognitionRef.current?.abort();
     recognitionRef.current = undefined;
     clearAudio();
+    disposeVoiceAnalysis();
     setRecordingState('idle');
     setElapsed(0);
     setTranscript('');
     transcriptRef.current = '';
     setInterimTranscript('');
     setTranscriptionStatus('idle');
+    setSessionState({ status: 'idle' });
+    setTemporaryTranscript('');
+    setBatchOnly(false);
+    setWaveLevel(0);
+    setDeliverySummary(undefined);
     transcriptionGenerationRef.current += 1;
     if (activeTranscriptionRef.current) offlineController.cancel();
     activeTranscriptionRef.current = false;
@@ -234,6 +271,7 @@ export default function VoiceAnswerComposer({
       browser.speechSynthesis.cancel();
       try { recorderRef.current?.state !== 'inactive' && recorderRef.current?.stop(); } catch { /* cleanup only */ }
       recognitionRef.current?.abort();
+      disposeVoiceAnalysis();
       stopStream();
       const currentUrl = latestAudioUrlRef.current;
       if (currentUrl) browser.revokeObjectURL(currentUrl);
@@ -308,7 +346,6 @@ export default function VoiceAnswerComposer({
   };
 
   const runOfflineTranscription = async (blob: Blob) => {
-    if (transcriptRef.current.trim()) return;
     if (offlineController.getState().status !== 'ready') {
       setTranscriptionStatus('idle');
       emitActivity('idle');
@@ -342,6 +379,60 @@ export default function VoiceAnswerComposer({
     }
   };
 
+  const applySessionState = (state: VoiceSessionState) => {
+    setSessionState(state);
+    if (state.status === 'waiting_for_speech') emitActivity('waiting_for_speech');
+    else if (state.status === 'speech_paused') emitActivity('speech_paused');
+    else if (state.status === 'recording') emitActivity('listening');
+    else if (state.status === 'transcribing') emitActivity('transcribing');
+    else if (state.status === 'error') emitActivity('error');
+    else if (state.status === 'finalizing' && recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
+  };
+
+  const startVoiceAnalysis = async (stream: MediaStream) => {
+    const generation = ++transcriptionGenerationRef.current;
+    let sessionSampleRate = 16_000;
+    let receivedFrame = false;
+    const session = createVoiceSessionController({
+      now: browser.now,
+      transcribe: async (pcm) => {
+        if (offlineController.getState().status !== 'ready') return '';
+        const modelPcm = sessionSampleRate === 16_000
+          ? pcm
+          : downmixAndResample([pcm], sessionSampleRate, 16_000);
+        return (await offlineController.transcribe(modelPcm)).text;
+      },
+      cancelTranscription: () => offlineController.cancel(),
+      onState: applySessionState,
+      onInterimTranscript: setTemporaryTranscript,
+    });
+    session.start(generation, 16_000);
+    sessionControllerRef.current = session;
+    try {
+      const runtime = await createCaptureRuntime(stream, (frame: VoiceCaptureFrame) => {
+        captureOriginRef.current ??= frame.atMs;
+        const relativeAt = Math.max(0, frame.atMs - captureOriginRef.current);
+        if (!receivedFrame && frame.sampleRate !== sessionSampleRate) {
+          sessionSampleRate = frame.sampleRate;
+          session.start(generation, sessionSampleRate);
+        }
+        receivedFrame = true;
+        setWaveLevel(Math.min(1, Math.max(frame.rms * 9, frame.peak * 4)));
+        if (frame.pcm) session.acceptFrame(frame.pcm, relativeAt);
+        else session.acceptLevels({ ...frame, atMs: relativeAt });
+      });
+      if (disposedRef.current || sessionControllerRef.current !== session) {
+        await runtime.dispose();
+        return;
+      }
+      captureRuntimeRef.current = runtime;
+      setBatchOnly(runtime.batchOnly);
+    } catch {
+      setBatchOnly(true);
+      setSessionState({ status: 'recording', elapsedMs: 0, voicedMs: 0, transcriptionMode: 'batch' });
+    }
+  };
+
   const startRecording = async () => {
     if (!capabilities.recorder || disabled) return;
     browser.speechSynthesis.cancel();
@@ -351,6 +442,8 @@ export default function VoiceAnswerComposer({
     setTranscript('');
     transcriptRef.current = '';
     setInterimTranscript('');
+    setTemporaryTranscript('');
+    setDeliverySummary(undefined);
     setTranscriptionStatus('idle');
     try {
       const stream = await browser.getUserMedia({ audio: true });
@@ -376,7 +469,16 @@ export default function VoiceAnswerComposer({
         latestAudioUrlRef.current = url;
         setAudioUrl(url);
         setRecordingState('ready');
+        recordingEndedAtRef.current = browser.now();
         clearTimer();
+        const runtime = captureRuntimeRef.current;
+        captureRuntimeRef.current = undefined;
+        if (runtime) void runtime.dispose();
+        const session = sessionControllerRef.current;
+        const sessionFinished = session?.finish() ?? Promise.resolve();
+        if (session) {
+          voicedRangesRef.current = session.getVoicedRanges();
+        }
         stopStream();
         const recognition = recognitionRef.current;
         if (recognition) {
@@ -385,16 +487,20 @@ export default function VoiceAnswerComposer({
             if (settled) return;
             settled = true;
             recognitionSettleRef.current = undefined;
-            void runOfflineTranscription(blob);
+            void sessionFinished.then(() => runOfflineTranscription(blob));
           };
           recognitionSettleRef.current = continueAfterRecognition;
           recognition.stop();
           window.setTimeout(continueAfterRecognition, 350);
         } else {
-          void runOfflineTranscription(blob);
+          void sessionFinished.then(() => runOfflineTranscription(blob));
         }
       };
       recorder.start();
+      recordingStartedAtRef.current = browser.now();
+      recordingEndedAtRef.current = 0;
+      voicedRangesRef.current = [];
+      void startVoiceAnalysis(stream);
       startRecognition();
       setElapsed(0);
       setRecordingState('recording');
@@ -412,6 +518,8 @@ export default function VoiceAnswerComposer({
     recorderRef.current?.pause();
     recognitionRef.current?.stop();
     clearTimer();
+    captureRuntimeRef.current?.pause();
+    sessionControllerRef.current?.pause();
     setRecordingState('paused');
     emitActivity('idle');
   };
@@ -419,12 +527,22 @@ export default function VoiceAnswerComposer({
   const resumeRecording = () => {
     recorderRef.current?.resume();
     startRecognition();
+    captureRuntimeRef.current?.resume();
+    sessionControllerRef.current?.resume();
     intervalRef.current = window.setInterval(() => setElapsed((value) => value + 1), 1000);
     setRecordingState('recording');
     emitActivity('listening');
   };
 
   const stopRecording = () => recorderRef.current?.stop();
+
+  useEffect(() => {
+    const pauseWhenHidden = () => {
+      if (document.hidden && recordingState === 'recording') pauseRecording();
+    };
+    document.addEventListener('visibilitychange', pauseWhenHidden);
+    return () => document.removeEventListener('visibilitychange', pauseWhenHidden);
+  }, [recordingState]);
 
   const installLanguage = async () => {
     if (!browser.SpeechRecognition) return;
@@ -437,6 +555,14 @@ export default function VoiceAnswerComposer({
   const confirmTranscript = () => {
     const confirmed = transcript.trim();
     if (!confirmed || disabled) return;
+    const startedAtMs = recordingStartedAtRef.current;
+    const endedAtMs = recordingEndedAtRef.current || browser.now();
+    setDeliverySummary(buildVoiceDeliverySummary({
+      startedAtMs,
+      endedAtMs,
+      voicedRanges: voicedRangesRef.current.map(([from, to]) => [startedAtMs + from, startedAtMs + to] as const),
+      transcript: confirmed,
+    }));
     onConfirmTranscript(confirmed);
     emitActivity('success');
   };
@@ -461,6 +587,18 @@ export default function VoiceAnswerComposer({
     setMode(nextMode);
     if (nextMode === 'text') emitActivity('idle');
   };
+
+  const sessionLabel = recordingState === 'paused'
+    ? '录音已暂停'
+    : sessionState.status === 'waiting_for_speech'
+      ? '等待你开口'
+      : sessionState.status === 'speech_paused'
+        ? '检测到停顿'
+        : recordingState === 'recording'
+          ? '正在聆听你的回答'
+          : audioUrl
+            ? '回答录音已就绪'
+            : '准备好后开始录音';
 
   return (
     <section className={styles.composer} aria-label="回答方式" data-testid="voice-answer-composer">
@@ -514,11 +652,25 @@ export default function VoiceAnswerComposer({
           <div className={styles.voiceStatus} data-state={recordingState}>
             <div className={styles.micOrb}><AudioOutlined /></div>
             <div className={styles.voiceCopy}>
-              <strong>{recordingState === 'recording' ? '正在聆听你的回答' : recordingState === 'paused' ? '录音已暂停' : audioUrl ? '回答录音已就绪' : '准备好后开始录音'}</strong>
-              <span>{audioUrl ? '先试听，再核对下方文字；系统不会保存原始录音。' : '录音仅保存在当前页面，未确认文字不会进入模拟面试。'}</span>
+              <strong>{sessionLabel}</strong>
+              <span>{sessionState.status === 'speech_paused' ? '可以继续，也可以完成回答。' : audioUrl ? '先试听，再核对下方文字；系统不会保存原始录音。' : '录音仅保存在当前页面，未确认文字不会进入模拟面试。'}</span>
             </div>
             <span className={styles.timer}>{formatElapsed(elapsed)}</span>
           </div>
+
+          {recordingState === 'recording' || recordingState === 'paused' ? (
+            <div className={styles.waveform} role="img" aria-label={sessionLabel} style={{ '--voice-level': waveLevel } as CSSProperties}>
+              {Array.from({ length: 24 }, (_, index) => <span key={index} style={{ '--bar-index': index } as CSSProperties} />)}
+            </div>
+          ) : null}
+
+          {batchOnly && recordingState !== 'idle' ? <Alert type="info" showIcon message="当前设备使用录完后批量转写，录音与确认流程不受影响。" /> : null}
+          {temporaryTranscript ? (
+            <div className={styles.temporaryTranscript} aria-live="polite">
+              <span>临时字幕 · 仅供当前页面参考</span>
+              <p>{temporaryTranscript}</p>
+            </div>
+          ) : null}
 
           <div className={styles.controls}>
             {recordingState === 'idle' ? (
@@ -541,9 +693,9 @@ export default function VoiceAnswerComposer({
             ) : null}
           </div>
 
-          {audioUrl ? <audio className={styles.audio} src={audioUrl} controls preload="metadata" /> : null}
+          {audioUrl ? <audio ref={audioElementRef} className={styles.audio} src={audioUrl} controls preload="metadata" /> : null}
 
-          <div className={styles.transcriptPanel}>
+          <div ref={transcriptPanelRef} className={styles.transcriptPanel}>
             <div className={styles.transcriptHeader}>
               <div>
                 <span className={styles.eyebrow}>TRANSCRIPT CHECK</span>
@@ -588,6 +740,9 @@ export default function VoiceAnswerComposer({
               </Button>
             </div>
           </div>
+          {deliverySummary ? (
+            <VoiceDeliverySummaryCard summary={deliverySummary} transcriptRef={transcriptTextAreaRef} audioRef={audioElementRef} />
+          ) : null}
         </div>
       ) : (
         <div className={styles.textPanel}>

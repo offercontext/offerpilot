@@ -94,11 +94,14 @@
   box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.15);
 }
 
-.mascot[data-activity='listening'] .statusDot {
+.mascot[data-activity='listening'] .statusDot,
+.mascot[data-activity='waiting_for_speech'] .statusDot {
   background: #ef4444;
   box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
   animation: pulse 1.4s ease-in-out infinite;
 }
+
+.mascot[data-activity='speech_paused'] .statusDot { background: #f59e0b; }
 
 .mascot[data-activity='success'] .statusDot { background: #16a34a; }
 .mascot[data-activity='error'] .statusDot { background: #f59e0b; }
