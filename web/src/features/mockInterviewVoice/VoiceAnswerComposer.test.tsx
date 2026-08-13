@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import VoiceAnswerComposer, { type VoiceAnswerBrowser } from './VoiceAnswerComposer';
 import type { SpeechRecognitionLike } from './voiceInterviewCapability';
+import type { OfflineModelState, OfflineWhisperController } from './offlineWhisperTypes';
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -78,6 +79,24 @@ function browserFixture(options: { local?: boolean; localState?: 'available' | '
     now: vi.fn(() => 10_000),
   };
   return { browser, recorder, recognition, track, utterances, SpeechRecognition };
+}
+
+function offlineControllerFixture(state: OfflineModelState = {
+  status: 'ready',
+  modelVersion: 'test',
+  cachedBytes: 100,
+  backend: 'webgpu',
+}): OfflineWhisperController {
+  return {
+    getState: () => state,
+    subscribe: () => () => undefined,
+    check: vi.fn(async () => undefined),
+    prepare: vi.fn(async () => 'webgpu' as const),
+    transcribe: vi.fn(async () => ({ text: '我先定位日志，再完成回滚。', backend: 'webgpu' as const })),
+    cancel: vi.fn(),
+    remove: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+  };
 }
 
 async function renderComposer(overrides: Partial<React.ComponentProps<typeof VoiceAnswerComposer>> = {}, options = {}) {
@@ -183,6 +202,42 @@ describe('VoiceAnswerComposer', () => {
     changeTextarea(textarea, '这是我核对后的手工文字。');
     click('确认使用这段文字');
     expect(props.onConfirmTranscript).toHaveBeenCalledWith('这是我核对后的手工文字。');
+  });
+
+  it('runs offline Whisper after recording and still requires explicit confirmation', async () => {
+    const offlineController = offlineControllerFixture();
+    const decodeAudio = vi.fn(async () => new Float32Array([0.1, 0.2]));
+    const { props } = await renderComposer({ offlineController, decodeAudio });
+    click('语音回答');
+    await act(async () => { click('开始录音'); });
+    await act(async () => {
+      click('完成录音');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(decodeAudio).toHaveBeenCalledOnce();
+    expect(offlineController.transcribe).toHaveBeenCalledOnce();
+    const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    expect(textarea.value).toBe('我先定位日志，再完成回滚。');
+    expect(props.onConfirmTranscript).not.toHaveBeenCalled();
+    click('确认使用这段文字');
+    expect(props.onConfirmTranscript).toHaveBeenCalledWith('我先定位日志，再完成回滚。');
+  });
+
+  it('does not duplicate transcription when native local recognition already has text', async () => {
+    const offlineController = offlineControllerFixture();
+    const decodeAudio = vi.fn(async () => new Float32Array([0.1]));
+    const { recognition } = await renderComposer({ offlineController, decodeAudio }, { local: true });
+    click('语音回答');
+    await act(async () => { click('开始录音'); });
+    await act(async () => {
+      recognition.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: '原生本地文字' } }] });
+      click('完成录音');
+      await Promise.resolve();
+    });
+    expect(decodeAudio).not.toHaveBeenCalled();
+    expect(offlineController.transcribe).not.toHaveBeenCalled();
   });
 
   it('downloads an optional browser-managed local language pack only after consent', async () => {

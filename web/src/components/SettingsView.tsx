@@ -4,6 +4,7 @@ import { Alert, Button, Divider, Empty, Input, Modal, Pagination, Select, Skelet
 import { exportBackup, getLogs, getSettings, getSettingsBackup, type LogEntry, type LogsPage, type Settings } from '@/services/chat';
 import { ONBOARDING_QUERY_KEY, setOnboardingForceOpen } from '@/services/onboarding';
 import { buildDiagnosticsText } from '@/lib/diagnostics';
+import OfflineWhisperModelCard from '@/features/mockInterviewVoice/OfflineWhisperModelCard';
 import { useEffect, useMemo, useState } from 'react';
 
 interface Props {
@@ -193,6 +194,8 @@ export default function SettingsView({
           </a>
         </Typography.Text>
       </section>
+
+      <OfflineWhisperModelCard />
 
       <section style={panelStyle}>
         <Space align="start" size={12}>

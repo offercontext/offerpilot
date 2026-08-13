@@ -193,6 +193,31 @@
   border-radius: 14px;
 }
 
+.offlineTranscriptionStatus {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 12px;
+  color: var(--op-primary);
+  background: color-mix(in srgb, var(--op-primary) 8%, var(--op-surface));
+  border: 1px solid color-mix(in srgb, var(--op-primary) 20%, var(--op-border));
+  border-radius: 11px;
+}
+
+.offlineTranscriptionStatus > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.offlineTranscriptionStatus span {
+  color: var(--op-muted-strong);
+  font-size: 11px;
+}
+
 .textHint {
   padding: 11px 13px;
   background: var(--surface-sunken);

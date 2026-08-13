@@ -16,6 +16,13 @@ import {
   type SpeechRecognitionConstructorLike,
   type SpeechRecognitionLike,
 } from './voiceInterviewCapability';
+import { decodeAudioBlob } from './audioDecoder';
+import OfflineWhisperModelCard from './OfflineWhisperModelCard';
+import {
+  offlineWhisperController,
+  useOfflineWhisperState,
+} from './offlineWhisperController';
+import type { OfflineWhisperController } from './offlineWhisperTypes';
 import styles from './VoiceAnswerComposer.module.css';
 
 export type VoiceAnswerActivity = 'idle' | 'speaking' | 'listening' | 'transcribing' | 'success' | 'error';
@@ -69,6 +76,8 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void;
   onActivityChange?: (activity: VoiceAnswerActivity) => void;
   browser?: VoiceAnswerBrowser;
+  offlineController?: OfflineWhisperController;
+  decodeAudio?: (blob: Blob) => Promise<Float32Array>;
 }
 
 function defaultBrowser(): VoiceAnswerBrowser {
@@ -121,6 +130,8 @@ export default function VoiceAnswerComposer({
   onDirtyChange,
   onActivityChange,
   browser: suppliedBrowser,
+  offlineController = offlineWhisperController,
+  decodeAudio = decodeAudioBlob,
 }: Props) {
   const browser = useMemo(() => suppliedBrowser ?? defaultBrowser(), [suppliedBrowser]);
   const capabilities = useMemo(() => detectVoiceInterviewCapabilities({
@@ -137,10 +148,17 @@ export default function VoiceAnswerComposer({
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [localLanguageState, setLocalLanguageState] = useState<LocalSpeechLanguageState>('unavailable');
   const [error, setError] = useState<string | null>(null);
+  const [transcriptionStatus, setTranscriptionStatus] = useState<'idle' | 'decoding' | 'transcribing' | 'success' | 'error'>('idle');
+  const offlineModelState = useOfflineWhisperState(offlineController);
   const recorderRef = useRef<MediaRecorderLike>();
   const streamRef = useRef<MediaStream>();
   const recognitionRef = useRef<SpeechRecognitionLike>();
   const chunksRef = useRef<Blob[]>([]);
+  const audioBlobRef = useRef<Blob>();
+  const transcriptRef = useRef('');
+  const transcriptionGenerationRef = useRef(0);
+  const activeTranscriptionRef = useRef(false);
+  const recognitionSettleRef = useRef<(() => void) | undefined>();
   const intervalRef = useRef<number>();
   const activityTimeoutRef = useRef<number>();
   const latestAudioUrlRef = useRef<string | null>(null);
@@ -168,6 +186,7 @@ export default function VoiceAnswerComposer({
     if (currentUrl) browser.revokeObjectURL(currentUrl);
     latestAudioUrlRef.current = null;
     setAudioUrl(null);
+    audioBlobRef.current = undefined;
     chunksRef.current = [];
   };
 
@@ -180,7 +199,12 @@ export default function VoiceAnswerComposer({
     setRecordingState('idle');
     setElapsed(0);
     setTranscript('');
+    transcriptRef.current = '';
     setInterimTranscript('');
+    setTranscriptionStatus('idle');
+    transcriptionGenerationRef.current += 1;
+    if (activeTranscriptionRef.current) offlineController.cancel();
+    activeTranscriptionRef.current = false;
     setError(null);
     clearActivityTimeout();
     onDirtyChange?.(false);
@@ -214,6 +238,9 @@ export default function VoiceAnswerComposer({
       const currentUrl = latestAudioUrlRef.current;
       if (currentUrl) browser.revokeObjectURL(currentUrl);
       onActivityChange?.('idle');
+      transcriptionGenerationRef.current += 1;
+      if (activeTranscriptionRef.current) offlineController.cancel();
+      activeTranscriptionRef.current = false;
     };
   }, [browser, onActivityChange]);
 
@@ -264,15 +291,55 @@ export default function VoiceAnswerComposer({
         if (result.isFinal) finalText += result[0].transcript;
         else interimText += result[0].transcript;
       }
-      if (finalText.trim()) setTranscript((current) => `${current}${current ? ' ' : ''}${finalText.trim()}`);
+      if (finalText.trim()) setTranscript((current) => {
+        const next = `${current}${current ? ' ' : ''}${finalText.trim()}`;
+        transcriptRef.current = next;
+        return next;
+      });
       setInterimTranscript(interimText.trim());
     };
     recognition.onerror = () => {
       setLocalLanguageState('unavailable');
       setError('本机转写没有完成，录音仍在，可试听后手工整理文字。');
     };
+    recognition.onend = () => recognitionSettleRef.current?.();
     recognitionRef.current = recognition;
     try { recognition.start(); } catch { setLocalLanguageState('unavailable'); }
+  };
+
+  const runOfflineTranscription = async (blob: Blob) => {
+    if (transcriptRef.current.trim()) return;
+    if (offlineController.getState().status !== 'ready') {
+      setTranscriptionStatus('idle');
+      emitActivity('idle');
+      return;
+    }
+    const generation = ++transcriptionGenerationRef.current;
+    activeTranscriptionRef.current = true;
+    setError(null);
+    setTranscriptionStatus('decoding');
+    emitActivity('transcribing');
+    try {
+      const pcm = await decodeAudio(blob);
+      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return;
+      setTranscriptionStatus('transcribing');
+      const result = await offlineController.transcribe(pcm);
+      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return;
+      transcriptRef.current = result.text;
+      setTranscript(result.text);
+      setInterimTranscript('');
+      setTranscriptionStatus('success');
+      activeTranscriptionRef.current = false;
+      emitActivity('success');
+    } catch (transcriptionError) {
+      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return;
+      setTranscriptionStatus('error');
+      activeTranscriptionRef.current = false;
+      setError(transcriptionError instanceof Error
+        ? `${transcriptionError.message}。录音仍在，可重新转写或手工整理文字。`
+        : '离线转写失败。录音仍在，可重新转写或手工整理文字。');
+      emitActivity('error');
+    }
   };
 
   const startRecording = async () => {
@@ -282,7 +349,9 @@ export default function VoiceAnswerComposer({
     setError(null);
     clearAudio();
     setTranscript('');
+    transcriptRef.current = '';
     setInterimTranscript('');
+    setTranscriptionStatus('idle');
     try {
       const stream = await browser.getUserMedia({ audio: true });
       if (disposedRef.current) {
@@ -302,19 +371,28 @@ export default function VoiceAnswerComposer({
           return;
         }
         const blob = new Blob(chunksRef.current, { type: chunksRef.current[0]?.type || 'audio/webm' });
+        audioBlobRef.current = blob;
         const url = browser.createObjectURL(blob);
         latestAudioUrlRef.current = url;
         setAudioUrl(url);
         setRecordingState('ready');
         clearTimer();
         stopStream();
-        recognitionRef.current?.stop();
-        emitActivity('transcribing');
-        clearActivityTimeout();
-        activityTimeoutRef.current = window.setTimeout(() => {
-          activityTimeoutRef.current = undefined;
-          emitActivity('idle');
-        }, 240);
+        const recognition = recognitionRef.current;
+        if (recognition) {
+          let settled = false;
+          const continueAfterRecognition = () => {
+            if (settled) return;
+            settled = true;
+            recognitionSettleRef.current = undefined;
+            void runOfflineTranscription(blob);
+          };
+          recognitionSettleRef.current = continueAfterRecognition;
+          recognition.stop();
+          window.setTimeout(continueAfterRecognition, 350);
+        } else {
+          void runOfflineTranscription(blob);
+        }
       };
       recorder.start();
       startRecognition();
@@ -361,6 +439,14 @@ export default function VoiceAnswerComposer({
     if (!confirmed || disabled) return;
     onConfirmTranscript(confirmed);
     emitActivity('success');
+  };
+
+  const cancelTranscription = () => {
+    transcriptionGenerationRef.current += 1;
+    offlineController.cancel();
+    activeTranscriptionRef.current = false;
+    setTranscriptionStatus('idle');
+    emitActivity('idle');
   };
 
   const localLabel = localLanguageState === 'available'
@@ -468,12 +554,31 @@ export default function VoiceAnswerComposer({
             {localLanguageState === 'downloadable' ? (
               <Button onClick={() => void installLanguage()} disabled={disabled}>下载中文本机语言包</Button>
             ) : null}
+            <OfflineWhisperModelCard controller={offlineController} compact />
+            {transcriptionStatus === 'decoding' || transcriptionStatus === 'transcribing' ? (
+              <div className={styles.offlineTranscriptionStatus} role="status" aria-live="polite">
+                <div>
+                  <strong>{transcriptionStatus === 'decoding' ? '正在整理录音格式' : '正在本地整理语音'}</strong>
+                  <span>{offlineModelState.status === 'transcribing' && offlineModelState.backend === 'wasm' ? '兼容模式' : 'GPU 加速优先'}</span>
+                </div>
+                <Button onClick={cancelTranscription}>取消转写</Button>
+              </div>
+            ) : null}
+            {audioUrl && transcriptionStatus !== 'decoding' && transcriptionStatus !== 'transcribing' && !transcript.trim() && offlineModelState.status === 'ready' ? (
+              <Button onClick={() => audioBlobRef.current && void runOfflineTranscription(audioBlobRef.current)} disabled={disabled}>
+                使用离线模型转写
+              </Button>
+            ) : null}
             <Input.TextArea
               aria-label="确认后的回答文字"
               value={`${transcript}${interimTranscript ? `${transcript ? ' ' : ''}${interimTranscript}` : ''}`}
-              onChange={(event) => { setTranscript(event.target.value); setInterimTranscript(''); }}
+              onChange={(event) => {
+                transcriptRef.current = event.target.value;
+                setTranscript(event.target.value);
+                setInterimTranscript('');
+              }}
               disabled={disabled}
-              placeholder="本机转写不可用时，可试听录音后在这里手工整理回答。"
+              placeholder="本机或离线转写不可用时，可试听录音后在这里手工整理回答。"
               autoSize={{ minRows: 5, maxRows: 10 }}
             />
             <div className={styles.confirmRow}>
