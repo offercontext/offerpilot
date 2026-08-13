@@ -1,6 +1,6 @@
 # Voice Interview Coaching 浏览器验收
 
-日期：2026-08-14  
+日期：2026-08-14
 分支：`codex/feat/20260813-voice-interview-coaching`
 
 ## 验收范围
