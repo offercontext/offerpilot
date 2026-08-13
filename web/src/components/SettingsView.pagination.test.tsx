@@ -63,7 +63,13 @@ function latestLogsQuery(): LogsQueryConfig {
 
 async function renderSettings() {
   await act(async () => {
-    root.render(<SettingsView onOpenAISettings={vi.fn()} />);
+    root.render(
+      <SettingsView
+        onOpenAISettings={vi.fn()}
+        pilotMascotVisible
+        onPilotMascotVisibleChange={vi.fn()}
+      />,
+    );
   });
 }
 

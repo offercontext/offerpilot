@@ -1,6 +1,6 @@
-import { ApiOutlined, CopyOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { ApiOutlined, CopyOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Divider, Empty, Input, Modal, Pagination, Select, Skeleton, Space, Spin, Tag, Typography, message } from 'antd';
+import { Alert, Button, Divider, Empty, Input, Modal, Pagination, Select, Skeleton, Space, Spin, Switch, Tag, Typography, message } from 'antd';
 import { exportBackup, getLogs, getSettings, getSettingsBackup, type LogEntry, type LogsPage, type Settings } from '@/services/chat';
 import { ONBOARDING_QUERY_KEY, setOnboardingForceOpen } from '@/services/onboarding';
 import { buildDiagnosticsText } from '@/lib/diagnostics';
@@ -8,11 +8,17 @@ import { useEffect, useMemo, useState } from 'react';
 
 interface Props {
   onOpenAISettings: () => void;
+  pilotMascotVisible: boolean;
+  onPilotMascotVisibleChange: (visible: boolean) => void;
 }
 
 const LOG_PAGE_SIZE = 20;
 
-export default function SettingsView({ onOpenAISettings }: Props) {
+export default function SettingsView({
+  onOpenAISettings,
+  pilotMascotVisible,
+  onPilotMascotVisibleChange,
+}: Props) {
   const queryClient = useQueryClient();
   const [logLevel, setLogLevel] = useState('');
   const [logPage, setLogPage] = useState(1);
@@ -157,6 +163,35 @@ export default function SettingsView({ onOpenAISettings }: Props) {
             </Button>
           </Space>
         </div>
+      </section>
+
+      <section style={panelStyle} aria-labelledby="pilot-mascot-settings-title">
+        <Space align="start" size={12} style={{ justifyContent: 'space-between' }}>
+          <Space align="start" size={12}>
+            <span style={panelIconStyle}>
+              <RobotOutlined />
+            </span>
+            <div>
+              <Typography.Title id="pilot-mascot-settings-title" level={4} style={panelTitleStyle}>
+                Pilot 看板娘
+              </Typography.Title>
+              <Typography.Text style={{ color: 'var(--op-muted)' }}>
+                在桌面宽屏显示 Haru。隐藏后将恢复默认 Pilot 侧边栏。
+              </Typography.Text>
+            </div>
+          </Space>
+          <Switch
+            aria-label="显示 Haru"
+            checked={pilotMascotVisible}
+            onChange={onPilotMascotVisibleChange}
+          />
+        </Space>
+        <Typography.Text style={{ color: 'var(--op-muted)', fontSize: 12 }}>
+          Haru character © Live2D Inc.，依据官方样例数据条款使用。{' '}
+          <a href="https://www.live2d.com/en/learn/sample/" target="_blank" rel="noreferrer">
+            查看 Live2D 样例与许可说明
+          </a>
+        </Typography.Text>
       </section>
 
       <section style={panelStyle}>

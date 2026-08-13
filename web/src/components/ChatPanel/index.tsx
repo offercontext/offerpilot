@@ -84,6 +84,8 @@ import NativePilotAttachmentDropSurface from './NativePilotAttachmentDropSurface
 import ContextPanel from './ContextPanel';
 import PilotContextDropTarget from '@/components/KanbanBoard/PilotContextDropTarget';
 import styles from './ChatPanel.module.css';
+import type { PilotMascotActivity } from '@/features/pilotMascot/PilotMascot';
+import { derivePilotMascotActivity } from '@/features/pilotMascot/pilotMascotActivity';
 
 interface Props {
   open: boolean;
@@ -105,6 +107,7 @@ interface Props {
   onPrepareOfferNegotiation?: (offer: Offer) => void;
   onOpenInterviewStoryLibrary?: () => void;
   offers?: Offer[];
+  onActivityChange?: (activity: PilotMascotActivity) => void;
 }
 
 interface ConfirmationExecution {
@@ -214,6 +217,7 @@ export default function ChatPanel({
   onPrepareOfferNegotiation,
   onOpenInterviewStoryLibrary,
   offers = [],
+  onActivityChange,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -249,6 +253,23 @@ export default function ChatPanel({
   const [lastUndo, setLastUndo] = useState<ChatUndo | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [hasStreamingAssistantContent, setHasStreamingAssistantContent] = useState(false);
+
+  useEffect(() => {
+    const activity = derivePilotMascotActivity({
+      loading,
+      confirmationPhase: confirmPhase,
+      hasError: Boolean(lastError || confirmError),
+      degraded,
+    });
+    onActivityChange?.(activity);
+  }, [confirmError, confirmPhase, degraded, lastError, loading, onActivityChange]);
+
+  useEffect(
+    () => () => {
+      onActivityChange?.('idle');
+    },
+    [onActivityChange],
+  );
   const [onboardingFocusActive, setOnboardingFocusActive] = useState(false);
   const [onboardingFocusEventToken, setOnboardingFocusEventToken] = useState<number>();
   const [pageContextRemovalState, dispatchPageContextRemoval] = useReducer(

@@ -80,6 +80,11 @@ import {
   onboardingActionIntent,
 } from '@/features/onboarding/actionRouting';
 import dayjs from 'dayjs';
+import PilotMascot, { type PilotMascotActivity } from '@/features/pilotMascot/PilotMascot';
+import {
+  readPilotMascotVisible,
+  writePilotMascotVisible,
+} from '@/features/pilotMascot/pilotMascotPreference';
 
 const { Content } = Layout;
 
@@ -177,6 +182,8 @@ function AppShellContent() {
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
+  const [pilotMascotVisible, setPilotMascotVisible] = useState(readPilotMascotVisible);
+  const [pilotMascotActivity, setPilotMascotActivity] = useState<PilotMascotActivity>('idle');
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
   const pilotV2DraftsRef = useRef(new Map<number, PilotOpportunityFitV2Draft>());
   const [pilotV2Draft, setPilotV2Draft] = useState<PilotOpportunityFitV2Draft | null>(null);
@@ -569,6 +576,11 @@ function AppShellContent() {
       return;
     }
     setChatOpen(true);
+  };
+
+  const setPilotMascotPreference = (visible: boolean) => {
+    writePilotMascotVisible(visible);
+    setPilotMascotVisible(visible);
   };
 
   const attachToPilot = (attachment: PilotContextAttachment) => {
@@ -1621,7 +1633,13 @@ function AppShellContent() {
               />
             </div>
           )}
-          {view === 'settings' && <SettingsView onOpenAISettings={() => setAISettingsOpen(true)} />}
+          {view === 'settings' && (
+            <SettingsView
+              onOpenAISettings={() => setAISettingsOpen(true)}
+              pilotMascotVisible={pilotMascotVisible}
+              onPilotMascotVisibleChange={setPilotMascotPreference}
+            />
+          )}
         </div>
       </Suspense>
     </>
@@ -1662,7 +1680,7 @@ function AppShellContent() {
           )}
         </Content>
       </Layout>
-      {shouldShowContextualPilot && pilotRailAvailable && !pilotDrawerOpen && (
+      {shouldShowContextualPilot && pilotRailAvailable && !pilotDrawerOpen && !pilotMascotVisible && (
         <aside className="op-pilot-rail" aria-label="Pilot">
           <ChatPanel
             variant="rail"
@@ -1690,6 +1708,15 @@ function AppShellContent() {
           />
         </aside>
       )}
+
+      {shouldShowContextualPilot && pilotRailAvailable && pilotMascotVisible ? (
+        <PilotMascot
+          activity={pilotMascotActivity}
+          panelOpen={pilotDrawerOpen}
+          onTogglePilot={() => setPilotDrawerOpen((open) => !open)}
+          onHide={() => setPilotMascotPreference(false)}
+        />
+      ) : null}
 
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
       <ResumeUploadModal
@@ -1734,6 +1761,7 @@ function AppShellContent() {
           onOpenEvidence={openEvidence}
           onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
           onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
+          onActivityChange={setPilotMascotActivity}
           offers={ofrs}
         />
       )}
