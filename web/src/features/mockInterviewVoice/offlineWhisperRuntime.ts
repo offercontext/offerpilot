@@ -21,6 +21,35 @@ function outputText(output: WhisperPipelineOutput): string {
   return (Array.isArray(output) ? output.map((item) => item.text ?? '').join(' ') : output.text ?? '').trim();
 }
 
+class RepetitiveTranscriptError extends Error {}
+
+export function isLikelyRepetitiveTranscript(text: string): boolean {
+  const normalized = text.replace(/\s+/gu, '');
+  if (normalized.length < 80) return false;
+  const inspectedLength = Math.min(normalized.length, 4000);
+  for (let start = 0; start < Math.min(inspectedLength, 256); start += 1) {
+    for (let unitLength = 6; unitLength <= 32 && start + unitLength * 4 <= inspectedLength; unitLength += 1) {
+      const unit = normalized.slice(start, start + unitLength);
+      let repeatCount = 1;
+      while (
+        start + (repeatCount + 1) * unitLength <= inspectedLength
+        && normalized.slice(start + repeatCount * unitLength, start + (repeatCount + 1) * unitLength) === unit
+      ) repeatCount += 1;
+      const covered = repeatCount * unitLength;
+      if (repeatCount >= 4 && covered >= Math.min(80, normalized.length * 0.5)) return true;
+    }
+  }
+  return false;
+}
+
+function safeOutputText(output: WhisperPipelineOutput): string {
+  const text = outputText(output);
+  if (isLikelyRepetitiveTranscript(text)) {
+    throw new RepetitiveTranscriptError('转写结果包含异常重复内容，请重录或手工整理文字');
+  }
+  return text;
+}
+
 export class OfflineWhisperRuntime {
   private pipeline?: WhisperPipelineLike;
   private backend?: OfflineWhisperBackend;
@@ -67,8 +96,9 @@ export class OfflineWhisperRuntime {
         stride_length_s: 5,
         return_timestamps: false,
       });
-      return { text: outputText(result), backend };
+      return { text: safeOutputText(result), backend };
     } catch (error) {
+      if (error instanceof RepetitiveTranscriptError) throw error;
       if (backend !== 'webgpu' || this.wasmFallbackUsed) throw error;
       this.wasmFallbackUsed = true;
       await this.destroyPipeline();
@@ -80,7 +110,7 @@ export class OfflineWhisperRuntime {
         stride_length_s: 5,
         return_timestamps: false,
       });
-      return { text: outputText(result), backend: 'wasm' };
+      return { text: safeOutputText(result), backend: 'wasm' };
     }
   }
 

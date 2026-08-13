@@ -15,7 +15,7 @@ export const OFFLINE_WHISPER_MANIFEST: OfflineWhisperManifest = Object.freeze({
   modelId: 'onnx-community/whisper-small',
   revision: '461d552a09349d5d0d0779b40dd79800eaa3e35a',
   displayName: 'Whisper 多语言均衡模型',
-  approximateBytes: 466 * 1024 * 1024,
+  approximateBytes: 561 * 1024 * 1024,
   maxAudioSeconds: 300,
   license: 'apache-2.0',
   sourceUrl: 'https://huggingface.co/onnx-community/whisper-small',

@@ -43,12 +43,21 @@ async function renderCard(controller: OfflineWhisperController) {
 describe('OfflineWhisperModelCard', () => {
   it('does not download until the user clicks the explicit action', async () => {
     const controller = fakeController({ status: 'not_downloaded' });
-    const view = await renderCard(controller);
+    const onActivityChange = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <OfflineWhisperModelCard controller={controller} onActivityChange={onActivityChange} />,
+    ));
+    const view = container;
     expect(view.textContent).toContain('录音不会上传');
     expect(controller.prepare).not.toHaveBeenCalled();
     const button = Array.from(view.querySelectorAll('button')).find((item) => item.textContent?.includes('下载离线模型'))!;
     await act(async () => button.click());
     expect(controller.prepare).toHaveBeenCalledOnce();
+    expect(onActivityChange).toHaveBeenNthCalledWith(1, 'preparing_voice');
+    expect(onActivityChange).toHaveBeenLastCalledWith('success');
   });
 
   it('renders determinate progress only when a total is known', async () => {

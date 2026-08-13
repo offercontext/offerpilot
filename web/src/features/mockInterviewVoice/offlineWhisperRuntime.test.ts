@@ -1,11 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OfflineWhisperRuntime } from './offlineWhisperRuntime';
+import { isLikelyRepetitiveTranscript, OfflineWhisperRuntime } from './offlineWhisperRuntime';
 
 function pipeline(text = '转写结果') {
   return Object.assign(vi.fn(async () => ({ text })), { dispose: vi.fn(async () => undefined) });
 }
 
 describe('OfflineWhisperRuntime', () => {
+  it('rejects long repetitive hallucinations while preserving normal answers', () => {
+    expect(isLikelyRepetitiveTranscript('你不要再说了我会死的'.repeat(12))).toBe(true);
+    expect(isLikelyRepetitiveTranscript('我先定位连接池耗尽，再限制非核心流量并完成扩容，最后补齐了容量告警。')).toBe(false);
+  });
+
   it('falls back from WebGPU to WASM exactly once', async () => {
     const wasm = pipeline();
     const createPipeline = vi.fn(async (backend: 'webgpu' | 'wasm') => {
@@ -37,5 +42,12 @@ describe('OfflineWhisperRuntime', () => {
     await expect(runtime.transcribe(new Float32Array([0.1]))).rejects.toThrow('failed');
     await runtime.dispose();
     expect(broken.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a repetitive model result instead of exposing it as a draft', async () => {
+    const repetitive = pipeline('你不要再说了我会死的'.repeat(12));
+    const runtime = new OfflineWhisperRuntime({ createPipeline: vi.fn(async () => repetitive) });
+    await runtime.prepare('wasm');
+    await expect(runtime.transcribe(new Float32Array([0.1]))).rejects.toThrow('重复内容');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { downmixAndResample, validateAudioDuration } from './audioDecoder';
+import { downmixAndResample, isLikelySilentAudio, validateAudioDuration } from './audioDecoder';
 
 describe('offline audio decoder', () => {
   it('downmixes stereo and resamples deterministically to 16 kHz', () => {
@@ -13,5 +13,11 @@ describe('offline audio decoder', () => {
     expect(validateAudioDuration(300)).toBe(true);
     expect(validateAudioDuration(300.001)).toBe(false);
     expect(validateAudioDuration(Number.NaN)).toBe(false);
+  });
+
+  it('detects silence without rejecting ordinary speech-level samples', () => {
+    expect(isLikelySilentAudio(new Float32Array(32000))).toBe(true);
+    expect(isLikelySilentAudio(new Float32Array([0, 0.001, -0.001, 0]))).toBe(true);
+    expect(isLikelySilentAudio(new Float32Array([0, 0.08, -0.07, 0.04]))).toBe(false);
   });
 });

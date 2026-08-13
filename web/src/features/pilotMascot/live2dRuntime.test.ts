@@ -235,6 +235,10 @@ describe('createLive2dPilotMascotRuntime', () => {
     controller.setActivity('transcribing');
     await Promise.resolve();
     expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 1, expect.any(Number));
+
+    controller.setActivity('preparing_voice');
+    await Promise.resolve();
+    expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 1, expect.any(Number));
     controller.dispose();
   });
 

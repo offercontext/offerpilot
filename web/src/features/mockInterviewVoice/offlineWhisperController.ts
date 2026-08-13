@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { OFFLINE_WHISPER_MANIFEST } from './offlineWhisperManifest';
 import { OfflineModelStore } from './offlineModelStore';
+import { isLikelySilentAudio } from './audioDecoder';
 import type {
   OfflineModelState,
   OfflineWhisperBackend,
@@ -39,6 +40,8 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
   private readonly store: StoreLike;
   private worker?: OfflineWhisperWorkerLike;
   private generation = 0;
+  private runtimeBackend?: OfflineWhisperBackend;
+  private cachedBytes = 0;
   private pendingPrepare?: PendingPrepare;
   private pendingTranscription?: PendingTranscription;
 
@@ -83,6 +86,8 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
       this.pendingPrepare = undefined;
       const cachedBytes = message.cachedBytes ?? OFFLINE_WHISPER_MANIFEST.approximateBytes;
       void this.store.markReady(cachedBytes).then(() => {
+        this.runtimeBackend = message.backend;
+        this.cachedBytes = cachedBytes;
         this.setState({ status: 'ready', modelVersion: OFFLINE_WHISPER_MANIFEST.revision, cachedBytes, backend: message.backend });
         pending.resolve(message.backend);
       }).catch(() => {
@@ -97,7 +102,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
       this.setState({
         status: 'ready',
         modelVersion: OFFLINE_WHISPER_MANIFEST.revision,
-        cachedBytes: OFFLINE_WHISPER_MANIFEST.approximateBytes,
+        cachedBytes: this.cachedBytes || OFFLINE_WHISPER_MANIFEST.approximateBytes,
         backend: message.backend,
       });
       pending.resolve({ text: message.text.trim(), backend: message.backend });
@@ -118,6 +123,8 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
   async check(): Promise<void> {
     this.setState({ status: 'checking' });
     const inspected = await this.store.inspect();
+    this.cachedBytes = inspected.ready ? inspected.cachedBytes : 0;
+    this.runtimeBackend = undefined;
     this.setState(inspected.ready
       ? { status: 'ready', modelVersion: OFFLINE_WHISPER_MANIFEST.revision, cachedBytes: inspected.cachedBytes }
       : { status: 'not_downloaded' });
@@ -142,9 +149,14 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
 
   async transcribe(audio: Float32Array): Promise<{ text: string; backend: OfflineWhisperBackend }> {
     if (this.pendingTranscription) throw new Error('已有转写正在进行');
+    if (isLikelySilentAudio(audio)) throw new Error('没有检测到清晰语音，请重录或手工整理文字');
+    if (!this.runtimeBackend) {
+      if (this.state.status !== 'ready') throw new Error('离线模型尚未准备好');
+      await this.prepare();
+    }
     const generation = ++this.generation;
     const worker = this.ensureWorker();
-    const backend = this.state.status === 'ready' && this.state.backend ? this.state.backend : 'webgpu';
+    const backend = this.runtimeBackend ?? 'webgpu';
     this.setState({ status: 'transcribing', backend });
     return new Promise((resolve, reject) => {
       this.pendingTranscription = { generation, resolve, reject };
@@ -166,6 +178,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
     this.disposeWorker();
     ++this.generation;
     await this.store.remove();
+    this.cachedBytes = 0;
     this.setState({ status: 'not_downloaded' });
   }
 
@@ -175,6 +188,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
     this.worker.postMessage({ type: 'dispose', generation: ++this.generation });
     this.worker.terminate();
     this.worker = undefined;
+    this.runtimeBackend = undefined;
   }
 
   dispose(): void {

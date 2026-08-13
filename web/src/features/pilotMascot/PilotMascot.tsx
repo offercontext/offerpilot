@@ -35,6 +35,7 @@ interface Props {
 const ACTIVITY_COPY: Record<PilotMascotActivity, { label: string; detail: string }> = {
   idle: { label: '随时待命', detail: '点击 Haru，和 Pilot 聊聊' },
   thinking: { label: '正在思考', detail: '我正在整理上下文…' },
+  preparing_voice: { label: '正在准备离线语音', detail: '模型只会下载到当前浏览器' },
   speaking: { label: '正在朗读', detail: '我在为你读出当前题目' },
   listening: { label: '正在聆听', detail: '回答录音只保留在当前页面' },
   transcribing: { label: '正在整理语音', detail: '请稍后核对回答文字' },

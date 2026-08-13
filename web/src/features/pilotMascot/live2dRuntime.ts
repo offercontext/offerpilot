@@ -3,6 +3,7 @@ import { normalizePilotMascotZoom } from './pilotMascotPreference';
 export type PilotMascotActivity =
   | 'idle'
   | 'thinking'
+  | 'preparing_voice'
   | 'speaking'
   | 'listening'
   | 'transcribing'
@@ -209,7 +210,7 @@ export function createLive2dPilotMascotRuntime(
           // Motion feedback is decorative; text remains the source of truth.
         }
       };
-      const isThinkingLoop = () => activity === 'thinking' || activity === 'transcribing';
+      const isThinkingLoop = () => activity === 'thinking' || activity === 'preparing_voice' || activity === 'transcribing';
       const playThinking = () => {
         if (disposed || !isThinkingLoop() || reduceMotion) return;
         void runMotion('Idle', 1).finally(() => {
@@ -224,7 +225,7 @@ export function createLive2dPilotMascotRuntime(
           activity = nextActivity;
           stopThinkingLoop();
           if (reduceMotion) return;
-          if (activity === 'thinking' || activity === 'transcribing') {
+          if (activity === 'thinking' || activity === 'preparing_voice' || activity === 'transcribing') {
             playThinking();
             return;
           }

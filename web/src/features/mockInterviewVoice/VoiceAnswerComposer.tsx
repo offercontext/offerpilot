@@ -25,7 +25,7 @@ import {
 import type { OfflineWhisperController } from './offlineWhisperTypes';
 import styles from './VoiceAnswerComposer.module.css';
 
-export type VoiceAnswerActivity = 'idle' | 'speaking' | 'listening' | 'transcribing' | 'success' | 'error';
+export type VoiceAnswerActivity = 'idle' | 'preparing_voice' | 'speaking' | 'listening' | 'transcribing' | 'success' | 'error';
 type AnswerMode = 'text' | 'voice';
 
 interface MediaRecorderLike {
@@ -554,7 +554,7 @@ export default function VoiceAnswerComposer({
             {localLanguageState === 'downloadable' ? (
               <Button onClick={() => void installLanguage()} disabled={disabled}>下载中文本机语言包</Button>
             ) : null}
-            <OfflineWhisperModelCard controller={offlineController} compact />
+            <OfflineWhisperModelCard controller={offlineController} compact onActivityChange={emitActivity} />
             {transcriptionStatus === 'decoding' || transcriptionStatus === 'transcribing' ? (
               <div className={styles.offlineTranscriptionStatus} role="status" aria-live="polite">
                 <div>

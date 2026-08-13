@@ -62,4 +62,50 @@ describe('OfflineWhisperController', () => {
     expect(store.remove).toHaveBeenCalledOnce();
     expect(controller.getState()).toEqual({ status: 'not_downloaded' });
   });
+
+  it('rehydrates the cached pipeline before the first transcription after reload', async () => {
+    const worker = new FakeWorker();
+    const store = {
+      inspect: vi.fn(async () => ({ ready: true, cachedBytes: 321 })),
+      checkCapacity: vi.fn(async () => 'sufficient' as const),
+      markReady: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    };
+    const controller = new OfflineWhisperControllerImpl({ createWorker: () => worker, store });
+    await controller.check();
+
+    const transcription = controller.transcribe(new Float32Array([0.1, 0.2]));
+    await Promise.resolve();
+    expect(worker.messages).toEqual([
+      { type: 'prepare', generation: 1, preferredBackend: 'webgpu' },
+    ]);
+
+    worker.emit({ type: 'ready', generation: 1, backend: 'wasm', cachedBytes: 321 });
+    await vi.waitFor(() => {
+      expect(worker.messages[1]).toMatchObject({ type: 'transcribe', generation: 2, sampleRate: 16000, language: 'zh' });
+    });
+
+    worker.emit({ type: 'completed', generation: 2, text: ' 筱哲的回答 ', backend: 'wasm' });
+    await expect(transcription).resolves.toEqual({ text: '筱哲的回答', backend: 'wasm' });
+    expect(controller.getState()).toEqual({
+      status: 'ready',
+      modelVersion: expect.any(String),
+      cachedBytes: 321,
+      backend: 'wasm',
+    });
+  });
+
+  it('rejects silence before loading or calling the worker', async () => {
+    const worker = new FakeWorker();
+    const store = {
+      inspect: vi.fn(async () => ({ ready: true, cachedBytes: 321 })),
+      checkCapacity: vi.fn(async () => 'sufficient' as const),
+      markReady: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    };
+    const controller = new OfflineWhisperControllerImpl({ createWorker: () => worker, store });
+    await controller.check();
+    await expect(controller.transcribe(new Float32Array(16000))).rejects.toThrow('没有检测到清晰语音');
+    expect(worker.messages).toHaveLength(0);
+  });
 });

@@ -62,6 +62,7 @@ describe('PilotMascot', () => {
   });
 
   it.each([
+    ['preparing_voice', '正在准备离线语音'],
     ['speaking', '正在朗读'],
     ['listening', '正在聆听'],
     ['transcribing', '正在整理语音'],

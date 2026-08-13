@@ -16,6 +16,20 @@ export function validateAudioDuration(seconds: number): boolean {
   return Number.isFinite(seconds) && seconds > 0 && seconds <= OFFLINE_WHISPER_MANIFEST.maxAudioSeconds;
 }
 
+export function isLikelySilentAudio(samples: Float32Array): boolean {
+  if (samples.length === 0) return true;
+  let squareSum = 0;
+  let peak = 0;
+  for (const rawSample of samples) {
+    const sample = Number.isFinite(rawSample) ? rawSample : 0;
+    const absolute = Math.abs(sample);
+    peak = Math.max(peak, absolute);
+    squareSum += sample * sample;
+  }
+  const rms = Math.sqrt(squareSum / samples.length);
+  return peak < 0.02 && rms < 0.004;
+}
+
 export function downmixAndResample(
   channels: readonly Float32Array[],
   sourceRate: number,

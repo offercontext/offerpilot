@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Button, Popconfirm, Tag } from 'antd';
 import {
   CloudDownloadOutlined,
@@ -17,6 +17,7 @@ import styles from './OfflineWhisperModelCard.module.css';
 type Props = {
   controller?: OfflineWhisperController;
   compact?: boolean;
+  onActivityChange?: (activity: 'preparing_voice' | 'success' | 'error' | 'idle') => void;
 };
 
 function formatBytes(bytes: number): string {
@@ -27,7 +28,9 @@ function formatBytes(bytes: number): string {
 export default function OfflineWhisperModelCard({
   controller = offlineWhisperController,
   compact = false,
+  onActivityChange,
 }: Props) {
+  const titleId = useId();
   const state = useOfflineWhisperState(controller);
   const [operationError, setOperationError] = useState('');
 
@@ -42,10 +45,13 @@ export default function OfflineWhisperModelCard({
 
   const prepare = async () => {
     setOperationError('');
+    onActivityChange?.('preparing_voice');
     try {
       await controller.prepare();
+      onActivityChange?.('success');
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : '离线模型下载失败');
+      onActivityChange?.('error');
     }
   };
 
@@ -53,8 +59,10 @@ export default function OfflineWhisperModelCard({
     setOperationError('');
     try {
       await controller.remove();
+      onActivityChange?.('idle');
     } catch {
       setOperationError('模型删除结果未知，请重新检查');
+      onActivityChange?.('error');
       await controller.check();
     }
   };
@@ -64,12 +72,12 @@ export default function OfflineWhisperModelCard({
   const stateError = state.status === 'error' ? state.message : operationError;
 
   return (
-    <section className={`${styles.card} ${compact ? styles.compact : ''}`} aria-labelledby="offline-whisper-title">
+    <section className={`${styles.card} ${compact ? styles.compact : ''}`} aria-labelledby={titleId}>
       <div className={styles.heading}>
         <span className={styles.icon} aria-hidden><SafetyCertificateOutlined /></span>
         <div className={styles.titleGroup}>
           <span className={styles.eyebrow}>LOCAL SPEECH MODEL</span>
-          <h4 id="offline-whisper-title">离线语音转写</h4>
+          <h4 id={titleId}>离线语音转写</h4>
           <p>录音不会上传；模型只在你点击下载后保存到当前浏览器。</p>
         </div>
         {state.status === 'ready' ? <Tag color="green">已下载 · {backendLabel}</Tag> : null}
