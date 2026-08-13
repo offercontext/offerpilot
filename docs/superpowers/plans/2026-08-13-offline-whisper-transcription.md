@@ -29,8 +29,10 @@
    - `web/src/features/mockInterviewVoice/**`
    - `web/src/components/MockInterviewDrawer*`
    - `web/src/components/SettingsView*`
+   - `web/vite.config.ts`
    - 必要的 Haru 状态文案测试
-   - 本设计、计划、第三方 notice 与验收报告
+   - `README.md`
+   - 本设计、计划、第三方 notice、验收报告与 `artifacts/2026-08-13-offline-whisper-transcription/**`
 3. 明确禁止修改 `src/offerpilot/**`、`tests/**`、迁移、API、共享后端类型和业务 service。
 4. 每次提交前收集已提交、暂存、未暂存及未跟踪文件，与 allowlist 机器化比较。
 

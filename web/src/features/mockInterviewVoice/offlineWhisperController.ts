@@ -41,6 +41,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
   private worker?: OfflineWhisperWorkerLike;
   private generation = 0;
   private runtimeBackend?: OfflineWhisperBackend;
+  private cacheReady = false;
   private cachedBytes = 0;
   private pendingPrepare?: PendingPrepare;
   private pendingTranscription?: PendingTranscription;
@@ -78,7 +79,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
       return;
     }
     if (message.type === 'transcription_progress') {
-      this.setState({ status: 'transcribing', backend: message.backend, progress: message.progress });
+      this.setState({ status: 'transcribing', backend: this.runtimeBackend ?? message.backend, progress: message.progress });
       return;
     }
     if (message.type === 'ready' && this.pendingPrepare?.generation === message.generation) {
@@ -86,6 +87,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
       this.pendingPrepare = undefined;
       const cachedBytes = message.cachedBytes ?? OFFLINE_WHISPER_MANIFEST.approximateBytes;
       void this.store.markReady(cachedBytes).then(() => {
+        this.cacheReady = true;
         this.runtimeBackend = message.backend;
         this.cachedBytes = cachedBytes;
         this.setState({ status: 'ready', modelVersion: OFFLINE_WHISPER_MANIFEST.revision, cachedBytes, backend: message.backend });
@@ -123,6 +125,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
   async check(): Promise<void> {
     this.setState({ status: 'checking' });
     const inspected = await this.store.inspect();
+    this.cacheReady = inspected.ready;
     this.cachedBytes = inspected.ready ? inspected.cachedBytes : 0;
     this.runtimeBackend = undefined;
     this.setState(inspected.ready
@@ -132,11 +135,13 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
 
   async prepare(): Promise<OfflineWhisperBackend> {
     if (this.pendingPrepare) throw new Error('模型正在准备中');
-    const capacity = await this.store.checkCapacity();
-    if (capacity === 'insufficient') {
-      const error = new Error('浏览器可用存储空间不足，无法下载离线语音模型');
-      this.setState({ status: 'error', recoverable: true, message: error.message });
-      throw error;
+    if (!this.cacheReady) {
+      const capacity = await this.store.checkCapacity();
+      if (capacity === 'insufficient') {
+        const error = new Error('浏览器可用存储空间不足，无法下载离线语音模型');
+        this.setState({ status: 'error', recoverable: true, message: error.message });
+        throw error;
+      }
     }
     const generation = ++this.generation;
     const worker = this.ensureWorker();
@@ -165,12 +170,12 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
   }
 
   cancel(): void {
-    const generation = ++this.generation;
+    ++this.generation;
     this.pendingPrepare?.reject(new Error('模型准备已取消'));
     this.pendingTranscription?.reject(new Error('转写已取消'));
     this.pendingPrepare = undefined;
     this.pendingTranscription = undefined;
-    this.worker?.postMessage({ type: 'cancel', generation });
+    this.disposeWorker();
     void this.check();
   }
 
@@ -178,6 +183,7 @@ export class OfflineWhisperControllerImpl implements OfflineWhisperController {
     this.disposeWorker();
     ++this.generation;
     await this.store.remove();
+    this.cacheReady = false;
     this.cachedBytes = 0;
     this.setState({ status: 'not_downloaded' });
   }

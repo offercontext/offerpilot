@@ -67,7 +67,7 @@ describe('OfflineWhisperController', () => {
     const worker = new FakeWorker();
     const store = {
       inspect: vi.fn(async () => ({ ready: true, cachedBytes: 321 })),
-      checkCapacity: vi.fn(async () => 'sufficient' as const),
+      checkCapacity: vi.fn(async () => 'insufficient' as const),
       markReady: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
     };
@@ -85,8 +85,12 @@ describe('OfflineWhisperController', () => {
       expect(worker.messages[1]).toMatchObject({ type: 'transcribe', generation: 2, sampleRate: 16000, language: 'zh' });
     });
 
+    worker.emit({ type: 'transcription_progress', generation: 2, backend: 'webgpu', progress: 0.5 });
+    expect(controller.getState()).toEqual({ status: 'transcribing', backend: 'wasm', progress: 0.5 });
+
     worker.emit({ type: 'completed', generation: 2, text: ' 筱哲的回答 ', backend: 'wasm' });
     await expect(transcription).resolves.toEqual({ text: '筱哲的回答', backend: 'wasm' });
+    expect(store.checkCapacity).not.toHaveBeenCalled();
     expect(controller.getState()).toEqual({
       status: 'ready',
       modelVersion: expect.any(String),
@@ -107,5 +111,24 @@ describe('OfflineWhisperController', () => {
     await controller.check();
     await expect(controller.transcribe(new Float32Array(16000))).rejects.toThrow('没有检测到清晰语音');
     expect(worker.messages).toHaveLength(0);
+  });
+
+  it('terminates active model work when the user cancels', async () => {
+    const worker = new FakeWorker();
+    const store = {
+      inspect: vi.fn(async () => ({ ready: false, cachedBytes: 0 })),
+      checkCapacity: vi.fn(async () => 'sufficient' as const),
+      markReady: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    };
+    const controller = new OfflineWhisperControllerImpl({ createWorker: () => worker, store });
+    const preparing = controller.prepare();
+    await Promise.resolve();
+
+    controller.cancel();
+
+    await expect(preparing).rejects.toThrow('模型准备已取消');
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(controller.getState()).toEqual({ status: 'not_downloaded' }));
   });
 });
