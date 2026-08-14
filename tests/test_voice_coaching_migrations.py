@@ -148,4 +148,3 @@ def test_voice_coaching_model_declares_immutable_columns() -> None:
     assert columns["confirmed_answer_text_snapshot"].nullable is False
     assert columns["measurement_source"].nullable is False
     assert "updated_at" not in columns
-
