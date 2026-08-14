@@ -127,4 +127,26 @@ describe('VoiceCoachingGrowthView', () => {
     expect(host.textContent).toContain('完成一次语音回答并确认保存后');
     expect(host.textContent).not.toContain('针对这项再练一次');
   });
+
+  it('keeps frozen history readable and disables an unavailable source', async () => {
+    const longQuestion = `请说明${'一个复杂故障的定位过程'.repeat(30)}`;
+    services.list.mockResolvedValue([{ ...snapshot, source_available: false, question_text: longQuestion }]);
+    services.trends.mockResolvedValue({
+      ...trends,
+      recommendation: { ...trends.recommendation, source_available: false },
+    });
+    await act(async () => root.render(<VoiceCoachingGrowthView onBack={vi.fn()} onPractice={vi.fn()} />));
+    await flush();
+    expect(host.textContent).toContain(longQuestion);
+    expect(host.textContent).toContain('原投递来源已不可见');
+    expect(button('针对这项再练一次').disabled).toBe(true);
+  });
+
+  it('keeps available history visible when only trends fail to load', async () => {
+    services.trends.mockRejectedValue(new Error('trend unavailable'));
+    await act(async () => root.render(<VoiceCoachingGrowthView onBack={vi.fn()} onPractice={vi.fn()} />));
+    await flush();
+    expect(host.textContent).toContain('部分表达记录暂时无法加载');
+    expect(host.textContent).toContain(snapshot.question_text);
+  });
 });

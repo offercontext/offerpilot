@@ -858,7 +858,9 @@ function AppShellContent() {
     voicePracticeFocus?: VoiceCoachingRecommendation,
   ) => {
     const draftKey = `${applicationId}:${eventId}`;
-    let draft = mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
+    let draft = voicePracticeFocus
+      ? createMockInterviewDraft()
+      : mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
     const hasFrozenAttempt = Boolean(
       draft.attemptKey
       || draft.questionKey

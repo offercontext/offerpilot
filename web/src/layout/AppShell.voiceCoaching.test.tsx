@@ -94,12 +94,12 @@ vi.mock('@/components/VoiceCoachingGrowthView', () => ({
 }));
 vi.mock('@/components/MockInterviewDrawer', () => ({
   default: (props: {
-    draft: { voicePracticeFocus?: { title?: string } | null };
+    draft: { attemptId?: number | null; voicePracticeFocus?: { title?: string } | null };
     onDraftChange: (patch: Record<string, unknown>) => void;
     onClose: () => void;
   }) => (
     <section>
-      <output data-testid="mock-focus">{props.draft.voicePracticeFocus?.title ?? 'none'}</output>
+      <output data-testid="mock-focus" data-attempt-id={props.draft.attemptId ?? 'none'}>{props.draft.voicePracticeFocus?.title ?? 'none'}</output>
       <button type="button" data-testid="mark-voice-saved" onClick={() => props.onDraftChange({ attemptId: 41, hasSavedVoiceCoachingSnapshot: true })}>saved</button>
       <button type="button" data-testid="close-mock" onClick={props.onClose}>close</button>
     </section>
@@ -158,5 +158,8 @@ describe('AppShell voice coaching navigation', () => {
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="open-pilot-growth"]')?.click());
     await flush();
     expect(host.querySelector('[data-testid="voice-growth-view"]')).not.toBeNull();
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="practice-growth"]')?.click());
+    await flush();
+    expect(host.querySelector('[data-testid="mock-focus"]')?.getAttribute('data-attempt-id')).toBe('none');
   });
 });

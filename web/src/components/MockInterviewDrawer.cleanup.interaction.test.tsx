@@ -245,6 +245,17 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       attemptId: 88,
       turnNo: 1,
       question: '请介绍一次故障处理经历。',
+      voicePracticeFocus: {
+        focus_kind: 'long_pause_control',
+        title: '减少长停顿',
+        reason: '连续长停顿仍较明显',
+        source_snapshot_ids: [17, 16],
+        source_snapshot_id: 17,
+        application_id: 7,
+        event_id: 11,
+        question_text: '请介绍一次故障处理经历。',
+        source_available: true,
+      },
     }, { voiceBrowser });
 
     act(() => buttonByText('语音回答').click());
@@ -255,6 +266,8 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     const transcript = container?.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
     changeTextarea(transcript, '我先确认影响范围，再完成回滚。');
     act(() => buttonByText('确认使用这段文字').click());
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .toMatchObject({ voiceCoachingReview: { originSnapshotId: 17 } });
     act(() => buttonByText('提交回答').click());
     await flush();
 
