@@ -34,9 +34,13 @@ describe('MockInterviewDrawer safety display contract', () => {
   });
 
   it('treats an already absent Attempt as a successful discard', () => {
-    expect(source).toContain('const status = (error as { response?: { status?: number } })?.response?.status;');
-    expect(source).toContain('if (status === 404)');
+    expect(source).toContain('discardResponse?.status === 404');
     expect(source).toContain('resetDraft(sourceError);');
+  });
+
+  it('treats a server-protected Attempt as a terminal local cleanup', () => {
+    expect(source).toContain("discardResponse?.status === 409");
+    expect(source).toContain("discardResponse.data?.error_code === 'mock_interview_attempt_confirmed'");
   });
 
   it('records and dispatches each post-start unknown operation', () => {

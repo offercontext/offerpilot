@@ -33,6 +33,7 @@ web/src/features/mockInterviewVoice/VoiceAnswerComposer.tsx
 web/src/features/mockInterviewVoice/VoiceAnswerComposer.test.tsx
 web/src/components/MockInterviewDrawer.tsx
 web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx
+web/src/components/MockInterviewDrawer.safety.test.ts
 web/src/components/VoiceCoachingSnapshotSaveCard.tsx
 web/src/components/VoiceCoachingSnapshotSaveCard.module.css
 web/src/components/VoiceCoachingSnapshotSaveCard.test.tsx
