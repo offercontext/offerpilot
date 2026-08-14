@@ -41,6 +41,7 @@ import type { InterviewReviewProposalAttemptState } from '@/components/Interview
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
+import InterviewStudio, { type InterviewStudioContext as RealInterviewStudioContext, type QuickPracticeStudioContext } from '@/features/interviewStudio/InterviewStudio';
 import type { VoiceCoachingRecommendation } from '@/types/voiceCoaching';
 import InterviewStoryLibraryView, { type InterviewStoryOpenDraft } from '@/components/InterviewStoryLibraryView';
 import InterviewStoryDrawer, { createInterviewStoryDraft, type InterviewStoryDraft } from '@/components/InterviewStoryDrawer';
@@ -216,6 +217,8 @@ function AppShellContent() {
   const [mockInterviewContext, setMockInterviewContext] = useState<{ applicationId: number; eventId: number } | null>(null);
   const mockInterviewDraftsRef = useRef(new Map<string, MockInterviewDrawerDraft>());
   const [mockInterviewDraft, setMockInterviewDraft] = useState<MockInterviewDrawerDraft | null>(null);
+  const [interviewStudioContext, setInterviewStudioContext] = useState<(RealInterviewStudioContext | QuickPracticeStudioContext) | null>(null);
+  const [interviewStudioHaruVisible, setInterviewStudioHaruVisible] = useState(false);
   const [offerNegotiationOffer, setOfferNegotiationOffer] = useState<Offer | null>(null);
   const [offerNegotiationEntryPoint, setOfferNegotiationEntryPoint] = useState<'ui' | 'pilot'>('ui');
   const offerNegotiationDraftsRef = useRef(new Map<number, OfferNegotiationDraft>());
@@ -1671,6 +1674,13 @@ function AppShellContent() {
               onOpenApplication={goDetailById}
               onOpenPreparation={openPilotInterviewPreparation}
               onOpenMockInterview={openMockInterview}
+              applications={apps}
+              events={evs}
+              resumes={resumes}
+              onOpenStudio={(context) => {
+                setInterviewStudioHaruVisible(false);
+                setInterviewStudioContext(context);
+              }}
               onOpenStoryLibrary={(reviewNoteId) => {
                 setVoiceCoachingGrowthOpen(false);
                 setInterviewStoryLibraryOpen(true);
@@ -1854,7 +1864,7 @@ function AppShellContent() {
         </div>
       ) : null}
 
-      {pilotRailAvailable && pilotMascotVisible ? (
+      {pilotRailAvailable && pilotMascotVisible && !interviewStudioContext ? (
         <PilotMascot
           activity={pilotMascotNotification?.status ?? pilotMascotActivity}
           panelOpen={view === 'pilot' || pilotDrawerOpen}
@@ -1864,6 +1874,27 @@ function AppShellContent() {
           onZoomChange={setPilotMascotZoomPreference}
           notification={pilotMascotNotification}
           placement={view === 'pilot' ? 'pilot-page' : 'contextual'}
+        />
+      ) : null}
+
+      {interviewStudioContext ? (
+        <InterviewStudio
+          context={interviewStudioContext}
+          onClose={() => setInterviewStudioContext(null)}
+          onToggleHaru={() => setInterviewStudioHaruVisible((visible) => !visible)}
+          onActivityChange={setPilotMascotActivity}
+        />
+      ) : null}
+
+      {interviewStudioContext && interviewStudioHaruVisible ? (
+        <PilotMascot
+          activity={pilotMascotActivity}
+          panelOpen={false}
+          onTogglePilot={() => undefined}
+          onHide={() => setInterviewStudioHaruVisible(false)}
+          zoom={pilotMascotZoom}
+          onZoomChange={setPilotMascotZoomPreference}
+          placement="interview-studio"
         />
       ) : null}
 

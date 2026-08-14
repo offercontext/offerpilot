@@ -2,6 +2,10 @@ export interface MockInterviewTurn {
   turn_no: number;
   question: string;
   answer: string;
+  question_kind?: 'follow_up' | 'new_topic';
+  parent_turn_no?: number | null;
+  topic_root_turn_no?: number;
+  basis_refs?: Array<{ source: string; path: string; excerpt: string }>;
 }
 
 export interface MockInterviewProposal {
@@ -24,6 +28,10 @@ export interface MockInterviewAttemptResponse {
   attempt_status: string;
   generation_revision: number;
   jd_version_id?: number | null;
+  context_kind?: 'application_event' | 'quick_practice';
+  application_id?: number | null;
+  event_id?: number | null;
+  practice_case_id?: number | null;
   turn: MockInterviewTurn;
 }
 
@@ -50,4 +58,8 @@ export interface MockInterviewHistoryItem extends MockInterviewProposalResponse 
   source_status?: 'current' | 'source_changed';
   turns?: MockInterviewTurn[];
   review_draft?: { draft_id: number; status: string; selected_blocks: unknown[] } | null;
+  context_kind?: 'application_event' | 'quick_practice';
+  application_id?: number | null;
+  event_id?: number | null;
+  practice_case_id?: number | null;
 }

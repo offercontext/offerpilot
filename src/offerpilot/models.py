@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -971,16 +972,58 @@ class QuestionReview(Base):
     )
 
 
-class MockInterviewAttempt(Base):
-    __tablename__ = "mock_interview_attempts"
+class InterviewPracticeCase(Base):
+    __tablename__ = "interview_practice_cases"
     __table_args__ = (
-        UniqueConstraint("application_id", "event_id", "idempotency_key"),
-        Index("idx_mock_interview_attempts_event", "application_id", "event_id"),
+        UniqueConstraint("idempotency_key", name="uq_interview_practice_cases_key"),
+        Index("idx_interview_practice_cases_status", "status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    position_name_snapshot: Mapped[str] = mapped_column(String, nullable=False)
+    jd_text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    jd_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    resume_id: Mapped[int] = mapped_column(
+        ForeignKey("resumes.id", ondelete="RESTRICT"), nullable=False
+    )
+    resume_content_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    resume_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MockInterviewAttempt(Base):
+    __tablename__ = "mock_interview_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "context_kind",
+            "application_id",
+            "event_id",
+            "practice_case_id",
+            "idempotency_key",
+            name="uq_mock_interview_attempts_context_key",
+        ),
+        CheckConstraint(
+            "(context_kind = 'application_event' AND application_id IS NOT NULL AND event_id IS NOT NULL AND practice_case_id IS NULL) "
+            "OR (context_kind = 'quick_practice' AND application_id IS NULL AND event_id IS NULL AND practice_case_id IS NOT NULL)",
+            name="ck_mock_interview_attempt_context",
+        ),
+        Index("idx_mock_interview_attempts_event", "application_id", "event_id"),
+        Index("idx_mock_interview_attempts_context", "context_kind", "practice_case_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    context_kind: Mapped[str] = mapped_column(String, nullable=False, default="application_event", server_default="application_event")
+    application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    practice_case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("interview_practice_cases.id", ondelete="RESTRICT"), nullable=True
+    )
     resume_id: Mapped[int] = mapped_column(Integer, nullable=False)
     jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
@@ -1028,6 +1071,12 @@ class VoiceCoachingSnapshot(Base):
         Index("idx_voice_coaching_snapshots_created", "created_at", "id"),
         Index("idx_voice_coaching_snapshots_application_event", "application_id", "event_id"),
         Index("idx_voice_coaching_snapshots_attempt", "attempt_id"),
+        Index("idx_voice_coaching_snapshots_context", "context_kind", "practice_case_id"),
+        CheckConstraint(
+            "(context_kind = 'application_event' AND application_id IS NOT NULL AND event_id IS NOT NULL AND practice_case_id IS NULL) "
+            "OR (context_kind = 'quick_practice' AND application_id IS NULL AND event_id IS NULL AND practice_case_id IS NOT NULL)",
+            name="ck_voice_coaching_snapshot_context",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -1037,8 +1086,12 @@ class VoiceCoachingSnapshot(Base):
     turn_id: Mapped[int] = mapped_column(
         ForeignKey("mock_interview_turns.id", ondelete="CASCADE"), nullable=False
     )
-    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    context_kind: Mapped[str] = mapped_column(String, nullable=False, default="application_event", server_default="application_event")
+    application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    practice_case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("interview_practice_cases.id", ondelete="RESTRICT"), nullable=True
+    )
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
     request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
     question_text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)

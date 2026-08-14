@@ -19,12 +19,14 @@ from offerpilot.models import (
     MockInterviewTurn,
     Resume,
     InterviewPreparationProposal,
+    InterviewPracticeCase,
     VoiceCoachingSnapshot,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 from offerpilot.repositories.interview_preparation_proposals import (
     source_is_current_for_mock_interview,
 )
+from offerpilot.repositories.interview_practice_cases import validate_context
 
 
 class MockInterviewIdempotencyConflict(ValueError):
@@ -50,6 +52,7 @@ class MockInterviewAttemptConfirmed(ValueError):
 
 
 _ASCII_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
+MAX_INTERVIEW_TURNS = 5
 
 
 @dataclass(frozen=True)
@@ -286,10 +289,110 @@ class MockInterviewRepository:
             session.refresh(attempt)
             return attempt
 
+    def create_or_replay_quick_start(
+        self,
+        *,
+        practice_case_id: int,
+        attempt_idempotency_key: str,
+        initial_question_idempotency_key: str,
+    ) -> MockInterviewStartResult:
+        _validate_key(attempt_idempotency_key, "attempt_idempotency_key")
+        _validate_key(initial_question_idempotency_key, "initial_question_idempotency_key")
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            case = session.get(InterviewPracticeCase, practice_case_id)
+            if case is None:
+                raise LookupError("interview practice case not found")
+            existing = session.scalar(
+                select(MockInterviewAttempt).where(
+                    MockInterviewAttempt.context_kind == "quick_practice",
+                    MockInterviewAttempt.practice_case_id == practice_case_id,
+                    MockInterviewAttempt.idempotency_key == attempt_idempotency_key,
+                )
+            )
+            if existing is not None:
+                turn = session.scalar(
+                    select(MockInterviewTurn).where(
+                        MockInterviewTurn.attempt_id == existing.id,
+                        MockInterviewTurn.turn_no == 1,
+                    )
+                )
+                if turn is None or turn.question_idempotency_key != initial_question_idempotency_key:
+                    raise MockInterviewTurnIdempotencyConflict("initial question key changed")
+                if existing.attempt_status == "contract_failed":
+                    raise MockInterviewContractFailed("mock_interview_unverifiable", existing.id)
+                lease_until = _as_utc(existing.provider_lease_until)
+                if turn.turn_status == "generating_question" and (
+                    lease_until is None or lease_until <= datetime.now(timezone.utc)
+                ):
+                    existing.generation_revision += 1
+                    existing.provider_call_token = _token()
+                    existing.provider_lease_until = _lease_until()
+                    existing.attempt_status = "generating_question"
+                    session.commit()
+                    session.refresh(existing)
+                    session.refresh(turn)
+                    return MockInterviewStartResult(
+                        existing,
+                        turn,
+                        False,
+                        (existing.generation_revision, existing.provider_call_token, existing.transcript_fingerprint),
+                    )
+                session.expunge(existing)
+                session.expunge(turn)
+                return MockInterviewStartResult(existing, turn, False)
+            if case.status != "active":
+                raise ValueError("interview practice case is archived")
+            snapshot = self._build_quick_input_snapshot(case)
+            fingerprint = sha256_text(canonical_json(snapshot))
+            validate_context(
+                context_kind="quick_practice",
+                application_id=None,
+                event_id=None,
+                practice_case_id=case.id,
+            )
+            attempt = MockInterviewAttempt(
+                context_kind="quick_practice",
+                application_id=None,
+                event_id=None,
+                practice_case_id=case.id,
+                resume_id=case.resume_id,
+                jd_version_id=None,
+                idempotency_key=attempt_idempotency_key,
+                input_snapshot_json=canonical_json(snapshot),
+                source_fingerprint=fingerprint,
+                attempt_status="generating_question",
+                generation_revision=1,
+                provider_call_token=_token(),
+                provider_lease_until=_lease_until(),
+                transcript_fingerprint=_transcript_fingerprint([]),
+            )
+            session.add(attempt)
+            session.flush()
+            turn = MockInterviewTurn(
+                attempt_id=attempt.id,
+                turn_no=1,
+                question_idempotency_key=initial_question_idempotency_key,
+                question_source_snapshot_json=canonical_json(_question_source_snapshot(attempt)),
+                turn_status="generating_question",
+            )
+            session.add(turn)
+            session.commit()
+            session.refresh(attempt)
+            session.refresh(turn)
+            return MockInterviewStartResult(
+                attempt,
+                turn,
+                True,
+                (attempt.generation_revision, attempt.provider_call_token, attempt.transcript_fingerprint),
+            )
+
     def claim_question(
         self, attempt_id: int, turn_no: int, question_idempotency_key: str
     ) -> MockInterviewQuestionClaim | None:
         _validate_key(question_idempotency_key, "question_idempotency_key")
+        if turn_no < 1 or turn_no > MAX_INTERVIEW_TURNS:
+            raise ValueError("interview turn limit reached")
         with self._session_factory() as session:
             self._begin_immediate(session)
             attempt = session.get(MockInterviewAttempt, attempt_id)
@@ -673,6 +776,30 @@ class MockInterviewRepository:
     ) -> tuple[MockInterviewAttempt, list[MockInterviewTurn]]:
         return self.feedback_context(attempt_id, application_id, event_id)
 
+    def quick_feedback_context(
+        self, attempt_id: int, practice_case_id: int
+    ) -> tuple[MockInterviewAttempt, list[MockInterviewTurn]]:
+        with self._session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if (
+                attempt is None
+                or attempt.context_kind != "quick_practice"
+                or attempt.practice_case_id != practice_case_id
+            ):
+                raise LookupError("mock interview attempt not found")
+            self._assert_attempt_sources(session, attempt)
+            turns = list(
+                session.scalars(
+                    select(MockInterviewTurn)
+                    .where(MockInterviewTurn.attempt_id == attempt_id)
+                    .order_by(MockInterviewTurn.turn_no.asc())
+                ).all()
+            )
+            session.expunge(attempt)
+            for turn in turns:
+                session.expunge(turn)
+            return attempt, turns
+
     def attempt_context(
         self, attempt_id: int, application_id: int, event_id: int
     ) -> MockInterviewAttempt:
@@ -697,6 +824,26 @@ class MockInterviewRepository:
                 raise LookupError("event not found")
             self._assert_attempt_sources(session, attempt)
             session.expunge(attempt)
+            return attempt
+
+    def quick_attempt_context(self, attempt_id: int, practice_case_id: int) -> MockInterviewAttempt:
+        with self._session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if (
+                attempt is None
+                or attempt.context_kind != "quick_practice"
+                or attempt.practice_case_id != practice_case_id
+            ):
+                raise LookupError("mock interview attempt not found")
+            self._assert_attempt_sources(session, attempt)
+            session.expunge(attempt)
+            return attempt
+
+    def get_attempt(self, attempt_id: int) -> MockInterviewAttempt | None:
+        with self._session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is not None:
+                session.expunge(attempt)
             return attempt
 
     def get_turn(self, attempt_id: int, turn_no: int) -> MockInterviewTurn | None:
@@ -725,17 +872,71 @@ class MockInterviewRepository:
             ):
                 raise LookupError("event not found")
 
+    def discard_quick_attempt(self, practice_case_id: int, attempt_id: int) -> None:
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if (
+                attempt is None
+                or attempt.context_kind != "quick_practice"
+                or attempt.practice_case_id != practice_case_id
+            ):
+                session.commit()
+                return
+            draft_exists = session.scalar(
+                select(MockInterviewReviewDraft.id).where(MockInterviewReviewDraft.attempt_id == attempt_id)
+            )
+            voice_snapshot_exists = session.scalar(
+                select(VoiceCoachingSnapshot.id).where(VoiceCoachingSnapshot.attempt_id == attempt_id)
+            )
+            if draft_exists is not None or voice_snapshot_exists is not None or attempt.attempt_status == "confirmed":
+                raise MockInterviewAttemptConfirmed("mock_interview_attempt_confirmed")
+            session.execute(delete(MockInterviewFeedbackProposal).where(MockInterviewFeedbackProposal.attempt_id == attempt_id))
+            session.execute(delete(MockInterviewTurn).where(MockInterviewTurn.attempt_id == attempt_id))
+            session.delete(attempt)
+            session.commit()
+
     @staticmethod
     def _assert_attempt_sources(session: Session, attempt: MockInterviewAttempt) -> None:
         snapshot = json.loads(attempt.input_snapshot_json)
+        if attempt.context_kind == "quick_practice":
+            case = session.get(InterviewPracticeCase, attempt.practice_case_id)
+            if case is None:
+                raise MockInterviewSourceChanged("mock_interview_source_conflict")
+            try:
+                frozen_resume = _json_object(case.resume_content_snapshot_json)
+            except ValueError as exc:
+                raise MockInterviewSourceChanged("mock_interview_source_conflict") from exc
+            expected = {
+                "position_name": case.position_name_snapshot,
+                "jd": {
+                    "text": case.jd_text_snapshot,
+                    "content_sha256": case.jd_fingerprint_sha256,
+                },
+                "resume": {"title": snapshot.get("resume", {}).get("title", ""), "content_json": frozen_resume},
+            }
+            stored_resume = snapshot.get("resume") if isinstance(snapshot.get("resume"), dict) else {}
+            if (
+                snapshot.get("context_kind") != "quick_practice"
+                or snapshot.get("practice_case_id") != case.id
+                or snapshot.get("position_name") != expected["position_name"]
+                or snapshot.get("jd") != expected["jd"]
+                or stored_resume.get("content_json") != frozen_resume
+            ):
+                raise MockInterviewSourceChanged("mock_interview_source_conflict")
+            return
         jd_snapshot = snapshot.get("jd") if isinstance(snapshot.get("jd"), dict) else {}
         jd_text = str(jd_snapshot.get("text", ""))
         recorded_version_id = snapshot.get("jd_version_id")
+        if attempt.application_id is None or attempt.event_id is None:
+            raise MockInterviewSourceChanged("mock_interview_source_conflict")
+        application_id = attempt.application_id
+        event_id = attempt.event_id
         try:
             current = MockInterviewRepository._build_input_snapshot(
                 session,
-                attempt.application_id,
-                attempt.event_id,
+                application_id,
+                event_id,
                 attempt.resume_id,
                 jd_text,
                 None,
@@ -752,10 +953,30 @@ class MockInterviewRepository:
             raise MockInterviewSourceChanged("mock_interview_source_conflict")
         _assert_preparation_snapshot(
             session,
-            attempt.application_id,
-            attempt.event_id,
+            application_id,
+            event_id,
             snapshot.get("selected_preparation", []),
         )
+
+    @staticmethod
+    def _build_quick_input_snapshot(case: InterviewPracticeCase) -> dict[str, Any]:
+        return {
+            "schema_version": "mock-interview-input-v1",
+            "context_kind": "quick_practice",
+            "practice_case_id": case.id,
+            "position_name": case.position_name_snapshot,
+            "jd": {
+                "text": case.jd_text_snapshot,
+                "content_sha256": case.jd_fingerprint_sha256,
+            },
+            "resume": {
+                "id": case.resume_id,
+                "content_json": _json_object(case.resume_content_snapshot_json),
+                "content_sha256": case.resume_fingerprint_sha256,
+            },
+            "selected_preparation": [],
+            "turns": [],
+        }
 
     def create_or_replay_feedback(
         self,
@@ -824,6 +1045,25 @@ class MockInterviewRepository:
                 session.expunge(row)
             return rows
 
+    def list_quick_feedback_history(
+        self, practice_case_id: int
+    ) -> list[MockInterviewFeedbackProposal]:
+        with self._session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(MockInterviewFeedbackProposal)
+                    .join(MockInterviewAttempt, MockInterviewAttempt.id == MockInterviewFeedbackProposal.attempt_id)
+                    .where(
+                        MockInterviewAttempt.context_kind == "quick_practice",
+                        MockInterviewAttempt.practice_case_id == practice_case_id,
+                    )
+                    .order_by(MockInterviewFeedbackProposal.created_at.desc())
+                ).all()
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
     def history_details(
         self, proposal_id: int
     ) -> tuple[list[MockInterviewTurn], MockInterviewReviewDraft | None]:
@@ -852,6 +1092,12 @@ class MockInterviewRepository:
             attempt = session.get(MockInterviewAttempt, attempt_id)
             if attempt is None:
                 return "source_changed"
+            if attempt.context_kind == "quick_practice":
+                try:
+                    self._assert_attempt_sources(session, attempt)
+                except MockInterviewSourceChanged:
+                    return "source_changed"
+                return "current"
             try:
                 self._assert_attempt_sources(session, attempt)
             except MockInterviewSourceChanged:

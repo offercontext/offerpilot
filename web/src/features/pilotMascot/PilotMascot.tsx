@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { CloseOutlined, MessageOutlined, MinusOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import {
   live2dPilotMascotRuntime,
@@ -7,9 +7,14 @@ import {
   type PilotMascotRuntimeController,
 } from './live2dRuntime';
 import {
+  DEFAULT_PILOT_MASCOT_POSITIONS,
   normalizePilotMascotZoom,
   PILOT_MASCOT_MAX_ZOOM,
   PILOT_MASCOT_MIN_ZOOM,
+  readPilotMascotPositions,
+  resetPilotMascotPosition,
+  type PilotMascotPlacement,
+  type PilotMascotPosition,
 } from './pilotMascotPreference';
 import styles from './PilotMascot.module.css';
 
@@ -28,7 +33,9 @@ interface Props {
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
   notification?: PilotMascotNotification | null;
-  placement?: 'contextual' | 'pilot-page';
+  placement?: 'contextual' | 'pilot-page' | 'interview-studio';
+  position?: PilotMascotPosition;
+  onPositionChange?: (position: PilotMascotPosition) => void;
   runtime?: PilotMascotRuntime;
 }
 
@@ -67,6 +74,8 @@ export default function PilotMascot({
   onZoomChange = () => undefined,
   notification,
   placement = 'contextual',
+  position,
+  onPositionChange,
   runtime = live2dPilotMascotRuntime,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -77,6 +86,16 @@ export default function PilotMascot({
   const latestActivityRef = useRef(activity);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [localPosition, setLocalPosition] = useState<PilotMascotPosition>(() => {
+    const key = placement === 'interview-studio' ? 'interview_studio' : 'normal';
+    return readPilotMascotPositions()[key];
+  });
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window === 'undefined' ? 1440 : window.innerWidth,
+    height: typeof window === 'undefined' ? 900 : window.innerHeight,
+  }));
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; startPosition: PilotMascotPosition; moved: boolean }>();
+  const suppressClickRef = useRef(false);
   latestActivityRef.current = activity;
   const copy = notificationCopy(notification) ?? ACTIVITY_COPY[activity];
   const normalizedZoom = normalizePilotMascotZoom(zoom);
@@ -125,7 +144,7 @@ export default function PilotMascot({
         triggerRef.current?.focus();
       }
     };
-    const dismiss = (event: PointerEvent) => {
+    const dismiss = (event: globalThis.PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
     };
     document.addEventListener('keydown', close);
@@ -146,16 +165,78 @@ export default function PilotMascot({
   const frame = panelOpen ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
   const frameWidth = Math.round(frame.width * normalizedZoom * 10) / 10;
   const frameHeight = Math.round(frame.height * normalizedZoom * 10) / 10;
+  const activePosition = position ?? localPosition;
+  const frameLeft = Math.min(Math.max(activePosition.xRatio * viewport.width - frameWidth / 2, 8), Math.max(8, viewport.width - frameWidth - 8));
+  const frameTop = Math.min(Math.max(activePosition.yRatio * viewport.height - frameHeight / 2, 8), Math.max(8, viewport.height - frameHeight - 8));
+  const studioPlacement = placement === 'interview-studio';
+
+  useEffect(() => {
+    const resize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
+
+  const setPosition = (next: PilotMascotPosition) => {
+    const safe = {
+      xRatio: Math.min(0.98, Math.max(0.02, next.xRatio)),
+      yRatio: Math.min(0.98, Math.max(0.02, next.yRatio)),
+    };
+    setLocalPosition(safe);
+    onPositionChange?.(safe);
+  };
+
+  const finishDrag = (event?: PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    if (event && event.currentTarget.hasPointerCapture(drag.pointerId)) event.currentTarget.releasePointerCapture(drag.pointerId);
+    dragRef.current = undefined;
+    if (drag.moved) {
+      suppressClickRef.current = true;
+      setTimeout(() => { suppressClickRef.current = false; }, 0);
+    }
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, startPosition: activePosition, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) <= 6) return;
+    drag.moved = true;
+    setPosition({ xRatio: drag.startPosition.xRatio + dx / viewport.width, yRatio: drag.startPosition.yRatio + dy / viewport.height });
+  };
+
+  useEffect(() => {
+    const cancel = () => finishDrag();
+    window.addEventListener('blur', cancel);
+    return () => {
+      window.removeEventListener('blur', cancel);
+      finishDrag();
+    };
+  }, []);
+
+  const placementKey: PilotMascotPlacement = studioPlacement ? 'interview_studio' : 'normal';
+  const resetPosition = () => {
+    resetPilotMascotPosition(placementKey);
+    setPosition(DEFAULT_PILOT_MASCOT_POSITIONS[placementKey]);
+    setMenuOpen(false);
+  };
 
   return (
     <aside
       className={`${styles.mascot} ${panelOpen ? styles.compact : ''} ${
         placement === 'pilot-page' ? styles.pilotPage : ''
-      }`}
+      } ${studioPlacement ? styles.interviewStudio : ''} ${dragRef.current?.moved ? styles.dragging : ''}`}
       data-activity={activity}
       data-notification={notification?.status}
       aria-label="Haru Pilot 看板娘"
-      style={{ width: frameWidth, height: frameHeight }}
+      style={{ width: frameWidth, height: frameHeight, left: `${frameLeft}px`, top: `${frameTop}px`, right: 'auto', bottom: 'auto' }}
     >
       {!panelOpen || notification ? (
         <div className={styles.bubble} role="status" aria-live="polite">
@@ -171,7 +252,11 @@ export default function PilotMascot({
         aria-expanded={placement === 'pilot-page' ? undefined : panelOpen}
         aria-haspopup="menu"
         aria-controls={menuOpen ? 'pilot-mascot-menu' : undefined}
-        onClick={onTogglePilot}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(event) => finishDrag(event)}
+        onPointerCancel={(event) => finishDrag(event)}
+        onClick={() => { if (!suppressClickRef.current) onTogglePilot(); }}
         onKeyDown={(event) => {
           if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
             event.preventDefault();
@@ -245,6 +330,19 @@ export default function PilotMascot({
             <CloseOutlined />
             隐藏角色
           </button>
+          <button type="button" role="menuitem" aria-label="恢复默认位置" onClick={resetPosition}>
+            <ReloadOutlined />
+            恢复默认位置
+          </button>
+          <div className={styles.positionPresets} role="group" aria-label="角色位置">
+            {([
+              ['左下', 0.16, 0.82],
+              ['右下', 0.84, 0.82],
+              ['右中', 0.84, 0.52],
+            ] as const).map(([label, xRatio, yRatio]) => (
+              <button key={label} type="button" role="menuitem" onClick={() => { setPosition({ xRatio, yRatio }); setMenuOpen(false); }}>{label}</button>
+            ))}
+          </div>
           <span>可在设置中恢复显示</span>
         </div>
       ) : null}

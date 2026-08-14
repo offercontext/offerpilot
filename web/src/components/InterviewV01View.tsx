@@ -7,6 +7,11 @@ import type { InterviewIndexItem } from '@/types/interviewIndex';
 import type { AdaptivePracticeFocus, AdaptivePracticeRecommendation } from '@/types/adaptiveInterviewPractice';
 import workflowStyles from './ui/WorkflowSurface.module.css';
 import actionStyles from './InterviewNextActionCard.module.css';
+import InterviewReadinessCenter from '@/features/interviewReadiness/InterviewReadinessCenter';
+import type { QuickPracticeStudioContext, RealInterviewStudioContext } from '@/features/interviewReadiness/InterviewReadinessCenter';
+import type { Application } from '@/types/application';
+import type { ScheduleEvent } from '@/types/event';
+import type { Resume } from '@/types/resume';
 
 const { Paragraph, Title } = Typography;
 
@@ -17,9 +22,13 @@ interface Props {
   onOpenStoryLibrary?: (reviewNoteId?: number) => void;
   onOpenAdaptivePractice?: (focus: AdaptivePracticeFocus) => void;
   onOpenVoiceCoachingGrowth?: () => void;
+  applications?: Application[];
+  events?: ScheduleEvent[];
+  resumes?: Resume[];
+  onOpenStudio?: (context: RealInterviewStudioContext | QuickPracticeStudioContext) => void;
 }
 
-export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary, onOpenAdaptivePractice, onOpenVoiceCoachingGrowth }: Props) {
+export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary, onOpenAdaptivePractice, onOpenVoiceCoachingGrowth, applications, events, resumes, onOpenStudio }: Props) {
   const [items, setItems] = useState<InterviewIndexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -49,6 +58,16 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
 
   return (
     <div data-testid="interview-surface" className={`${workflowStyles.surface} op-view-enter`} style={{ padding: 24 }}>
+      {applications !== undefined || events !== undefined || resumes !== undefined || onOpenStudio ? (
+        <InterviewReadinessCenter
+          applications={applications}
+          events={events}
+          resumes={resumes}
+          onOpenApplication={onOpenApplication}
+          onOpenPreparation={onOpenPreparation}
+          onOpenStudio={onOpenStudio}
+        />
+      ) : null}
       <div className="op-section-heading" style={{ marginBottom: 20 }}>
         <div>
           <Title level={3} style={{ margin: 0 }}>面试</Title>

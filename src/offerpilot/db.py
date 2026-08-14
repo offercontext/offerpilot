@@ -75,6 +75,7 @@ def init_database(db_path: Path) -> SessionFactory:
     _ensure_application_outcome_schema(engine)
     _ensure_adaptive_interview_practice_schema(engine)
     _ensure_voice_coaching_schema(engine)
+    _ensure_interview_studio_schema(engine)
     _ensure_offer_negotiation_schema(engine)
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
@@ -1296,6 +1297,198 @@ def _ensure_voice_coaching_schema(engine) -> None:  # type: ignore[no-untyped-de
         "0022_voice_coaching_snapshots",
         "Add immutable user-confirmed local voice coaching snapshots",
     )
+
+
+def _ensure_interview_studio_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Add the dual-context contract used by real and quick interview practice."""
+
+    attempt_columns = _table_info(engine, "mock_interview_attempts")
+    if attempt_columns and (
+        "context_kind" not in attempt_columns
+        or attempt_columns.get("application_id", (None, 0))[1] == 1
+        or attempt_columns.get("event_id", (None, 0))[1] == 1
+    ):
+        _rebuild_mock_interview_attempts_for_context(engine)
+    voice_columns = _table_info(engine, "voice_coaching_snapshots")
+    if voice_columns and (
+        "context_kind" not in voice_columns
+        or voice_columns.get("application_id", (None, 0))[1] == 1
+        or voice_columns.get("event_id", (None, 0))[1] == 1
+    ):
+        _rebuild_voice_coaching_snapshots_for_context(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_mock_interview_attempts_context "
+                "ON mock_interview_attempts(context_kind, practice_case_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_voice_coaching_snapshots_context "
+                "ON voice_coaching_snapshots(context_kind, practice_case_id)"
+            )
+        )
+    _record_migration(
+        engine,
+        "0023_immersive_interview_studio",
+        "Add immutable quick-practice cases and dual interview contexts",
+    )
+
+
+def _table_info(engine, table: str) -> dict[str, tuple[str, int]]:  # type: ignore[no-untyped-def]
+    with engine.connect() as conn:
+        return {
+            str(row[1]): (str(row[2]), int(row[3]))
+            for row in conn.execute(text(f"PRAGMA table_info({table})"))
+        }
+
+
+def _rebuild_mock_interview_attempts_for_context(engine) -> None:  # type: ignore[no-untyped-def]
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE mock_interview_attempts_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_kind VARCHAR NOT NULL DEFAULT 'application_event',
+                application_id INTEGER,
+                event_id INTEGER,
+                practice_case_id INTEGER REFERENCES interview_practice_cases(id) ON DELETE RESTRICT,
+                resume_id INTEGER NOT NULL,
+                jd_version_id INTEGER,
+                idempotency_key VARCHAR NOT NULL,
+                input_snapshot_json TEXT NOT NULL,
+                source_fingerprint VARCHAR NOT NULL,
+                attempt_status VARCHAR NOT NULL,
+                generation_revision INTEGER NOT NULL DEFAULT 1,
+                provider_call_token VARCHAR NOT NULL DEFAULT '',
+                provider_lease_until DATETIME,
+                current_turn_no INTEGER NOT NULL DEFAULT 0,
+                transcript_fingerprint VARCHAR NOT NULL,
+                failure_category VARCHAR NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                cancelled_at DATETIME,
+                CONSTRAINT uq_mock_interview_attempts_context_key
+                    UNIQUE (context_kind, application_id, event_id, practice_case_id, idempotency_key),
+                CONSTRAINT ck_mock_interview_attempt_context CHECK (
+                    (context_kind = 'application_event' AND application_id IS NOT NULL AND event_id IS NOT NULL AND practice_case_id IS NULL)
+                    OR (context_kind = 'quick_practice' AND application_id IS NULL AND event_id IS NULL AND practice_case_id IS NOT NULL)
+                )
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            INSERT INTO mock_interview_attempts_new (
+                id, context_kind, application_id, event_id, practice_case_id,
+                resume_id, jd_version_id, idempotency_key, input_snapshot_json,
+                source_fingerprint, attempt_status, generation_revision,
+                provider_call_token, provider_lease_until, current_turn_no,
+                transcript_fingerprint, failure_category, created_at, completed_at,
+                cancelled_at
+            )
+            SELECT id, 'application_event', application_id, event_id, NULL,
+                   resume_id, jd_version_id, idempotency_key, input_snapshot_json,
+                   source_fingerprint, attempt_status, generation_revision,
+                   provider_call_token, provider_lease_until, current_turn_no,
+                   transcript_fingerprint, failure_category, created_at, completed_at,
+                   cancelled_at
+            FROM mock_interview_attempts
+            """
+        )
+        conn.exec_driver_sql("DROP TABLE mock_interview_attempts")
+        conn.exec_driver_sql("ALTER TABLE mock_interview_attempts_new RENAME TO mock_interview_attempts")
+        conn.exec_driver_sql(
+            "CREATE INDEX idx_mock_interview_attempts_event "
+            "ON mock_interview_attempts(application_id, event_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX idx_mock_interview_attempts_context "
+            "ON mock_interview_attempts(context_kind, practice_case_id)"
+        )
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+        conn.commit()
+
+
+def _rebuild_voice_coaching_snapshots_for_context(engine) -> None:  # type: ignore[no-untyped-def]
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE voice_coaching_snapshots_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id INTEGER NOT NULL REFERENCES mock_interview_attempts(id) ON DELETE CASCADE,
+                turn_id INTEGER NOT NULL REFERENCES mock_interview_turns(id) ON DELETE CASCADE,
+                context_kind VARCHAR NOT NULL DEFAULT 'application_event',
+                application_id INTEGER,
+                event_id INTEGER,
+                practice_case_id INTEGER REFERENCES interview_practice_cases(id) ON DELETE RESTRICT,
+                idempotency_key VARCHAR NOT NULL,
+                request_fingerprint_sha256 VARCHAR NOT NULL,
+                question_text_snapshot TEXT NOT NULL,
+                confirmed_answer_text_snapshot TEXT NOT NULL,
+                answer_sha256 VARCHAR NOT NULL,
+                measurement_source VARCHAR NOT NULL DEFAULT 'local_browser_measurement',
+                total_duration_ms INTEGER NOT NULL,
+                voiced_duration_ms INTEGER NOT NULL,
+                pause_count INTEGER NOT NULL,
+                longest_pause_ms INTEGER NOT NULL,
+                speech_rate_cpm INTEGER,
+                filler_occurrences_json TEXT NOT NULL DEFAULT '[]',
+                reflection_text TEXT NOT NULL DEFAULT '',
+                focus_kind VARCHAR,
+                origin_snapshot_id INTEGER REFERENCES voice_coaching_snapshots_new(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_voice_coaching_snapshots_turn UNIQUE (turn_id),
+                CONSTRAINT uq_voice_coaching_snapshots_key UNIQUE (idempotency_key),
+                CONSTRAINT ck_voice_coaching_snapshot_context CHECK (
+                    (context_kind = 'application_event' AND application_id IS NOT NULL AND event_id IS NOT NULL AND practice_case_id IS NULL)
+                    OR (context_kind = 'quick_practice' AND application_id IS NULL AND event_id IS NULL AND practice_case_id IS NOT NULL)
+                )
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            INSERT INTO voice_coaching_snapshots_new (
+                id, attempt_id, turn_id, context_kind, application_id, event_id,
+                practice_case_id, idempotency_key, request_fingerprint_sha256,
+                question_text_snapshot, confirmed_answer_text_snapshot, answer_sha256,
+                measurement_source, total_duration_ms, voiced_duration_ms, pause_count,
+                longest_pause_ms, speech_rate_cpm, filler_occurrences_json,
+                reflection_text, focus_kind, origin_snapshot_id, created_at
+            )
+            SELECT id, attempt_id, turn_id, 'application_event', application_id, event_id,
+                   NULL, idempotency_key, request_fingerprint_sha256,
+                   question_text_snapshot, confirmed_answer_text_snapshot, answer_sha256,
+                   measurement_source, total_duration_ms, voiced_duration_ms, pause_count,
+                   longest_pause_ms, speech_rate_cpm, filler_occurrences_json,
+                   reflection_text, focus_kind, origin_snapshot_id, created_at
+            FROM voice_coaching_snapshots
+            """
+        )
+        conn.exec_driver_sql("DROP TABLE voice_coaching_snapshots")
+        conn.exec_driver_sql("ALTER TABLE voice_coaching_snapshots_new RENAME TO voice_coaching_snapshots")
+        conn.exec_driver_sql(
+            "CREATE INDEX idx_voice_coaching_snapshots_created "
+            "ON voice_coaching_snapshots(created_at, id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX idx_voice_coaching_snapshots_application_event "
+            "ON voice_coaching_snapshots(application_id, event_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX idx_voice_coaching_snapshots_attempt "
+            "ON voice_coaching_snapshots(attempt_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX idx_voice_coaching_snapshots_context "
+            "ON voice_coaching_snapshots(context_kind, practice_case_id)"
+        )
+        conn.commit()
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 def _ensure_column(engine, table: str, column: str, definition: str) -> bool:  # type: ignore[no-untyped-def]

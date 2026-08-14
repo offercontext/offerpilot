@@ -131,3 +131,114 @@ def test_0016_preserves_formal_interview_notes_but_creates_no_legacy_mock_data(t
     with factory() as session:
         assert session.execute(text("SELECT COUNT(*) FROM interview_notes WHERE id = 1")).scalar_one() == 1
         assert session.execute(text("SELECT COUNT(*) FROM mock_interview_attempts")).scalar_one() == 0
+
+
+def test_0023_rebuilds_legacy_attempt_and_voice_rows_without_losing_history(tmp_path):
+    path = tmp_path / "legacy-interview-studio.db"
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE mock_interview_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                application_id INTEGER NOT NULL,
+                event_id INTEGER NOT NULL,
+                resume_id INTEGER NOT NULL,
+                jd_version_id INTEGER,
+                idempotency_key VARCHAR NOT NULL,
+                input_snapshot_json TEXT NOT NULL,
+                source_fingerprint VARCHAR NOT NULL,
+                attempt_status VARCHAR NOT NULL,
+                generation_revision INTEGER NOT NULL DEFAULT 1,
+                provider_call_token VARCHAR NOT NULL DEFAULT '',
+                provider_lease_until DATETIME,
+                current_turn_no INTEGER NOT NULL DEFAULT 0,
+                transcript_fingerprint VARCHAR NOT NULL,
+                failure_category VARCHAR NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                cancelled_at DATETIME
+            );
+            CREATE TABLE mock_interview_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id INTEGER NOT NULL,
+                turn_no INTEGER NOT NULL,
+                question_idempotency_key VARCHAR NOT NULL,
+                turn_idempotency_key VARCHAR NOT NULL DEFAULT '',
+                question_text TEXT NOT NULL DEFAULT '',
+                answer_text TEXT NOT NULL DEFAULT '',
+                question_source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                answer_sha256 VARCHAR NOT NULL DEFAULT '',
+                turn_status VARCHAR NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE voice_coaching_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id INTEGER NOT NULL,
+                turn_id INTEGER NOT NULL,
+                application_id INTEGER NOT NULL,
+                event_id INTEGER NOT NULL,
+                idempotency_key VARCHAR NOT NULL,
+                request_fingerprint_sha256 VARCHAR NOT NULL,
+                question_text_snapshot TEXT NOT NULL,
+                confirmed_answer_text_snapshot TEXT NOT NULL,
+                answer_sha256 VARCHAR NOT NULL,
+                measurement_source VARCHAR NOT NULL DEFAULT 'local_browser_measurement',
+                total_duration_ms INTEGER NOT NULL,
+                voiced_duration_ms INTEGER NOT NULL,
+                pause_count INTEGER NOT NULL,
+                longest_pause_ms INTEGER NOT NULL,
+                speech_rate_cpm INTEGER,
+                filler_occurrences_json TEXT NOT NULL DEFAULT '[]',
+                reflection_text TEXT NOT NULL DEFAULT '',
+                focus_kind VARCHAR,
+                origin_snapshot_id INTEGER,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO mock_interview_attempts (
+                id, application_id, event_id, resume_id, idempotency_key,
+                input_snapshot_json, source_fingerprint, attempt_status,
+                transcript_fingerprint
+            ) VALUES (
+                10, 7, 8, 9, 'legacy-attempt-key', '{}', 'legacy-source',
+                'completed', 'legacy-transcript'
+            );
+            INSERT INTO mock_interview_turns (
+                id, attempt_id, turn_no, question_idempotency_key,
+                question_text, answer_text, turn_status
+            ) VALUES (
+                20, 10, 1, 'legacy-question-key', '旧问题', '旧回答', 'answered'
+            );
+            INSERT INTO voice_coaching_snapshots (
+                id, attempt_id, turn_id, application_id, event_id,
+                idempotency_key, request_fingerprint_sha256, question_text_snapshot,
+                confirmed_answer_text_snapshot, answer_sha256, total_duration_ms,
+                voiced_duration_ms, pause_count, longest_pause_ms
+            ) VALUES (
+                30, 10, 20, 7, 8, 'legacy-voice-key', 'legacy-voice-fingerprint',
+                '旧问题', '旧回答', 'legacy-answer-sha', 1000, 800, 1, 200
+            );
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    factory = init_database(path)
+
+    with factory() as session:
+        attempt = session.execute(
+            text(
+                "SELECT context_kind, application_id, event_id, practice_case_id, "
+                "idempotency_key, attempt_status FROM mock_interview_attempts WHERE id = 10"
+            )
+        ).one()
+        assert tuple(attempt) == ("application_event", 7, 8, None, "legacy-attempt-key", "completed")
+        snapshot = session.execute(
+            text(
+                "SELECT context_kind, application_id, event_id, practice_case_id, "
+                "idempotency_key, confirmed_answer_text_snapshot "
+                "FROM voice_coaching_snapshots WHERE id = 30"
+            )
+        ).one()
+        assert tuple(snapshot) == ("application_event", 7, 8, None, "legacy-voice-key", "旧回答")

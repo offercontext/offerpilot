@@ -9,6 +9,9 @@
   transition: width 220ms ease, height 220ms ease, bottom 220ms ease;
 }
 
+.interviewStudio { z-index: 1300; pointer-events: auto; }
+.dragging .characterButton { cursor: grabbing; user-select: none; }
+
 .characterButton {
   position: absolute;
   inset: 0;
@@ -179,6 +182,10 @@
 .contextMenu button:active:not(:disabled) { transform: scale(0.96); }
 .contextMenu button:disabled { cursor: not-allowed; opacity: 0.38; }
 .contextMenu > span { display: block; padding: 4px 10px 7px; color: var(--op-muted); font-size: 11px; }
+
+.positionPresets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--op-border) 78%, transparent); }
+.positionPresets button { min-height: 36px; border: 0; border-radius: 7px; background: color-mix(in srgb, var(--op-primary) 6%, var(--op-surface)); color: var(--op-ink); cursor: pointer; font-size: 11px; }
+.positionPresets button:hover, .positionPresets button:focus-visible { background: color-mix(in srgb, var(--op-primary) 12%, var(--op-surface)); }
 
 .zoomHeading {
   min-height: 32px;

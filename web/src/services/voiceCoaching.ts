@@ -4,6 +4,7 @@ import type {
   VoiceCoachingTrends,
 } from '@/types/voiceCoaching';
 import { createApiClient } from './http';
+import type { InterviewStudioContext } from './mockInterviews';
 
 const http = createApiClient({ baseURL: '/api' });
 
@@ -14,6 +15,17 @@ function turnPath(input: {
   turnNo: number;
 }): string {
   return `/applications/${input.applicationId}/events/${input.eventId}/mock-interview/attempts/${input.attemptId}/turns/${input.turnNo}/voice-coaching-snapshot`;
+}
+
+function studioTurnPath(input: {
+  context: InterviewStudioContext;
+  attemptId: number;
+  turnNo: number;
+}): string {
+  const prefix = input.context.kind === 'quick_practice'
+    ? `/interview-practice-cases/${input.context.caseId}`
+    : `/applications/${input.context.applicationId}/events/${input.context.eventId}`;
+  return `${prefix}/mock-interview/attempts/${input.attemptId}/turns/${input.turnNo}/voice-coaching-snapshot`;
 }
 
 export async function saveVoiceCoachingSnapshot(input: {
@@ -35,6 +47,25 @@ export async function getVoiceCoachingSnapshot(input: {
   turnNo: number;
 }): Promise<VoiceCoachingSnapshot> {
   const { data } = await http.get<VoiceCoachingSnapshot>(turnPath(input));
+  return data;
+}
+
+export async function saveInterviewStudioVoiceCoachingSnapshot(input: {
+  context: InterviewStudioContext;
+  attemptId: number;
+  turnNo: number;
+  payload: VoiceCoachingSnapshotCreate;
+}): Promise<VoiceCoachingSnapshot> {
+  const { data } = await http.post<VoiceCoachingSnapshot>(studioTurnPath(input), input.payload);
+  return data;
+}
+
+export async function getInterviewStudioVoiceCoachingSnapshot(input: {
+  context: InterviewStudioContext;
+  attemptId: number;
+  turnNo: number;
+}): Promise<VoiceCoachingSnapshot> {
+  const { data } = await http.get<VoiceCoachingSnapshot>(studioTurnPath(input));
   return data;
 }
 

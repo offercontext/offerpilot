@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from offerpilot.models import (
     Application,
     ApplicationEvent,
+    InterviewPracticeCase,
     MockInterviewAttempt,
     MockInterviewTurn,
     VoiceCoachingSnapshot,
@@ -159,6 +160,117 @@ class VoiceCoachingRepository:
             session.refresh(snapshot)
             return _snapshot_json(session, snapshot), True
 
+    def create_or_replay_quick(
+        self,
+        *,
+        practice_case_id: int,
+        attempt_id: int,
+        turn_no: int,
+        idempotency_key: str,
+        total_duration_ms: int,
+        voiced_duration_ms: int,
+        pause_count: int,
+        longest_pause_ms: int,
+        speech_rate_cpm: int | None,
+        filler_occurrences: list[dict[str, Any]],
+        reflection_text: str,
+        focus_kind: str | None,
+        origin_snapshot_id: int | None,
+    ) -> tuple[dict[str, Any], bool]:
+        if not isinstance(idempotency_key, str) or _IDEMPOTENCY_KEY.fullmatch(idempotency_key) is None:
+            raise VoiceCoachingValidationError("voice coaching idempotency key is invalid")
+        validated = _validate_measurements(
+            total_duration_ms=total_duration_ms,
+            voiced_duration_ms=voiced_duration_ms,
+            pause_count=pause_count,
+            longest_pause_ms=longest_pause_ms,
+            speech_rate_cpm=speech_rate_cpm,
+            filler_occurrences=filler_occurrences,
+            reflection_text=reflection_text,
+            focus_kind=focus_kind,
+        )
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            attempt, turn = _owned_quick_turn(
+                session,
+                practice_case_id=practice_case_id,
+                attempt_id=attempt_id,
+                turn_no=turn_no,
+            )
+            answer = turn.answer_text.strip()
+            if turn.turn_status != "answered" or not answer:
+                raise VoiceCoachingValidationError("voice coaching turn must be answered")
+            fillers = _validate_fillers(validated["filler_occurrences"], answer)
+            if origin_snapshot_id is not None:
+                _bounded_int("origin_snapshot_id", origin_snapshot_id, minimum=1)
+                origin = session.get(VoiceCoachingSnapshot, origin_snapshot_id)
+                if origin is None or not _snapshot_source_available(session, origin):
+                    raise VoiceCoachingValidationError("voice coaching origin snapshot is unavailable")
+            answer_sha256 = sha256_text(answer)
+            request_fingerprint = sha256_text(
+                canonical_json(
+                    {
+                        "context_kind": "quick_practice",
+                        "practice_case_id": practice_case_id,
+                        "attempt_id": attempt.id,
+                        "turn_id": turn.id,
+                        "turn_no": turn.turn_no,
+                        "answer_sha256": answer_sha256,
+                        **validated,
+                        "filler_occurrences": fillers,
+                        "origin_snapshot_id": origin_snapshot_id,
+                    }
+                )
+            )
+            replay = session.scalar(
+                select(VoiceCoachingSnapshot).where(VoiceCoachingSnapshot.idempotency_key == idempotency_key)
+            )
+            if replay is not None:
+                if replay.request_fingerprint_sha256 != request_fingerprint:
+                    raise VoiceCoachingConflict("voice coaching idempotency input changed")
+                return _snapshot_json(session, replay), False
+            existing_turn = session.scalar(
+                select(VoiceCoachingSnapshot).where(VoiceCoachingSnapshot.turn_id == turn.id)
+            )
+            if existing_turn is not None:
+                raise VoiceCoachingConflict("voice coaching snapshot exists for turn")
+            snapshot = VoiceCoachingSnapshot(
+                attempt_id=attempt.id,
+                turn_id=turn.id,
+                context_kind="quick_practice",
+                application_id=None,
+                event_id=None,
+                practice_case_id=practice_case_id,
+                idempotency_key=idempotency_key,
+                request_fingerprint_sha256=request_fingerprint,
+                question_text_snapshot=turn.question_text,
+                confirmed_answer_text_snapshot=answer,
+                answer_sha256=answer_sha256,
+                measurement_source="local_browser_measurement",
+                total_duration_ms=validated["total_duration_ms"],
+                voiced_duration_ms=validated["voiced_duration_ms"],
+                pause_count=validated["pause_count"],
+                longest_pause_ms=validated["longest_pause_ms"],
+                speech_rate_cpm=validated["speech_rate_cpm"],
+                filler_occurrences_json=canonical_json(fillers),
+                reflection_text=validated["reflection_text"],
+                focus_kind=validated["focus_kind"],
+                origin_snapshot_id=origin_snapshot_id,
+            )
+            session.add(snapshot)
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                replay = session.scalar(
+                    select(VoiceCoachingSnapshot).where(VoiceCoachingSnapshot.idempotency_key == idempotency_key)
+                )
+                if replay is not None and replay.request_fingerprint_sha256 == request_fingerprint:
+                    return _snapshot_json(session, replay), False
+                raise VoiceCoachingConflict("voice coaching snapshot exists for turn") from exc
+            session.refresh(snapshot)
+            return _snapshot_json(session, snapshot), True
+
     def get_for_turn(
         self, *, application_id: int, event_id: int, attempt_id: int, turn_no: int
     ) -> dict[str, Any] | None:
@@ -167,6 +279,21 @@ class VoiceCoachingRepository:
                 session,
                 application_id=application_id,
                 event_id=event_id,
+                attempt_id=attempt_id,
+                turn_no=turn_no,
+            )
+            snapshot = session.scalar(
+                select(VoiceCoachingSnapshot).where(VoiceCoachingSnapshot.turn_id == turn.id)
+            )
+            return _snapshot_json(session, snapshot) if snapshot is not None else None
+
+    def get_for_quick_turn(
+        self, *, practice_case_id: int, attempt_id: int, turn_no: int
+    ) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            _attempt, turn = _owned_quick_turn(
+                session,
+                practice_case_id=practice_case_id,
                 attempt_id=attempt_id,
                 turn_no=turn_no,
             )
@@ -318,7 +445,43 @@ def _owned_turn(
     return attempt, turn
 
 
+def _owned_quick_turn(
+    session: Session,
+    *,
+    practice_case_id: int,
+    attempt_id: int,
+    turn_no: int,
+) -> tuple[MockInterviewAttempt, MockInterviewTurn]:
+    case = session.get(InterviewPracticeCase, practice_case_id)
+    attempt = session.get(MockInterviewAttempt, attempt_id)
+    if (
+        case is None
+        or attempt is None
+        or attempt.context_kind != "quick_practice"
+        or attempt.practice_case_id != practice_case_id
+    ):
+        raise VoiceCoachingNotFound()
+    turn = session.scalar(
+        select(MockInterviewTurn).where(
+            MockInterviewTurn.attempt_id == attempt_id,
+            MockInterviewTurn.turn_no == turn_no,
+        )
+    )
+    if turn is None:
+        raise VoiceCoachingNotFound()
+    return attempt, turn
+
+
 def _snapshot_source_available(session: Session, row: VoiceCoachingSnapshot) -> bool:
+    if row.context_kind == "quick_practice":
+        case = session.get(InterviewPracticeCase, row.practice_case_id)
+        attempt = session.get(MockInterviewAttempt, row.attempt_id)
+        return bool(
+            case is not None
+            and attempt is not None
+            and attempt.context_kind == "quick_practice"
+            and attempt.practice_case_id == row.practice_case_id
+        )
     application = session.get(Application, row.application_id)
     event = session.get(ApplicationEvent, row.event_id)
     return bool(
@@ -331,7 +494,7 @@ def _snapshot_source_available(session: Session, row: VoiceCoachingSnapshot) -> 
 
 
 def _snapshot_json(session: Session, row: VoiceCoachingSnapshot) -> dict[str, Any]:
-    application = session.get(Application, row.application_id)
+    application = session.get(Application, row.application_id) if row.application_id is not None else None
     source_available = _snapshot_source_available(session, row)
     try:
         fillers = json.loads(row.filler_occurrences_json)
@@ -341,8 +504,10 @@ def _snapshot_json(session: Session, row: VoiceCoachingSnapshot) -> dict[str, An
         "id": row.id,
         "attempt_id": row.attempt_id,
         "turn_id": row.turn_id,
+        "context_kind": row.context_kind,
         "application_id": row.application_id,
         "event_id": row.event_id,
+        "practice_case_id": row.practice_case_id,
         "question_text": row.question_text_snapshot,
         "confirmed_answer_text": row.confirmed_answer_text_snapshot,
         "answer_sha256": row.answer_sha256,

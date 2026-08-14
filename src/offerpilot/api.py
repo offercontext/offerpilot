@@ -175,6 +175,11 @@ from offerpilot.repositories.interview_knowledge_capture import (
     InterviewKnowledgeValidationError,
 )
 from offerpilot.repositories.interview_index import InterviewIndexRepository
+from offerpilot.repositories.interview_practice_cases import (
+    InterviewPracticeCaseIdempotencyConflict,
+    InterviewPracticeCaseRepository,
+    InterviewPracticeCaseValidationError,
+)
 from offerpilot.repositories.interview_stories import (
     InterviewStoriesRepository,
     StoryCasConflictError,
@@ -751,17 +756,16 @@ def _mock_interview_proposal_json(record: Any) -> dict[str, Any]:
 def _mock_interview_history_json(repository: Any, row: Any) -> dict[str, Any]:
     turns, draft = repository.history_details(row.id)
     source_status = repository.source_status(row.attempt_id)
+    attempt = repository.get_attempt(row.attempt_id)
     return {
         **_mock_interview_proposal_json(row),
         "attempt_id": row.attempt_id,
+        **(_mock_interview_attempt_context_json(attempt) if attempt is not None else {}),
         "source_fingerprint": row.source_fingerprint,
         "transcript_fingerprint": row.transcript_fingerprint,
         "created_at": row.created_at.isoformat(),
         "source_status": source_status,
-        "turns": [
-            {"turn_no": turn.turn_no, "question": turn.question_text, "answer": turn.answer_text}
-            for turn in turns
-        ],
+        "turns": [_mock_interview_turn_json(turn, turns) for turn in turns],
         "review_draft": (
             {
                 "draft_id": draft.id,
@@ -782,6 +786,70 @@ def _mock_interview_retry_after_ms(attempt: Any) -> int:
         lease_until = lease_until.replace(tzinfo=timezone.utc)
     remaining = int((lease_until - datetime.now(timezone.utc)).total_seconds() * 1000)
     return max(250, min(5000, remaining))
+
+
+def _interview_practice_case_json(case: Any) -> dict[str, Any]:
+    return {
+        "id": case.id,
+        "idempotency_key": case.idempotency_key,
+        "position_name_snapshot": case.position_name_snapshot,
+        "jd_text_snapshot": case.jd_text_snapshot,
+        "jd_fingerprint_sha256": case.jd_fingerprint_sha256,
+        "resume_id": case.resume_id,
+        "resume_content_snapshot": json.loads(case.resume_content_snapshot_json),
+        "resume_fingerprint_sha256": case.resume_fingerprint_sha256,
+        "status": case.status,
+        "source_status": "current",
+        "created_at": case.created_at.isoformat() if case.created_at else None,
+        "archived_at": case.archived_at.isoformat() if case.archived_at else None,
+    }
+
+
+def _mock_interview_attempt_context_json(attempt: Any) -> dict[str, Any]:
+    return {
+        "context_kind": attempt.context_kind,
+        "application_id": attempt.application_id,
+        "event_id": attempt.event_id,
+        "practice_case_id": attempt.practice_case_id,
+    }
+
+
+def _mock_interview_turn_json(turn: Any, turns: list[Any]) -> dict[str, Any]:
+    """Expose bounded follow-up metadata while keeping old turns readable."""
+    if turn.turn_no == 1:
+        question_kind = "new_topic"
+        parent_turn_no = None
+        topic_root_turn_no = 1
+        basis_refs = []
+    else:
+        previous = next((item for item in turns if item.turn_no == turn.turn_no - 1), None)
+        previous_answer = previous.answer_text if previous is not None else ""
+        question_kind = "follow_up" if previous_answer.strip() else "new_topic"
+        parent_turn_no = turn.turn_no - 1 if question_kind == "follow_up" else None
+        topic_root_turn_no = 1 if question_kind == "follow_up" else turn.turn_no
+        basis_refs = (
+            [{"source": "turn", "path": f"/turns/{turn.turn_no - 1:03d}/answer", "excerpt": previous_answer[:160]}]
+            if question_kind == "follow_up" and previous_answer.strip()
+            else []
+        )
+    return {
+        "turn_no": turn.turn_no,
+        "question": turn.question_text,
+        "answer": turn.answer_text,
+        "question_kind": question_kind,
+        "parent_turn_no": parent_turn_no,
+        "topic_root_turn_no": topic_root_turn_no,
+        "basis_refs": basis_refs,
+    }
+
+
+def _mock_interview_live_turn_json(repository: Any, turn: Any) -> dict[str, Any]:
+    turns = [turn]
+    if turn.turn_no > 1:
+        previous = repository.get_turn(turn.attempt_id, turn.turn_no - 1)
+        if previous is not None:
+            turns.insert(0, previous)
+    return _mock_interview_turn_json(turn, turns)
 
 
 def _log_mock_interview_ai_failure(
@@ -851,6 +919,7 @@ def create_app(
     interview_index = InterviewIndexRepository(session_factory)
     interview_stories = InterviewStoriesRepository(session_factory)
     mock_interviews = MockInterviewRepository(session_factory)
+    interview_practice_cases = InterviewPracticeCaseRepository(session_factory)
     mock_interview_review_drafts = MockInterviewReviewDraftRepository(session_factory)
     voice_coaching = VoiceCoachingRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
@@ -5406,6 +5475,155 @@ def create_app(
         chat.delete_conversation(conversation_id)
         return {"status": "deleted"}
 
+    @app.post("/api/interview-practice-cases")
+    def create_interview_practice_case(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        try:
+            raw_resume_id = payload["resume_id"]
+            if type(raw_resume_id) is not int or raw_resume_id <= 0:
+                raise InterviewPracticeCaseValidationError("resume_id must be a positive integer")
+            case, created = interview_practice_cases.create_or_replay(
+                idempotency_key=str(payload["idempotency_key"]),
+                position_name=payload["position_name"],
+                jd_text=payload["jd_text"],
+                resume_id=raw_resume_id,
+            )
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}", code="interview_practice_case_invalid_payload")
+        except InterviewPracticeCaseIdempotencyConflict:
+            return error_response(409, "本次快速练习内容已变化，请重新确认。", code="interview_practice_case_idempotency_conflict")
+        except InterviewPracticeCaseValidationError as exc:
+            return error_response(422, str(exc), code="interview_practice_case_invalid_payload")
+        return JSONResponse(_interview_practice_case_json(case), status_code=201 if created else 200)
+
+    @app.get("/api/interview-practice-cases")
+    def list_interview_practice_cases(
+        limit: int = Query(50, ge=1, le=200), before_id: int | None = Query(None, ge=1)
+    ) -> JSONResponse:
+        try:
+            items = interview_practice_cases.list(limit=limit, before_id=before_id)
+        except InterviewPracticeCaseValidationError as exc:
+            return error_response(422, str(exc), code="interview_practice_case_invalid_payload")
+        return JSONResponse({"items": [_interview_practice_case_json(item) for item in items]})
+
+    @app.get("/api/interview-practice-cases/{case_id}")
+    def get_interview_practice_case(case_id: int) -> JSONResponse:
+        case = interview_practice_cases.get(case_id)
+        if case is None:
+            return error_response(404, "快速练习档案不存在。", code="interview_practice_case_not_found")
+        return JSONResponse(_interview_practice_case_json(case))
+
+    @app.post("/api/interview-practice-cases/{case_id}/archive")
+    def archive_interview_practice_case(case_id: int) -> JSONResponse:
+        try:
+            case = interview_practice_cases.archive(case_id)
+        except InterviewPracticeCaseValidationError:
+            return error_response(404, "快速练习档案不存在。", code="interview_practice_case_not_found")
+        return JSONResponse(_interview_practice_case_json(case))
+
+    @app.post("/api/interview-practice-cases/{case_id}/mock-interview/attempts")
+    def start_quick_practice_attempt(
+        case_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        try:
+            result = mock_interviews.create_or_replay_quick_start(
+                practice_case_id=case_id,
+                attempt_idempotency_key=str(payload["attempt_idempotency_key"]),
+                initial_question_idempotency_key=str(payload["initial_question_idempotency_key"]),
+            )
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}", code="interview_practice_case_invalid_payload")
+        except LookupError:
+            return error_response(404, "快速练习档案不存在。", code="interview_practice_case_not_found")
+        except MockInterviewIdempotencyConflict:
+            return error_response(409, "attempt key belongs to another context", code="mock_interview_idempotency_conflict")
+        except MockInterviewTurnIdempotencyConflict:
+            return error_response(409, "快速练习请求 key 已对应其他题目。", code="mock_interview_turn_idempotency_conflict")
+        except MockInterviewContractFailed as exc:
+            return error_response(502, "AI 输出未通过验证，请使用原尝试恢复。", code="mock_interview_unverifiable", details={"attempt_id": exc.attempt_id} if exc.attempt_id else None)
+        except ValueError as exc:
+            return error_response(409 if "archived" in str(exc) else 422, str(exc), code="mock_interview_context_mismatch" if "archived" not in str(exc) else "interview_practice_case_not_found")
+
+        if result.question_claim is None and result.turn.turn_status == "generating_question":
+            return JSONResponse(
+                {
+                    "attempt_id": result.attempt.id,
+                    "attempt_status": result.attempt.attempt_status,
+                    "generation_revision": result.attempt.generation_revision,
+                    "retry_after_ms": _mock_interview_retry_after_ms(result.attempt),
+                    **_mock_interview_attempt_context_json(result.attempt),
+                },
+                status_code=202,
+            )
+        if result.question_claim is None:
+            return JSONResponse(
+                {
+                    "attempt_id": result.attempt.id,
+                    "attempt_status": result.attempt.attempt_status,
+                    "generation_revision": result.attempt.generation_revision,
+                    **_mock_interview_attempt_context_json(result.attempt),
+                    "turn": _mock_interview_live_turn_json(mock_interviews, result.turn),
+                }
+            )
+        revision, provider_token, transcript_fingerprint = result.question_claim
+        try:
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(configured_model, JSONResponse):
+                raise MockInterviewProviderError("mock_interview_provider_error")
+            question = generate_question(
+                configured_model,
+                provider_mock_interview_snapshot(result.attempt),
+                [],
+            )
+            completed = mock_interviews.complete_question(
+                result.attempt.id,
+                1,
+                revision,
+                provider_token,
+                transcript_fingerprint,
+                question,
+            )
+            if completed is None:
+                return error_response(409, "快速练习回答状态已变化。", code="mock_interview_context_mismatch")
+            current = mock_interviews.get_turn(result.attempt.id, 1)
+            assert current is not None
+            return JSONResponse(
+                {
+                    "attempt_id": completed.id,
+                    "attempt_status": completed.attempt_status,
+                    "generation_revision": completed.generation_revision,
+                    **_mock_interview_attempt_context_json(completed),
+                    "turn": _mock_interview_live_turn_json(mock_interviews, current),
+                },
+                status_code=201 if result.created else 200,
+            )
+        except MockInterviewProviderError as exc:
+            _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=result.attempt.id, stage="question", kind="provider", diagnostic=exc.diagnostic)
+            mock_interviews.mark_provider_unknown(result.attempt.id, revision, provider_token, "question")
+            return error_response(502, "下一题结果待确认，请使用原 key 恢复。", code="mock_interview_question_result_unknown", details={"attempt_id": result.attempt.id})
+        except MockInterviewUnverifiableError as exc:
+            _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=result.attempt.id, stage="question", kind="contract", diagnostic=exc.diagnostic)
+            mock_interviews.mark_contract_failure(result.attempt.id, revision, provider_token, exc.category, "contract_failed")
+            return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": result.attempt.id})
+
+    @app.get(
+        "/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}"
+    )
+    def get_quick_practice_attempt(case_id: int, attempt_id: int) -> JSONResponse:
+        try:
+            attempt, turns = mock_interviews.quick_feedback_context(attempt_id, case_id)
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        except LookupError:
+            return error_response(404, "快速练习尝试不存在。", code="mock_interview_context_mismatch")
+        return JSONResponse({
+            "attempt_id": attempt.id,
+            "attempt_status": attempt.attempt_status,
+            "current_turn_no": attempt.current_turn_no,
+            "generation_revision": attempt.generation_revision,
+            **_mock_interview_attempt_context_json(attempt),
+            "turns": [_mock_interview_turn_json(turn, turns) for turn in turns],
+        })
+
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
     )
@@ -5496,11 +5714,7 @@ def create_app(
                 "attempt_id": result.attempt.id,
                 "attempt_status": result.attempt.attempt_status,
                 "generation_revision": result.attempt.generation_revision,
-                "turn": {
-                    "turn_no": result.turn.turn_no,
-                    "question": result.turn.question_text,
-                    "answer": result.turn.answer_text,
-                },
+                "turn": _mock_interview_live_turn_json(mock_interviews, result.turn),
             }
             return JSONResponse(response, status_code=200)
         revision, provider_token, transcript_fingerprint = result.question_claim
@@ -5530,11 +5744,7 @@ def create_app(
                     "attempt_id": completed.id,
                     "attempt_status": completed.attempt_status,
                     "generation_revision": completed.generation_revision,
-                    "turn": {
-                        "turn_no": current.turn_no,
-                        "question": current.question_text,
-                        "answer": current.answer_text,
-                    },
+                    "turn": _mock_interview_live_turn_json(mock_interviews, current),
                 },
                 status_code=201 if result.created else 200,
             )
@@ -5582,6 +5792,146 @@ def create_app(
             return error_response(409, "mock_interview_source_conflict")
 
     @app.post(
+        "/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}/turns"
+    )
+    def answer_quick_practice_turn(
+        case_id: int, attempt_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        try:
+            turn_no = int(payload["turn_no"])
+            answer_text = payload["answer_text"]
+            turn_key = str(payload["turn_idempotency_key"])
+            if not isinstance(answer_text, str):
+                raise ValueError("answer_text must be a string")
+            mock_interviews.quick_feedback_context(attempt_id, case_id)
+            attempt = mock_interviews.submit_answer(attempt_id, turn_no, answer_text, turn_key)
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except MockInterviewTurnIdempotencyConflict:
+            return error_response(409, "回答 key 已对应其他内容。", code="mock_interview_turn_idempotency_conflict")
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        except LookupError:
+            return error_response(404, "快速练习尝试不存在。", code="mock_interview_context_mismatch")
+        except ValueError as exc:
+            return error_response(422, str(exc))
+        return JSONResponse(
+            {
+                "attempt_id": attempt.id,
+                "attempt_status": attempt.attempt_status,
+                "transcript_fingerprint": attempt.transcript_fingerprint,
+                **_mock_interview_attempt_context_json(attempt),
+            }
+        )
+
+    @app.post(
+        "/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}/turns/{turn_no}/question"
+    )
+    def generate_quick_practice_question(
+        case_id: int,
+        attempt_id: int,
+        turn_no: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            question_key = str(payload["question_idempotency_key"])
+            attempt = mock_interviews.quick_attempt_context(attempt_id, case_id)
+            claim = mock_interviews.claim_question(attempt_id, turn_no, question_key)
+            if claim is not None and claim.replay_turn is not None:
+                replay = claim.replay_turn
+                return JSONResponse({
+                    "attempt_id": attempt.id,
+                    "attempt_status": "awaiting_answer",
+                    **_mock_interview_attempt_context_json(attempt),
+                    "turn": _mock_interview_live_turn_json(mock_interviews, replay),
+                })
+            if claim is None:
+                current = mock_interviews.get_turn(attempt_id, turn_no)
+                if current is not None and current.turn_status == "awaiting_answer":
+                    return JSONResponse({
+                        "attempt_id": attempt_id,
+                        "attempt_status": "awaiting_answer",
+                        **_mock_interview_attempt_context_json(attempt),
+                        "turn": _mock_interview_live_turn_json(mock_interviews, current),
+                    })
+                return JSONResponse({
+                    "attempt_id": attempt_id,
+                    "attempt_status": "generating_question",
+                    "retry_after_ms": _mock_interview_retry_after_ms(attempt),
+                    **_mock_interview_attempt_context_json(attempt),
+                }, status_code=202)
+            revision, provider_token, transcript_fingerprint = claim
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(configured_model, JSONResponse):
+                raise MockInterviewProviderError("mock_interview_provider_error")
+            question = generate_question(configured_model, provider_mock_interview_snapshot(attempt), list(claim.turns))
+            completed = mock_interviews.complete_question(
+                attempt_id, turn_no, revision, provider_token, transcript_fingerprint, question
+            )
+            if completed is None:
+                return error_response(409, "下一题写入状态已变化。", code="mock_interview_context_mismatch")
+            current = mock_interviews.get_turn(attempt_id, turn_no)
+            assert current is not None
+            return JSONResponse({
+                "attempt_id": completed.id,
+                "attempt_status": completed.attempt_status,
+                **_mock_interview_attempt_context_json(completed),
+                "turn": _mock_interview_live_turn_json(mock_interviews, current),
+            }, status_code=201)
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except MockInterviewProviderError as exc:
+            _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="question", kind="provider", diagnostic=exc.diagnostic)
+            if "claim" in locals() and claim is not None:
+                mock_interviews.mark_provider_unknown(attempt_id, claim[0], claim[1], "question")
+            return error_response(502, "下一题结果待确认，请使用原 key 恢复。", code="mock_interview_question_result_unknown", details={"attempt_id": attempt_id})
+        except MockInterviewUnverifiableError as exc:
+            _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="question", kind="contract", diagnostic=exc.diagnostic)
+            if "claim" in locals() and claim is not None:
+                mock_interviews.mark_contract_failure(attempt_id, claim[0], claim[1], exc.category, "contract_failed")
+            return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
+        except MockInterviewContractFailed:
+            return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
+        except MockInterviewTurnIdempotencyConflict:
+            return error_response(409, "下一题 key 已对应其他题目。", code="mock_interview_turn_idempotency_conflict")
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        except LookupError:
+            return error_response(404, "快速练习尝试不存在。", code="mock_interview_context_mismatch")
+        except ValueError as exc:
+            return error_response(422, str(exc))
+
+    @app.delete("/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}")
+    def discard_quick_practice_attempt(case_id: int, attempt_id: int) -> JSONResponse:
+        try:
+            mock_interviews.discard_quick_attempt(case_id, attempt_id)
+        except MockInterviewAttemptConfirmed:
+            return error_response(409, "本次练习已有确认结果，不能删除。", code="mock_interview_attempt_confirmed")
+        return JSONResponse({"status": "deleted"})
+
+    @app.get("/api/interview-practice-cases/{case_id}/mock-interview/attempts")
+    def list_quick_practice_history(case_id: int) -> JSONResponse:
+        if interview_practice_cases.get(case_id) is None:
+            return error_response(404, "快速练习档案不存在。", code="interview_practice_case_not_found")
+        rows = mock_interviews.list_quick_feedback_history(case_id)
+        return JSONResponse({"items": [_mock_interview_history_json(mock_interviews, row) for row in rows]})
+
+    @app.post(
+        "/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}/review-drafts"
+    )
+    def create_quick_practice_review_draft(
+        case_id: int, attempt_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        try:
+            mock_interviews.quick_feedback_context(attempt_id, case_id)
+        except LookupError:
+            return error_response(404, "快速练习尝试不存在。", code="mock_interview_context_mismatch")
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        # Formal Interview Review is intentionally not a quick-practice write in v1.
+        return error_response(422, "快速练习暂不创建正式面试复盘。", code="quick_practice_review_not_available")
+
+    @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/turns"
     )
     def answer_mock_interview_turn(
@@ -5615,6 +5965,49 @@ def create_app(
                 "transcript_fingerprint": attempt.transcript_fingerprint,
             }
         )
+
+    @app.post(
+        "/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}/turns/{turn_no}/voice-coaching-snapshot"
+    )
+    def save_quick_voice_coaching_snapshot(
+        case_id: int,
+        attempt_id: int,
+        turn_no: int,
+        payload: VoiceCoachingSnapshotCreateIn,
+    ) -> JSONResponse:
+        try:
+            snapshot, created = voice_coaching.create_or_replay_quick(
+                practice_case_id=case_id,
+                attempt_id=attempt_id,
+                turn_no=turn_no,
+                **payload.model_dump(),
+            )
+        except VoiceCoachingNotFound:
+            return _voice_coaching_error(404, "voice_coaching_source_not_found")
+        except VoiceCoachingValidationError:
+            return _voice_coaching_error(422, "voice_coaching_invalid_payload")
+        except VoiceCoachingConflict as exc:
+            code = "voice_coaching_idempotency_conflict" if "idempotency" in str(exc) else "voice_coaching_snapshot_exists"
+            return _voice_coaching_error(409, code)
+        return JSONResponse(snapshot, status_code=201 if created else 200)
+
+    @app.get(
+        "/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}/turns/{turn_no}/voice-coaching-snapshot"
+    )
+    def get_quick_voice_coaching_snapshot(
+        case_id: int, attempt_id: int, turn_no: int
+    ) -> JSONResponse:
+        try:
+            snapshot = voice_coaching.get_for_quick_turn(
+                practice_case_id=case_id,
+                attempt_id=attempt_id,
+                turn_no=turn_no,
+            )
+        except VoiceCoachingNotFound:
+            return _voice_coaching_error(404, "voice_coaching_source_not_found")
+        if snapshot is None:
+            return _voice_coaching_error(404, "voice_coaching_snapshot_not_found")
+        return JSONResponse(snapshot)
 
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/"
@@ -5713,7 +6106,7 @@ def create_app(
                 return JSONResponse({
                     "attempt_id": attempt.id,
                     "attempt_status": "awaiting_answer",
-                    "turn": {"turn_no": replay.turn_no, "question": replay.question_text, "answer": replay.answer_text},
+                    "turn": _mock_interview_live_turn_json(mock_interviews, replay),
                 })
             if claim is None:
                 current = mock_interviews.get_turn(attempt_id, turn_no)
@@ -5721,7 +6114,7 @@ def create_app(
                     return JSONResponse({
                         "attempt_id": attempt_id,
                         "attempt_status": "awaiting_answer",
-                        "turn": {"turn_no": current.turn_no, "question": current.question_text, "answer": current.answer_text},
+                        "turn": _mock_interview_live_turn_json(mock_interviews, current),
                     })
                 return JSONResponse(
                     {
@@ -5747,7 +6140,7 @@ def create_app(
             return JSONResponse({
                 "attempt_id": completed.id,
                 "attempt_status": completed.attempt_status,
-                "turn": {"turn_no": current.turn_no, "question": current.question_text, "answer": current.answer_text},
+                "turn": _mock_interview_live_turn_json(mock_interviews, current),
             }, status_code=201)
         except KeyError as exc:
             return error_response(422, f"missing field: {exc.args[0]}")
@@ -5838,6 +6231,72 @@ def create_app(
             return error_response(404, "mock_interview_attempt_not_found")
         return JSONResponse({"status": "deleted"})
 
+    @app.post("/api/interview-practice-cases/{case_id}/mock-interview/attempts/{attempt_id}/finish")
+    def finish_quick_practice(
+        case_id: int, attempt_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        try:
+            feedback_key = str(payload["feedback_idempotency_key"])
+            attempt, turns = mock_interviews.quick_feedback_context(attempt_id, case_id)
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except LookupError:
+            return error_response(404, "快速练习尝试不存在。", code="mock_interview_context_mismatch")
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        if not turns or not any(turn.answer_text and turn.answer_text.strip() for turn in turns):
+            return error_response(422, "mock_interview_answer_required")
+        existing, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
+        if existing is not None:
+            return JSONResponse({**_mock_interview_proposal_json(existing), **_mock_interview_attempt_context_json(attempt)})
+        try:
+            claim = mock_interviews.claim_feedback(attempt_id, feedback_key)
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        except MockInterviewContractFailed:
+            return error_response(502, "AI 输出未通过验证，请使用原尝试恢复。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
+        if claim is None:
+            current = mock_interviews.quick_feedback_context(attempt_id, case_id)[0]
+            return JSONResponse({
+                "attempt_id": attempt_id,
+                "attempt_status": current.attempt_status,
+                "retry_after_ms": _mock_interview_retry_after_ms(current),
+                **_mock_interview_attempt_context_json(current),
+            }, status_code=202)
+        revision, provider_token, transcript_fingerprint = claim
+        try:
+            snapshot = provider_mock_interview_snapshot(attempt)
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            legacy_model: ChatModel | None = None if isinstance(configured_model, JSONResponse) else configured_model
+            proposal, diagnostic = generate_feedback(legacy_model, snapshot, list(claim.turns))
+        except MockInterviewUnverifiableError as exc:
+            _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="feedback", kind="contract", diagnostic=exc.diagnostic)
+            mock_interviews.mark_contract_failure(attempt_id, revision, provider_token, "contract_unverifiable", "contract_failed")
+            return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
+        except MockInterviewProviderError as exc:
+            _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="feedback", kind="provider", diagnostic=exc.diagnostic)
+            mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
+            return error_response(502, "复盘结果待确认，请使用原 key 恢复。", code="mock_interview_question_result_unknown", details={"attempt_id": attempt_id})
+        try:
+            record, created = mock_interviews.complete_feedback(
+                attempt_id,
+                feedback_key,
+                revision,
+                provider_token,
+                transcript_fingerprint,
+                proposal,
+                proposal["proposal_status"],
+                str(diagnostic.get("failure_category", "")),
+            )
+        except MockInterviewSourceChanged:
+            return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+        if record is None:
+            replay, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
+            if replay is not None:
+                return JSONResponse({**_mock_interview_proposal_json(replay), **_mock_interview_attempt_context_json(attempt)})
+            return error_response(409, "mock_interview_transcript_conflict")
+        return JSONResponse({**_mock_interview_proposal_json(record), **_mock_interview_attempt_context_json(attempt)}, status_code=201 if created else 200)
+
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/finish"
     )
@@ -5858,7 +6317,7 @@ def create_app(
             return error_response(404, "mock_interview_attempt_not_found")
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
-        if not turns or not turns[-1].answer_text.strip():
+        if not turns or not any(turn.answer_text and turn.answer_text.strip() for turn in turns):
             return error_response(422, "mock_interview_answer_required")
         existing, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
         if existing is not None:

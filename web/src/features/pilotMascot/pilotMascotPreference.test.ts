@@ -8,6 +8,13 @@ import {
   writePilotMascotZoom,
   writePilotMascotVisible,
 } from './pilotMascotPreference';
+import {
+  PILOT_MASCOT_POSITION_KEY,
+  DEFAULT_PILOT_MASCOT_POSITIONS,
+  readPilotMascotPositions,
+  resetPilotMascotPosition,
+  writePilotMascotPosition,
+} from './pilotMascotPreference';
 
 describe('pilot mascot preference', () => {
   beforeEach(() => localStorage.clear());
@@ -54,5 +61,24 @@ describe('pilot mascot preference', () => {
     };
     expect(readPilotMascotZoom(blocked)).toBe(1);
     expect(() => writePilotMascotZoom(1.2, blocked)).not.toThrow();
+  });
+
+  it('persists independent normalized positions and resets one placement safely', () => {
+    expect(readPilotMascotPositions()).toEqual(DEFAULT_PILOT_MASCOT_POSITIONS);
+    writePilotMascotPosition('normal', { xRatio: 0.2, yRatio: 0.35 });
+    writePilotMascotPosition('interview_studio', { xRatio: 2, yRatio: Number.NaN });
+    const stored = readPilotMascotPositions();
+    expect(stored.normal).toEqual({ xRatio: 0.2, yRatio: 0.35 });
+    expect(stored.interview_studio).toEqual(DEFAULT_PILOT_MASCOT_POSITIONS.interview_studio);
+    expect(localStorage.getItem(PILOT_MASCOT_POSITION_KEY)).toContain('interview_studio');
+    resetPilotMascotPosition('normal');
+    expect(readPilotMascotPositions().normal).toEqual(DEFAULT_PILOT_MASCOT_POSITIONS.normal);
+  });
+
+  it('fails closed to safe defaults for malformed versioned position data', () => {
+    localStorage.setItem(PILOT_MASCOT_POSITION_KEY, JSON.stringify({ version: 2, normal: { xRatio: 0, yRatio: 0 } }));
+    expect(readPilotMascotPositions()).toEqual(DEFAULT_PILOT_MASCOT_POSITIONS);
+    localStorage.setItem(PILOT_MASCOT_POSITION_KEY, '{not-json');
+    expect(readPilotMascotPositions()).toEqual(DEFAULT_PILOT_MASCOT_POSITIONS);
   });
 });

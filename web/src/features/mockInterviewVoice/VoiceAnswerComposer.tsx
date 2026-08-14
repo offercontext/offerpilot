@@ -542,6 +542,10 @@ export default function VoiceAnswerComposer({
         latestAudioUrlRef.current = url;
         setAudioUrl(url);
         setRecordingState('ready');
+        // A recorded blob is already safe to review manually. Offline transcription
+        // may continue or be unavailable, but neither case should block an explicit
+        // user-edited transcript from reaching the confirmation gate.
+        setReviewReady(true);
         recordingEndedAtRef.current = browser.now();
         clearTimer();
         clearRecordingSafetyTimeout();
