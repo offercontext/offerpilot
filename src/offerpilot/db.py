@@ -74,6 +74,7 @@ def init_database(db_path: Path) -> SessionFactory:
     _ensure_interview_story_schema(engine)
     _ensure_application_outcome_schema(engine)
     _ensure_adaptive_interview_practice_schema(engine)
+    _ensure_voice_coaching_schema(engine)
     _ensure_offer_negotiation_schema(engine)
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
@@ -1284,6 +1285,16 @@ def _ensure_adaptive_interview_practice_schema(engine) -> None:  # type: ignore[
         engine,
         "0021_adaptive_interview_practice",
         "Add evidence-backed adaptive interview practice plans",
+    )
+
+
+def _ensure_voice_coaching_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Record the additive immutable voice-coaching snapshot schema."""
+
+    _record_migration(
+        engine,
+        "0022_voice_coaching_snapshots",
+        "Add immutable user-confirmed local voice coaching snapshots",
     )
 
 

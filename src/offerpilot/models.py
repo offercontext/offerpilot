@@ -1020,6 +1020,49 @@ class MockInterviewTurn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
 
 
+class VoiceCoachingSnapshot(Base):
+    __tablename__ = "voice_coaching_snapshots"
+    __table_args__ = (
+        UniqueConstraint("turn_id", name="uq_voice_coaching_snapshots_turn"),
+        UniqueConstraint("idempotency_key", name="uq_voice_coaching_snapshots_key"),
+        Index("idx_voice_coaching_snapshots_created", "created_at", "id"),
+        Index("idx_voice_coaching_snapshots_application_event", "application_id", "event_id"),
+        Index("idx_voice_coaching_snapshots_attempt", "attempt_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    attempt_id: Mapped[int] = mapped_column(
+        ForeignKey("mock_interview_attempts.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_id: Mapped[int] = mapped_column(
+        ForeignKey("mock_interview_turns.id", ondelete="CASCADE"), nullable=False
+    )
+    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    question_text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed_answer_text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    measurement_source: Mapped[str] = mapped_column(
+        String, nullable=False, default="local_browser_measurement", server_default="local_browser_measurement"
+    )
+    total_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    voiced_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    pause_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    longest_pause_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    speech_rate_cpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filler_occurrences_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    focus_kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    origin_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("voice_coaching_snapshots.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class MockInterviewFeedbackProposal(Base):
     __tablename__ = "mock_interview_feedback_proposals"
     __table_args__ = (
