@@ -18,12 +18,18 @@ import type {
   MockInterviewHistoryItem,
   MockInterviewProposal,
 } from '@/types/mockInterview';
+import type { VoiceCoachingPendingReview } from '@/types/voiceCoaching';
+import {
+  getVoiceCoachingSnapshot,
+  saveVoiceCoachingSnapshot,
+} from '@/services/voiceCoaching';
 import { ConfirmationPanel } from './ui/ConfirmationPanel';
 import { SourceStateTag } from './ui/SourceStateTag';
 import VoiceAnswerComposer, {
   type VoiceAnswerActivity,
   type VoiceAnswerBrowser,
 } from '@/features/mockInterviewVoice/VoiceAnswerComposer';
+import VoiceCoachingSnapshotSaveCard from './VoiceCoachingSnapshotSaveCard';
 import workflowStyles from './ui/WorkflowSurface.module.css';
 
 export interface MockInterviewDrawerDraft {
@@ -51,6 +57,7 @@ export interface MockInterviewDrawerDraft {
   retryAfterMs?: number;
   pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'confirm' | 'discard';
   error: string | null;
+  voiceCoachingReview?: VoiceCoachingPendingReview | null;
 }
 
 interface ResumeOption { id: number; title?: string; name?: string }
@@ -150,6 +157,14 @@ export default function MockInterviewDrawer({
     [draft.proposal, draft.selectedIds, draft.editedBlocks],
   );
   const pending = draft.resultUnknown;
+  const voiceReview = draft.voiceCoachingReview?.turnNo === draft.turnNo
+    ? draft.voiceCoachingReview
+    : null;
+  const voiceReviewNeedsDecision = Boolean(
+    draft.answerSubmitted
+    && voiceReview
+    && voiceReview.saveState !== 'saved',
+  );
 
   function resetDraft(error?: unknown): void {
     onDraftChange({
@@ -170,6 +185,7 @@ export default function MockInterviewDrawer({
       editedBlocks: {},
       resultUnknown: false,
       pendingOperation: undefined,
+      voiceCoachingReview: null,
       error: error === undefined ? null : safeError(error),
     });
   }
@@ -285,8 +301,82 @@ export default function MockInterviewDrawer({
     } finally { setWorking(false); }
   };
 
+  const saveVoiceReview = async () => {
+    if (!draft.attemptId || !voiceReview) return;
+    const idempotencyKey = voiceReview.idempotencyKey ?? key();
+    const frozenReview = { ...voiceReview, idempotencyKey, saveState: 'saving' as const };
+    onDraftChange({ voiceCoachingReview: frozenReview, error: null });
+    try {
+      const snapshot = await saveVoiceCoachingSnapshot({
+        applicationId,
+        eventId,
+        attemptId: draft.attemptId,
+        turnNo: draft.turnNo,
+        payload: {
+          idempotency_key: idempotencyKey,
+          total_duration_ms: voiceReview.summary.totalDurationMs,
+          voiced_duration_ms: voiceReview.summary.voicedDurationMs,
+          pause_count: voiceReview.summary.pauseCount,
+          longest_pause_ms: voiceReview.summary.longestPauseMs,
+          speech_rate_cpm: voiceReview.summary.speechRateCpm ?? null,
+          filler_occurrences: voiceReview.summary.fillerOccurrences.map((item) => ({
+            text: item.text,
+            count: item.count,
+            transcript_offsets: item.transcriptOffsets,
+          })),
+          reflection_text: voiceReview.reflectionText,
+          focus_kind: voiceReview.focusKind,
+          origin_snapshot_id: voiceReview.originSnapshotId,
+        },
+      });
+      onDraftChange({
+        voiceCoachingReview: {
+          ...frozenReview,
+          saveState: 'saved',
+          snapshotId: snapshot.id,
+        },
+      });
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (!status || status >= 500 || status === 409) {
+        try {
+          const snapshot = await getVoiceCoachingSnapshot({
+            applicationId,
+            eventId,
+            attemptId: draft.attemptId,
+            turnNo: draft.turnNo,
+          });
+          onDraftChange({
+            voiceCoachingReview: {
+              ...frozenReview,
+              saveState: 'saved',
+              snapshotId: snapshot.id,
+            },
+          });
+          return;
+        } catch {
+          onDraftChange({
+            voiceCoachingReview: { ...frozenReview, saveState: 'unknown' },
+            error: '表达复盘保存结果待确认，请使用原保存请求重试。',
+          });
+          return;
+        }
+      }
+      onDraftChange({
+        voiceCoachingReview: {
+          ...voiceReview,
+          idempotencyKey: null,
+          saveState: 'idle',
+        },
+        error: status === 422
+          ? '本次表达复盘无法保存，请检查反思文字后重试。'
+          : '本次回答已不可用于保存表达复盘。',
+      });
+    }
+  };
+
   const nextQuestion = async () => {
-    if (!draft.attemptId || !draft.answerSubmitted) return;
+    if (!draft.attemptId || !draft.answerSubmitted || voiceReviewNeedsDecision) return;
     const nextQuestionKey = draft.nextQuestionKey ?? key();
     onDraftChange({ nextQuestionKey, error: null });
     setWorking(true);
@@ -308,6 +398,7 @@ export default function MockInterviewDrawer({
         turnKey: null,
         resultUnknown: false,
         pendingOperation: undefined,
+        voiceCoachingReview: null,
         error: null,
       });
     } catch (error) {
@@ -317,7 +408,7 @@ export default function MockInterviewDrawer({
   };
 
   const finish = async () => {
-    if (!draft.attemptId) return;
+    if (!draft.attemptId || voiceReviewNeedsDecision) return;
     const feedbackKey = draft.feedbackKey ?? key();
     onDraftChange({ feedbackKey, error: null });
     setWorking(true);
@@ -368,7 +459,7 @@ export default function MockInterviewDrawer({
   };
 
   const requestClose = () => {
-    if (voiceDraftDirty) {
+    if (voiceDraftDirty || voiceReviewNeedsDecision) {
       setCloseConfirming(true);
       return;
     }
@@ -385,7 +476,7 @@ export default function MockInterviewDrawer({
           <Alert
             type="warning"
             showIcon
-            message="当前录音或转写文字尚未提交，关闭后会丢失。"
+            message="当前录音、转写文字或待确认的表达复盘尚未处理，关闭后会丢失。"
             action={(
               <Space>
                 <Button size="small" onClick={() => setCloseConfirming(false)}>继续编辑</Button>
@@ -482,6 +573,32 @@ export default function MockInterviewDrawer({
               onTextChange={(answer) => onDraftChange({ answer })}
               submitRevision={answerSubmitRevision}
               onConfirmTranscript={(answer) => onDraftChange({ answer })}
+              onVoiceReviewConfirmed={(answer, summary) => onDraftChange({
+                answer,
+                voiceCoachingReview: {
+                  turnNo: draft.turnNo,
+                  summary: {
+                    totalDurationMs: summary.totalDurationMs,
+                    voicedDurationMs: summary.voicedDurationMs,
+                    pauseCount: summary.pauseCount,
+                    longestPauseMs: summary.longestPauseMs,
+                    speechRateCpm: summary.speechRateCpm,
+                    fillerOccurrences: summary.fillerOccurrences,
+                  },
+                  reflectionText: '',
+                  focusKind: summary.longestPauseMs >= 2_500
+                    ? 'long_pause_control'
+                    : summary.fillerOccurrences.some((item) => item.count > 0)
+                      ? 'filler_reduction'
+                      : summary.speechRateCpm
+                        ? 'pace_consistency'
+                        : null,
+                  originSnapshotId: null,
+                  idempotencyKey: null,
+                  saveState: 'idle',
+                  snapshotId: null,
+                },
+              })}
               onDirtyChange={(dirty) => {
                 setVoiceDraftDirty(dirty);
                 if (!dirty) setCloseConfirming(false);
@@ -492,12 +609,20 @@ export default function MockInterviewDrawer({
             />
             <div className={workflowStyles.actionGroup}>
               <Button onClick={() => void answer()} disabled={!draft.answer.trim() || pending || working}>提交回答</Button>
-              <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || pending || working}>结束并生成复盘建议</Button>
+              <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || voiceReviewNeedsDecision || pending || working}>结束并生成复盘建议</Button>
             </div>
           </section>
         ) : null}
+        {draft.attemptId && draft.answerSubmitted && voiceReview ? (
+          <VoiceCoachingSnapshotSaveCard
+            review={voiceReview}
+            onChange={(patch) => onDraftChange({ voiceCoachingReview: { ...voiceReview, ...patch } })}
+            onSave={() => void saveVoiceReview()}
+            onSkip={() => onDraftChange({ voiceCoachingReview: null })}
+          />
+        ) : null}
         {draft.attemptId && !draft.proposal && draft.answerSubmitted ? (
-          <Button onClick={() => void nextQuestion()} disabled={pending || working}>生成下一题</Button>
+          <Button onClick={() => void nextQuestion()} disabled={voiceReviewNeedsDecision || pending || working}>生成下一题</Button>
         ) : null}
         {draft.proposal ? (
           <section className={workflowStyles.section}>

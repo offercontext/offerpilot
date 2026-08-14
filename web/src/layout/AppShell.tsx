@@ -131,6 +131,7 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
     selectedIds: [],
     preparationItemIds: [],
     resultUnknown: false,
+    voiceCoachingReview: null,
     error: null,
   };
 }

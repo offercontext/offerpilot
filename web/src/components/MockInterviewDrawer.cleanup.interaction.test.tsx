@@ -14,11 +14,17 @@ const services = vi.hoisted(() => ({
   listMockInterviewHistory: vi.fn(),
   confirmMockInterviewReviewDraft: vi.fn(),
   listInterviewPreparationProposals: vi.fn(),
+  saveVoiceCoachingSnapshot: vi.fn(),
+  getVoiceCoachingSnapshot: vi.fn(),
 }));
 
 vi.mock('@/services/mockInterviews', () => services);
 vi.mock('@/services/interviewPreparationProposals', () => ({
   listInterviewPreparationProposals: services.listInterviewPreparationProposals,
+}));
+vi.mock('@/services/voiceCoaching', () => ({
+  saveVoiceCoachingSnapshot: services.saveVoiceCoachingSnapshot,
+  getVoiceCoachingSnapshot: services.getVoiceCoachingSnapshot,
 }));
 vi.mock('antd', () => ({
   Alert: (props: { children?: ReactNode; action?: ReactNode }) => <div>{props.children}{props.action}</div>,
@@ -186,6 +192,8 @@ beforeEach(() => {
   services.discardMockInterviewAttempt.mockReset();
   services.listMockInterviewHistory.mockResolvedValue([]);
   services.listInterviewPreparationProposals.mockResolvedValue([]);
+  services.saveVoiceCoachingSnapshot.mockReset();
+  services.getVoiceCoachingSnapshot.mockReset();
 });
 
 afterEach(() => {
@@ -225,6 +233,93 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       attemptId: 88,
       answerText: '我先确认影响范围，再完成回滚。',
     }));
+  });
+
+  it('requires a separate confirmation before saving local voice measurements', async () => {
+    services.submitMockInterviewAnswer.mockResolvedValue(undefined);
+    services.saveVoiceCoachingSnapshot.mockResolvedValue({ id: 91 });
+    const { voiceBrowser } = voiceBrowserFixture();
+    render({
+      ...baseDraft,
+      resumeId: 3,
+      attemptId: 88,
+      turnNo: 1,
+      question: '请介绍一次故障处理经历。',
+    }, { voiceBrowser });
+
+    act(() => buttonByText('语音回答').click());
+    act(() => buttonByText('开始录音').click());
+    await flush();
+    act(() => buttonByText('完成录音').click());
+    await flush();
+    const transcript = container?.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    changeTextarea(transcript, '我先确认影响范围，再完成回滚。');
+    act(() => buttonByText('确认使用这段文字').click());
+    act(() => buttonByText('提交回答').click());
+    await flush();
+
+    expect(container?.textContent).toContain('保存本次表达复盘');
+    expect(services.saveVoiceCoachingSnapshot).not.toHaveBeenCalled();
+    expect(buttonByText('生成下一题').disabled).toBe(true);
+    act(() => buttonByText('确认保存').click());
+    await flush();
+
+    expect(services.saveVoiceCoachingSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      applicationId: 7,
+      eventId: 11,
+      attemptId: 88,
+      turnNo: 1,
+      payload: expect.objectContaining({
+        idempotency_key: expect.any(String),
+        reflection_text: '',
+      }),
+    }));
+    expect(container?.textContent).toContain('表达复盘已保存');
+    expect(buttonByText('生成下一题').disabled).toBe(false);
+  });
+
+  it('freezes an unknown snapshot save and retries with the same key and payload', async () => {
+    const review = {
+      turnNo: 1,
+      summary: {
+        totalDurationMs: 42_000,
+        voicedDurationMs: 30_000,
+        pauseCount: 1,
+        longestPauseMs: 2_800,
+        speechRateCpm: 120,
+        fillerOccurrences: [],
+      },
+      reflectionText: '先给结论',
+      focusKind: 'long_pause_control' as const,
+      originSnapshotId: null,
+      idempotencyKey: null,
+      saveState: 'idle' as const,
+      snapshotId: null,
+    };
+    services.saveVoiceCoachingSnapshot
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({ id: 92 });
+    services.getVoiceCoachingSnapshot.mockRejectedValue({ response: { status: 404 } });
+    render({
+      ...baseDraft,
+      resumeId: 3,
+      attemptId: 88,
+      turnNo: 1,
+      question: '请介绍一次故障处理经历。',
+      answer: '回答',
+      answerSubmitted: true,
+      voiceCoachingReview: review,
+    });
+
+    act(() => buttonByText('确认保存').click());
+    await flush();
+    const firstRequest = services.saveVoiceCoachingSnapshot.mock.calls[0][0];
+    expect(container?.textContent).toContain('使用原保存请求重试');
+    act(() => buttonByText('使用原保存请求重试').click());
+    await flush();
+    const secondRequest = services.saveVoiceCoachingSnapshot.mock.calls[1][0];
+    expect(secondRequest.payload).toEqual(firstRequest.payload);
+    expect(container?.textContent).toContain('表达复盘已保存');
   });
 
   it('asks before closing when a local voice draft has not been submitted', async () => {

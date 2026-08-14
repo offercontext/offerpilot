@@ -421,6 +421,7 @@ describe('VoiceAnswerComposer', () => {
       return captureRuntime;
     });
     const offlineController = offlineControllerFixture();
+    const onVoiceReviewConfirmed = vi.fn();
     let now = 10_000;
     const fixture = browserFixture();
     fixture.browser.now = vi.fn(() => now);
@@ -429,6 +430,7 @@ describe('VoiceAnswerComposer', () => {
       createCaptureRuntime,
       offlineController,
       decodeAudio: vi.fn(async () => new Float32Array([0.1, 0.2])),
+      onVoiceReviewConfirmed,
     });
 
     click('语音回答');
@@ -459,6 +461,14 @@ describe('VoiceAnswerComposer', () => {
     changeTextarea(textarea, '嗯我先定位日志，然后完成回滚。');
     click('确认使用这段文字');
     expect(props.onConfirmTranscript).toHaveBeenCalledOnce();
+    expect(onVoiceReviewConfirmed).toHaveBeenCalledWith(
+      '嗯我先定位日志，然后完成回滚。',
+      expect.objectContaining({
+        totalDurationMs: 72_000,
+        longestPauseMs: 3_000,
+        source: 'local_audio_and_confirmed_transcript',
+      }),
+    );
     expect(props.onActivityChange).toHaveBeenLastCalledWith('success');
     expect(host!.textContent).toContain('表达节奏复盘');
     expect(host!.textContent).toContain('01:12');

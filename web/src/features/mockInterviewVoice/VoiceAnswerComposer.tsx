@@ -78,6 +78,7 @@ interface Props {
   onTextChange?: (value: string) => void;
   submitRevision: number;
   onConfirmTranscript: (text: string) => void;
+  onVoiceReviewConfirmed?: (text: string, summary: VoiceDeliverySummary) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onActivityChange?: (activity: VoiceAnswerActivity) => void;
   browser?: VoiceAnswerBrowser;
@@ -134,6 +135,7 @@ export default function VoiceAnswerComposer({
   onTextChange,
   submitRevision,
   onConfirmTranscript,
+  onVoiceReviewConfirmed,
   onDirtyChange,
   onActivityChange,
   browser: suppliedBrowser,
@@ -662,13 +664,15 @@ export default function VoiceAnswerComposer({
     if (!confirmed || disabled || recordingState !== 'ready' || !reviewReady) return;
     const startedAtMs = recordingStartedAtRef.current;
     const endedAtMs = recordingEndedAtRef.current || browser.now();
-    setDeliverySummary(buildVoiceDeliverySummary({
+    const summary = buildVoiceDeliverySummary({
       startedAtMs: 0,
       endedAtMs: Math.max(0, endedAtMs - startedAtMs - recordingPausedTotalRef.current),
       voicedRanges: voicedRangesRef.current,
       transcript: confirmed,
-    }));
+    });
+    setDeliverySummary(summary);
     onConfirmTranscript(confirmed);
+    onVoiceReviewConfirmed?.(confirmed, summary);
     emitActivity('success');
   };
 
