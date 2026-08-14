@@ -248,6 +248,8 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
 
     act(() => buttonByText('确认使用这段文字').click());
     expect(services.submitMockInterviewAnswer).not.toHaveBeenCalled();
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .not.toMatchObject({ hasSubmittedVoiceAnswer: true });
     act(() => buttonByText('提交回答').click());
     await flush();
 
@@ -255,6 +257,8 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       attemptId: 88,
       answerText: '我先确认影响范围，再完成回滚。',
     }));
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .toMatchObject({ hasSubmittedVoiceAnswer: true });
   });
 
   it('requires a separate confirmation before saving local voice measurements', async () => {
@@ -290,11 +294,15 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     act(() => buttonByText('确认使用这段文字').click());
     expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
       .toMatchObject({
-        hasConfirmedVoiceAnswer: true,
         voiceCoachingReview: { originSnapshotId: 17, focusKind: 'long_pause_control' },
       });
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .not.toMatchObject({ hasSubmittedVoiceAnswer: true });
     act(() => buttonByText('提交回答').click());
     await flush();
+
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .toMatchObject({ hasSubmittedVoiceAnswer: true });
 
     expect(container?.textContent).toContain('保存本次表达复盘');
     expect(services.saveVoiceCoachingSnapshot).not.toHaveBeenCalled();

@@ -63,7 +63,7 @@ export interface MockInterviewDrawerDraft {
   voiceCoachingReview?: VoiceCoachingPendingReview | null;
   voicePracticeFocus?: VoiceCoachingRecommendation | null;
   hasSavedVoiceCoachingSnapshot?: boolean;
-  hasConfirmedVoiceAnswer?: boolean;
+  hasSubmittedVoiceAnswer?: boolean;
 }
 
 interface ResumeOption { id: number; title?: string; name?: string }
@@ -214,7 +214,7 @@ export default function MockInterviewDrawer({
       voiceCoachingReview: null,
       voicePracticeFocus: null,
       hasSavedVoiceCoachingSnapshot: false,
-      hasConfirmedVoiceAnswer: false,
+      hasSubmittedVoiceAnswer: false,
       error: error === undefined ? null : safeError(error),
     });
   }
@@ -323,7 +323,12 @@ export default function MockInterviewDrawer({
         answerText: draft.answer, turnKey,
       });
       setAnswerSubmitRevision((revision) => revision + 1);
-      onDraftChange({ error: null, resultUnknown: false, answerSubmitted: true });
+      onDraftChange({
+        error: null,
+        resultUnknown: false,
+        answerSubmitted: true,
+        hasSubmittedVoiceAnswer: draft.hasSubmittedVoiceAnswer || Boolean(voiceReview),
+      });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ pendingOperation: 'answer', resultUnknown: true, error: safeError(error) });
       else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
@@ -637,7 +642,6 @@ export default function MockInterviewDrawer({
               onConfirmTranscript={(answer) => onDraftChange({ answer })}
               onVoiceReviewConfirmed={(answer, summary) => onDraftChange({
                 answer,
-                hasConfirmedVoiceAnswer: true,
                 voiceCoachingReview: {
                   turnNo: draft.turnNo,
                   summary: {

@@ -136,7 +136,7 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
     voiceCoachingReview: null,
     voicePracticeFocus: null,
     hasSavedVoiceCoachingSnapshot: false,
-    hasConfirmedVoiceAnswer: false,
+    hasSubmittedVoiceAnswer: false,
     error: null,
   };
 }
@@ -859,9 +859,19 @@ function AppShellContent() {
     voicePracticeFocus?: VoiceCoachingRecommendation,
   ) => {
     const draftKey = `${applicationId}:${eventId}`;
-    let draft = voicePracticeFocus
-      ? createMockInterviewDraft()
-      : mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
+    const existingDraft = mockInterviewDraftsRef.current.get(draftKey);
+    const preserveRecoveryDraft = Boolean(
+      existingDraft && (
+        existingDraft.resultUnknown
+        || existingDraft.voiceCoachingReview?.saveState === 'unknown'
+        || existingDraft.voiceCoachingReview?.saveState === 'conflict'
+      )
+    );
+    let draft = preserveRecoveryDraft
+      ? existingDraft!
+      : voicePracticeFocus
+        ? createMockInterviewDraft()
+        : existingDraft ?? createMockInterviewDraft();
     const hasFrozenAttempt = Boolean(
       draft.attemptKey
       || draft.questionKey
@@ -1017,7 +1027,7 @@ function AppShellContent() {
       return;
     }
     const preserveSubmittedVoiceAnswer = Boolean(
-      draft.hasConfirmedVoiceAnswer
+      draft.hasSubmittedVoiceAnswer
       || draft.voiceCoachingReview?.saveState === 'unknown'
       || draft.voiceCoachingReview?.saveState === 'conflict',
     );
