@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, List, Space, Spin, Tag, Typography } from 'antd';
-import { ArrowRightOutlined, CompassOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, CompassOutlined, SoundOutlined } from '@ant-design/icons';
 import { listInterviews } from '@/services/interviews';
 import { listAdaptivePracticeRecommendations } from '@/services/adaptiveInterviewPractice';
 import type { InterviewIndexItem } from '@/types/interviewIndex';
@@ -16,9 +16,10 @@ interface Props {
   onOpenMockInterview?: (applicationId: number, eventId: number) => void;
   onOpenStoryLibrary?: (reviewNoteId?: number) => void;
   onOpenAdaptivePractice?: (focus: AdaptivePracticeFocus) => void;
+  onOpenVoiceCoachingGrowth?: () => void;
 }
 
-export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary, onOpenAdaptivePractice }: Props) {
+export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary, onOpenAdaptivePractice, onOpenVoiceCoachingGrowth }: Props) {
   const [items, setItems] = useState<InterviewIndexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -55,7 +56,10 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
             查看已安排的面试事件、复盘、证据化建议和准备入口。
           </Paragraph>
         </div>
-        {onOpenStoryLibrary ? <Button type="primary" data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
+        <Space wrap>
+          {onOpenVoiceCoachingGrowth ? <Button icon={<SoundOutlined />} onClick={onOpenVoiceCoachingGrowth}>表达成长</Button> : null}
+          {onOpenStoryLibrary ? <Button type="primary" data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
+        </Space>
       </div>
       {practice && onOpenAdaptivePractice ? (
         <section className={actionStyles.card} aria-labelledby="interview-next-action-title">

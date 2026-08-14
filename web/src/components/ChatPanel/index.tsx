@@ -106,6 +106,7 @@ interface Props {
   onOnboardingFocusConsumed?: (token: number) => void;
   onPrepareOfferNegotiation?: (offer: Offer) => void;
   onOpenInterviewStoryLibrary?: () => void;
+  onOpenVoiceCoachingGrowth?: () => void;
   offers?: Offer[];
   onActivityChange?: (activity: PilotMascotActivity) => void;
   onReplyLifecycle?: (event: PilotReplyLifecycleEvent) => void;
@@ -136,6 +137,23 @@ const INTERVIEW_STORY_PILOT_INTENTS = new Set([
 
 export function isInterviewStoryPilotIntent(text: string): boolean {
   return INTERVIEW_STORY_PILOT_INTENTS.has(text.trim());
+}
+
+const VOICE_COACHING_PILOT_INTENTS = new Set([
+  '查看表达成长',
+  '查看我的表达成长',
+]);
+
+export function isVoiceCoachingPilotIntent(text: string): boolean {
+  return VOICE_COACHING_PILOT_INTENTS.has(text.trim());
+}
+
+export function VoiceCoachingPilotEntry({ onOpen }: { onOpen: () => void }) {
+  return (
+    <Button type="text" icon={<RobotOutlined />} onClick={onOpen} data-testid="pilot-open-voice-coaching-growth">
+      查看表达成长
+    </Button>
+  );
 }
 
 interface ActiveConversationRequest extends ActiveConversationRequestOwner {
@@ -230,6 +248,7 @@ export default function ChatPanel({
   onOnboardingFocusConsumed,
   onPrepareOfferNegotiation,
   onOpenInterviewStoryLibrary,
+  onOpenVoiceCoachingGrowth,
   offers = [],
   onActivityChange,
   onReplyLifecycle,
@@ -878,6 +897,11 @@ export default function ChatPanel({
       // call a Provider, or make a Story-domain write before the user selects
       // original sources and confirms the later Story action.
       onOpenInterviewStoryLibrary();
+      return true;
+    }
+    if (onOpenVoiceCoachingGrowth && isVoiceCoachingPilotIntent(trimmed)) {
+      // Local read-only navigation: no Chat message, Provider call, or domain write.
+      onOpenVoiceCoachingGrowth();
       return true;
     }
     const attachmentDraftKeyAtSend = activeAttachmentKey ?? ensureNewAttachmentDraft();
@@ -1622,6 +1646,11 @@ export default function ChatPanel({
               onNativeDrop={addAttachment}
             />
             {attachmentNotice ? <div className={styles.attachmentNotice} role="status">{attachmentNotice}</div> : null}
+              {onOpenVoiceCoachingGrowth ? (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', minHeight: 40 }}>
+                  <VoiceCoachingPilotEntry onOpen={onOpenVoiceCoachingGrowth} />
+                </div>
+              ) : null}
               <Composer
                 capabilities={capabilities}
                 disabled={composerDisabled}

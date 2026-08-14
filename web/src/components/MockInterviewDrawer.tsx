@@ -18,7 +18,10 @@ import type {
   MockInterviewHistoryItem,
   MockInterviewProposal,
 } from '@/types/mockInterview';
-import type { VoiceCoachingPendingReview } from '@/types/voiceCoaching';
+import type {
+  VoiceCoachingPendingReview,
+  VoiceCoachingRecommendation,
+} from '@/types/voiceCoaching';
 import {
   getVoiceCoachingSnapshot,
   saveVoiceCoachingSnapshot,
@@ -58,6 +61,8 @@ export interface MockInterviewDrawerDraft {
   pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'confirm' | 'discard';
   error: string | null;
   voiceCoachingReview?: VoiceCoachingPendingReview | null;
+  voicePracticeFocus?: VoiceCoachingRecommendation | null;
+  hasSavedVoiceCoachingSnapshot?: boolean;
 }
 
 interface ResumeOption { id: number; title?: string; name?: string }
@@ -186,6 +191,8 @@ export default function MockInterviewDrawer({
       resultUnknown: false,
       pendingOperation: undefined,
       voiceCoachingReview: null,
+      voicePracticeFocus: null,
+      hasSavedVoiceCoachingSnapshot: false,
       error: error === undefined ? null : safeError(error),
     });
   }
@@ -335,6 +342,7 @@ export default function MockInterviewDrawer({
           saveState: 'saved',
           snapshotId: snapshot.id,
         },
+        hasSavedVoiceCoachingSnapshot: true,
       });
     } catch (error) {
       const status = (error as { response?: { status?: number } })?.response?.status;
@@ -352,6 +360,7 @@ export default function MockInterviewDrawer({
               saveState: 'saved',
               snapshotId: snapshot.id,
             },
+            hasSavedVoiceCoachingSnapshot: true,
           });
           return;
         } catch {
@@ -399,6 +408,7 @@ export default function MockInterviewDrawer({
         resultUnknown: false,
         pendingOperation: undefined,
         voiceCoachingReview: null,
+        voicePracticeFocus: null,
         error: null,
       });
     } catch (error) {
@@ -564,6 +574,14 @@ export default function MockInterviewDrawer({
         {draft.attemptId && !draft.proposal ? (
           <section className={workflowStyles.section}>
             <div className={workflowStyles.sectionHeader}><h3>第 {draft.turnNo} 题</h3></div>
+            {draft.voicePracticeFocus ? (
+              <Alert
+                type="info"
+                showIcon
+                message={`本次刻意练习：${draft.voicePracticeFocus.title}`}
+                description={`来自已确认表达记录：${draft.voicePracticeFocus.question_text}`}
+              />
+            ) : null}
             <p className="op-long-text">{draft.question || '请介绍一次与本次岗位相关的经历。'}</p>
             <VoiceAnswerComposer
               key={`${applicationId}:${eventId}:${draft.attemptId}:${draft.turnNo}`}
@@ -593,7 +611,7 @@ export default function MockInterviewDrawer({
                       : summary.speechRateCpm
                         ? 'pace_consistency'
                         : null,
-                  originSnapshotId: null,
+                  originSnapshotId: draft.voicePracticeFocus?.source_snapshot_id ?? null,
                   idempotencyKey: null,
                   saveState: 'idle',
                   snapshotId: null,

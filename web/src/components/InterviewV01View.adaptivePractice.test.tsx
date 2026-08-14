@@ -55,4 +55,15 @@ describe('InterviewV01View adaptive practice entry', () => {
     expect(container?.textContent).toContain('复盘训练建议暂时无法加载');
     expect(container?.textContent).toContain('重新加载建议');
   });
+
+  it('opens the local expression growth history without starting AI work', async () => {
+    const openGrowth = vi.fn();
+    act(() => root?.render(<InterviewV01View onOpenVoiceCoachingGrowth={openGrowth} />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const entry = [...(container?.querySelectorAll('button') ?? [])]
+      .find((button) => button.textContent?.includes('表达成长'));
+    expect(entry).toBeTruthy();
+    act(() => entry?.click());
+    expect(openGrowth).toHaveBeenCalledOnce();
+  });
 });

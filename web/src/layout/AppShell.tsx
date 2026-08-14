@@ -41,6 +41,7 @@ import type { InterviewReviewProposalAttemptState } from '@/components/Interview
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
+import type { VoiceCoachingRecommendation } from '@/types/voiceCoaching';
 import InterviewStoryLibraryView, { type InterviewStoryOpenDraft } from '@/components/InterviewStoryLibraryView';
 import InterviewStoryDrawer, { createInterviewStoryDraft, type InterviewStoryDraft } from '@/components/InterviewStoryDrawer';
 import OfferNegotiationDrawer, { type OfferNegotiationDraft } from '@/components/OfferNegotiationDrawer';
@@ -105,6 +106,7 @@ const OfferCenterView = lazy(() => import('@/components/OfferCenterView'));
 const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
 const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
 const InterviewV01View = lazy(() => import('@/components/InterviewV01View'));
+const VoiceCoachingGrowthView = lazy(() => import('@/components/VoiceCoachingGrowthView'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
 const SettingsView = lazy(() => import('@/components/SettingsView'));
 
@@ -132,6 +134,8 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
     preparationItemIds: [],
     resultUnknown: false,
     voiceCoachingReview: null,
+    voicePracticeFocus: null,
+    hasSavedVoiceCoachingSnapshot: false,
     error: null,
   };
 }
@@ -239,6 +243,7 @@ function AppShellContent() {
   const [interviewPreparationAttempts, setInterviewPreparationAttempts] = useState<Record<string, InterviewPreparationAttemptState>>({});
   const [interviewPreparationDrafts, setInterviewPreparationDrafts] = useState<Record<string, InterviewPreparationDraft>>({});
   const [interviewStoryLibraryOpen, setInterviewStoryLibraryOpen] = useState(false);
+  const [voiceCoachingGrowthOpen, setVoiceCoachingGrowthOpen] = useState(false);
   const [interviewStoryDrawerOpen, setInterviewStoryDrawerOpen] = useState(false);
   const [interviewStoryLibraryRevision, setInterviewStoryLibraryRevision] = useState(0);
   const interviewStoryDraftsRef = useRef(new Map<string, InterviewStoryDraft>());
@@ -847,7 +852,11 @@ function AppShellContent() {
     setSelected(app);
   };
 
-  const openMockInterview = async (applicationId: number, eventId: number) => {
+  const openMockInterview = async (
+    applicationId: number,
+    eventId: number,
+    voicePracticeFocus?: VoiceCoachingRecommendation,
+  ) => {
     const draftKey = `${applicationId}:${eventId}`;
     let draft = mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
     const hasFrozenAttempt = Boolean(
@@ -876,6 +885,9 @@ function AppShellContent() {
       } catch {
         draft = { ...draft, jdVersionId: undefined, jdText: '', error: '岗位资料暂时无法加载，请稍后重试' };
       }
+    }
+    if (voicePracticeFocus && !hasFrozenAttempt) {
+      draft = { ...draft, voicePracticeFocus };
     }
     mockInterviewDraftsRef.current.set(draftKey, draft);
     setMockInterviewDraft(draft);
@@ -997,6 +1009,12 @@ function AppShellContent() {
       return;
     }
     if (!draft.attemptId || draft.resultUnknown) {
+      setMockInterviewContext(null);
+      setMockInterviewDraft(null);
+      return;
+    }
+    if (draft.hasSavedVoiceCoachingSnapshot) {
+      mockInterviewDraftsRef.current.set(`${context.applicationId}:${context.eventId}`, draft);
       setMockInterviewContext(null);
       setMockInterviewDraft(null);
       return;
@@ -1448,6 +1466,7 @@ function AppShellContent() {
   const openInterviewStoryDraft = (input: InterviewStoryOpenDraft) => {
     const scope = interviewStoryDraftScope(input);
     setView('interview');
+    setVoiceCoachingGrowthOpen(false);
     setInterviewStoryLibraryOpen(true);
     setActiveInterviewStoryDraftScope(scope);
     setInterviewStoryDrafts((current) => {
@@ -1461,6 +1480,12 @@ function AppShellContent() {
       return { ...current, [scope]: next };
     });
     setInterviewStoryDrawerOpen(true);
+  };
+
+  const openVoiceCoachingGrowth = () => {
+    setView('interview');
+    setInterviewStoryLibraryOpen(false);
+    setVoiceCoachingGrowthOpen(true);
   };
 
   const interviewStoryDraft = activeInterviewStoryDraftScope
@@ -1605,7 +1630,19 @@ function AppShellContent() {
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
           {view === 'questions' && <QuestionBankView adaptiveFocus={adaptivePracticeFocus} onAdaptiveFocusConsumed={() => setAdaptivePracticeFocus(undefined)} />}
-          {view === 'interview' && (interviewStoryLibraryOpen ? (
+          {view === 'interview' && (voiceCoachingGrowthOpen ? (
+            <VoiceCoachingGrowthView
+              onBack={() => setVoiceCoachingGrowthOpen(false)}
+              onPractice={(recommendation) => {
+                setVoiceCoachingGrowthOpen(false);
+                void openMockInterview(
+                  recommendation.application_id,
+                  recommendation.event_id,
+                  recommendation,
+                );
+              }}
+            />
+          ) : interviewStoryLibraryOpen ? (
             <InterviewStoryLibraryView
               key={interviewStoryLibraryRevision}
               onBack={() => setInterviewStoryLibraryOpen(false)}
@@ -1617,9 +1654,11 @@ function AppShellContent() {
               onOpenPreparation={openPilotInterviewPreparation}
               onOpenMockInterview={openMockInterview}
               onOpenStoryLibrary={(reviewNoteId) => {
+                setVoiceCoachingGrowthOpen(false);
                 setInterviewStoryLibraryOpen(true);
                 if (reviewNoteId) openInterviewStoryDraft({ entrypoint: 'ui', reviewNoteId });
               }}
+              onOpenVoiceCoachingGrowth={openVoiceCoachingGrowth}
               onOpenAdaptivePractice={(focus) => {
                 setAdaptivePracticeFocus(focus);
                 navigateToView('questions');
@@ -1690,6 +1729,7 @@ function AppShellContent() {
                 onOpenEvidence={openEvidence}
                 onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
                 onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
+                onOpenVoiceCoachingGrowth={openVoiceCoachingGrowth}
                 onActivityChange={setPilotMascotActivity}
                 onReplyLifecycle={handlePilotReplyLifecycle}
                 conversationRequest={pilotConversationRequest}
@@ -1784,6 +1824,7 @@ function AppShellContent() {
             onOpenEvidence={openEvidence}
             onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
             onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
+            onOpenVoiceCoachingGrowth={openVoiceCoachingGrowth}
             onActivityChange={setPilotMascotActivity}
             onReplyLifecycle={handlePilotReplyLifecycle}
             conversationRequest={pilotConversationRequest}
