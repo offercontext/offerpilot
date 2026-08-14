@@ -210,6 +210,74 @@ def test_get_for_turn_uses_full_ownership_chain(tmp_path: Path) -> None:
     factory.kw["bind"].dispose()
 
 
+def test_create_rejects_an_origin_whose_application_or_event_is_no_longer_visible(
+    tmp_path: Path,
+) -> None:
+    factory, ids = _context(tmp_path)
+    repository = VoiceCoachingRepository(factory)
+    origin, _ = _create(repository, ids)
+    with factory() as session:
+        application = Application(company_name="星河科技", position_name="平台工程师")
+        session.add(application)
+        session.flush()
+        event = ApplicationEvent(
+            application_id=application.id,
+            event_type="interview",
+            subtype="technical",
+            status="done",
+        )
+        session.add(event)
+        session.flush()
+        attempt = MockInterviewAttempt(
+            application_id=application.id,
+            event_id=event.id,
+            resume_id=10,
+            idempotency_key="target-attempt-key",
+            input_snapshot_json="{}",
+            source_fingerprint="target-source",
+            attempt_status="active",
+            transcript_fingerprint="",
+        )
+        session.add(attempt)
+        session.flush()
+        turn = MockInterviewTurn(
+            attempt_id=attempt.id,
+            turn_no=1,
+            question_idempotency_key="target-question-key",
+            turn_idempotency_key="target-turn-key",
+            question_text="请介绍一次容量治理。",
+            answer_text="我先确认容量基线，再完成分片扩容。",
+            answer_sha256="target-answer-sha",
+            turn_status="answered",
+        )
+        session.add(turn)
+        session.commit()
+        ids_2 = application.id, event.id, attempt.id, turn.id
+
+    with factory() as session:
+        application = session.get(Application, ids[0])
+        assert application is not None
+        application.deleted_at = application.created_at
+        session.commit()
+
+    with pytest.raises(VoiceCoachingValidationError, match="origin snapshot"):
+        _create(repository, ids_2, origin_snapshot_id=origin["id"])
+
+    with factory() as session:
+        application = session.get(Application, ids[0])
+        assert application is not None
+        application.deleted_at = None
+        event = session.get(ApplicationEvent, ids[1])
+        assert event is not None
+        session.delete(event)
+        session.commit()
+
+    with pytest.raises(VoiceCoachingValidationError, match="origin snapshot"):
+        _create(repository, ids_2, origin_snapshot_id=origin["id"], idempotency_key="voice-save-key-0002")
+
+    factory.kw["bind"].dispose()
+
+
 def test_trends_use_stable_windows_and_long_pause_priority(tmp_path: Path) -> None:
     factory, ids = _context(tmp_path)
     repository = VoiceCoachingRepository(factory)

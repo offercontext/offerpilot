@@ -101,4 +101,31 @@ describe('VoiceCoachingSnapshotSaveCard', () => {
     expect(host.textContent).toContain('表达复盘已保存');
     expect(host.querySelector('button')).toBeNull();
   });
+
+  it('offers an explicit no-focus choice', async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(
+      <VoiceCoachingSnapshotSaveCard
+        review={review}
+        onChange={onChange}
+        onSave={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    ));
+    click('暂不设置重点');
+    expect(onChange).toHaveBeenCalledWith({ focusKind: null });
+  });
+
+  it('does not retry a deterministic conflict', async () => {
+    await act(async () => root.render(
+      <VoiceCoachingSnapshotSaveCard
+        review={{ ...review, saveState: 'conflict' }}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    ));
+    expect(host.textContent).toContain('已有另一份表达复盘');
+    expect([...host.querySelectorAll('button')].some((item) => item.textContent?.includes('重试'))).toBe(false);
+  });
 });

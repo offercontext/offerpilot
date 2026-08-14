@@ -27,7 +27,9 @@ vi.mock('@/services/voiceCoaching', () => ({
   getVoiceCoachingSnapshot: services.getVoiceCoachingSnapshot,
 }));
 vi.mock('antd', () => ({
-  Alert: (props: { children?: ReactNode; action?: ReactNode }) => <div>{props.children}{props.action}</div>,
+  Alert: (props: { children?: ReactNode; action?: ReactNode; message?: ReactNode; description?: ReactNode }) => (
+    <div>{props.message}{props.description}{props.children}{props.action}</div>
+  ),
   Button: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props} />,
   Drawer: (props: { open?: boolean; children?: ReactNode; onClose?: () => void }) => (
     props.open ? <div role="dialog">{props.children}<button type="button" data-testid="close-drawer" onClick={props.onClose}>close</button></div> : null
@@ -204,6 +206,26 @@ afterEach(() => {
 });
 
 describe('MockInterviewDrawer failed-attempt cleanup', () => {
+  it('shows the confirmed practice focus before a new Attempt starts', () => {
+    render({
+      ...baseDraft,
+      voicePracticeFocus: {
+        focus_kind: 'long_pause_control',
+        title: '减少长停顿',
+        reason: '连续长停顿仍较明显',
+        source_snapshot_ids: [17],
+        source_snapshot_id: 17,
+        application_id: 7,
+        event_id: 11,
+        question_text: '请介绍一次故障处理经历。',
+        source_available: true,
+      },
+    });
+
+    expect(container?.textContent).toContain('本次刻意练习：减少长停顿');
+    expect(container?.textContent).toContain('已确认表达记录 #17');
+  });
+
   it('submits voice text only after the user explicitly confirms it', async () => {
     services.submitMockInterviewAnswer.mockResolvedValue(undefined);
     const { voiceBrowser } = voiceBrowserFixture();
@@ -267,7 +289,10 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     changeTextarea(transcript, '我先确认影响范围，再完成回滚。');
     act(() => buttonByText('确认使用这段文字').click());
     expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
-      .toMatchObject({ voiceCoachingReview: { originSnapshotId: 17 } });
+      .toMatchObject({
+        hasConfirmedVoiceAnswer: true,
+        voiceCoachingReview: { originSnapshotId: 17, focusKind: 'long_pause_control' },
+      });
     act(() => buttonByText('提交回答').click());
     await flush();
 
@@ -333,6 +358,64 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     const secondRequest = services.saveVoiceCoachingSnapshot.mock.calls[1][0];
     expect(secondRequest.payload).toEqual(firstRequest.payload);
     expect(container?.textContent).toContain('表达复盘已保存');
+  });
+
+  it('only reconciles a lost save response when the persisted snapshot matches the frozen request', async () => {
+    const review = {
+      turnNo: 1,
+      summary: { totalDurationMs: 42_000, voicedDurationMs: 30_000, pauseCount: 1, longestPauseMs: 2_800, speechRateCpm: 120, fillerOccurrences: [] },
+      reflectionText: '先给结论',
+      focusKind: null,
+      originSnapshotId: null,
+      idempotencyKey: null,
+      saveState: 'idle' as const,
+      snapshotId: null,
+    };
+    services.saveVoiceCoachingSnapshot.mockRejectedValue(new Error('response lost'));
+    services.getVoiceCoachingSnapshot.mockResolvedValue({
+      id: 99,
+      total_duration_ms: 42_000,
+      voiced_duration_ms: 30_000,
+      pause_count: 1,
+      longest_pause_ms: 9_999,
+      speech_rate_cpm: 120,
+      filler_occurrences: [],
+      reflection_text: '另一份内容',
+      focus_kind: null,
+      origin_snapshot_id: null,
+    });
+    render({ ...baseDraft, resumeId: 3, attemptId: 88, turnNo: 1, question: '问题', answer: '回答', answerSubmitted: true, voiceCoachingReview: review });
+
+    act(() => buttonByText('确认保存').click());
+    await flush();
+
+    expect(container?.textContent).toContain('保存结果待确认');
+    expect(container?.textContent).not.toContain('表达复盘已保存');
+  });
+
+  it('treats an idempotency conflict as deterministic and never exposes a retry', async () => {
+    const review = {
+      turnNo: 1,
+      summary: { totalDurationMs: 42_000, voicedDurationMs: 30_000, pauseCount: 1, longestPauseMs: 2_800, fillerOccurrences: [] },
+      reflectionText: '',
+      focusKind: null,
+      originSnapshotId: null,
+      idempotencyKey: null,
+      saveState: 'idle' as const,
+      snapshotId: null,
+    };
+    services.saveVoiceCoachingSnapshot.mockRejectedValue({ response: { status: 409, data: { error_code: 'voice_coaching_idempotency_conflict' } } });
+    render({ ...baseDraft, resumeId: 3, attemptId: 88, turnNo: 1, question: '问题', answer: '回答', answerSubmitted: true, voiceCoachingReview: review });
+
+    act(() => buttonByText('确认保存').click());
+    await flush();
+
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}')).toMatchObject({
+      error: '这道回答已经保存了另一份表达复盘，当前草稿不会覆盖历史。',
+      voiceCoachingReview: { saveState: 'conflict' },
+    });
+    expect(container?.textContent).not.toContain('使用原保存请求重试');
+    expect(services.getVoiceCoachingSnapshot).not.toHaveBeenCalled();
   });
 
   it('asks before closing when a local voice draft has not been submitted', async () => {

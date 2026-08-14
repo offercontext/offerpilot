@@ -53,22 +53,34 @@ function fillerCount(snapshot: VoiceCoachingSnapshot): number {
 export default function VoiceCoachingGrowthView({ onBack, onPractice }: Props) {
   const [snapshots, setSnapshots] = useState<VoiceCoachingSnapshot[]>([]);
   const [trends, setTrends] = useState<VoiceCoachingTrends | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [trendStatus, setTrendStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [deleteError, setDeleteError] = useState(false);
   const [deleteCandidateId, setDeleteCandidateId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(false);
+    setHistoryStatus('loading');
+    setTrendStatus('loading');
+    setDeleteError(false);
     const [historyResult, trendResult] = await Promise.allSettled([
       listVoiceCoachingSnapshots({ limit: 30 }),
       getVoiceCoachingTrends(),
     ]);
-    if (historyResult.status === 'fulfilled') setSnapshots(historyResult.value);
-    if (trendResult.status === 'fulfilled') setTrends(trendResult.value);
-    setError(historyResult.status === 'rejected' || trendResult.status === 'rejected');
-    setLoading(false);
+    if (historyResult.status === 'fulfilled') {
+      setSnapshots(historyResult.value);
+      setHistoryStatus('ready');
+    } else {
+      setSnapshots([]);
+      setHistoryStatus('error');
+    }
+    if (trendResult.status === 'fulfilled') {
+      setTrends(trendResult.value);
+      setTrendStatus('ready');
+    } else {
+      setTrends(null);
+      setTrendStatus('error');
+    }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -78,15 +90,26 @@ export default function VoiceCoachingGrowthView({ onBack, onPractice }: Props) {
     try {
       await deleteVoiceCoachingSnapshot(snapshotId);
       setDeleteCandidateId(null);
+      setSnapshots((current) => current.filter((item) => item.id !== snapshotId));
+      setTrends(null);
+      setTrendStatus('loading');
       await load();
     } catch {
-      setError(true);
+      setDeleteError(true);
     } finally {
       setDeletingId(null);
     }
   };
 
-  const recommendation = trends?.recommendation ?? null;
+  const loading = historyStatus === 'loading' || trendStatus === 'loading';
+  const error = historyStatus === 'error' || trendStatus === 'error' || deleteError;
+  const recommendation = historyStatus === 'ready' && trendStatus === 'ready'
+    ? trends?.recommendation ?? null
+    : null;
+  const actionableRecommendation = recommendation
+    && snapshots.some((item) => item.id === recommendation.source_snapshot_id)
+    ? recommendation
+    : null;
   const longestPause = trends?.metrics.longest_pause_ms;
   const pace = trends?.metrics.speech_rate_cpm;
   const filler = trends?.metrics.filler_per_minute;
@@ -115,14 +138,14 @@ export default function VoiceCoachingGrowthView({ onBack, onPractice }: Props) {
       ) : null}
       {loading ? <div className={styles.loading}><Spin size="large" /><span>正在整理表达记录</span></div> : null}
 
-      {!loading && recommendation ? (
+      {!loading && actionableRecommendation ? (
         <section className={styles.recommendation} aria-labelledby="voice-recommendation-title">
           <div className={styles.recommendationContent}>
             <span className={styles.eyebrow}>下一次刻意练习</span>
-            <h2 id="voice-recommendation-title">{recommendation.title}</h2>
-            <p>{recommendation.reason}。建议沿用一条真实问题，观察下一次本机测量结果。</p>
+            <h2 id="voice-recommendation-title">{actionableRecommendation.title}</h2>
+            <p>{actionableRecommendation.reason}。建议沿用一条真实问题，观察下一次本机测量结果。</p>
             <div className={styles.recommendationMeta}>
-              <span>基于 {recommendation.source_snapshot_ids.length} 条已确认记录</span>
+              <span>基于 {actionableRecommendation.source_snapshot_ids.length} 条已确认记录</span>
               <span>不会改写历史</span>
               <span>不会自动写入知识库</span>
             </div>
@@ -130,22 +153,22 @@ export default function VoiceCoachingGrowthView({ onBack, onPractice }: Props) {
           <Button
             type="primary"
             size="large"
-            disabled={!recommendation.source_available}
-            onClick={() => onPractice(recommendation)}
+            disabled={!actionableRecommendation.source_available}
+            onClick={() => onPractice(actionableRecommendation)}
           >
             针对这项再练一次 <ArrowRightOutlined />
           </Button>
         </section>
       ) : null}
 
-      {!loading && !recommendation && snapshots.length > 0 ? (
+      {!loading && historyStatus === 'ready' && !actionableRecommendation && snapshots.length > 0 ? (
         <section className={styles.neutralNotice}>
           <LineChartOutlined aria-hidden />
           <div><strong>继续积累真实练习</strong><span>当前记录尚未形成稳定、可复现的训练方向。</span></div>
         </section>
       ) : null}
 
-      {!loading && trends && snapshots.length > 0 ? (
+      {!loading && historyStatus === 'ready' && trendStatus === 'ready' && trends && snapshots.length > 0 ? (
         <section aria-labelledby="voice-trends-title">
           <div className={styles.sectionHeading}>
             <div><span className={styles.eyebrow}>RECENT WINDOWS</span><h2 id="voice-trends-title">最近表达变化</h2></div>
@@ -172,7 +195,7 @@ export default function VoiceCoachingGrowthView({ onBack, onPractice }: Props) {
         </section>
       ) : null}
 
-      {!loading ? (
+      {!loading && historyStatus === 'ready' ? (
         <section aria-labelledby="voice-history-title">
           <div className={styles.sectionHeading}>
             <div><span className={styles.eyebrow}>CONFIRMED HISTORY</span><h2 id="voice-history-title">已确认的表达记录</h2></div>

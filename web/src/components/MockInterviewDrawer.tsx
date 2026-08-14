@@ -63,6 +63,7 @@ export interface MockInterviewDrawerDraft {
   voiceCoachingReview?: VoiceCoachingPendingReview | null;
   voicePracticeFocus?: VoiceCoachingRecommendation | null;
   hasSavedVoiceCoachingSnapshot?: boolean;
+  hasConfirmedVoiceAnswer?: boolean;
 }
 
 interface ResumeOption { id: number; title?: string; name?: string }
@@ -123,6 +124,26 @@ function isUnknownResult(error: unknown): boolean {
   const code = response?.data?.error_code;
   if (code === 'mock_interview_unverifiable') return false;
   return !status || status >= 500 || code === 'mock_interview_provider_error';
+}
+
+function persistedReviewMatches(
+  snapshot: Awaited<ReturnType<typeof getVoiceCoachingSnapshot>>,
+  review: VoiceCoachingPendingReview,
+): boolean {
+  const persistedFillers = snapshot.filler_occurrences.map((item) => ({
+    text: item.text,
+    count: item.count,
+    transcriptOffsets: item.transcript_offsets,
+  }));
+  return snapshot.total_duration_ms === review.summary.totalDurationMs
+    && snapshot.voiced_duration_ms === review.summary.voicedDurationMs
+    && snapshot.pause_count === review.summary.pauseCount
+    && snapshot.longest_pause_ms === review.summary.longestPauseMs
+    && snapshot.speech_rate_cpm === (review.summary.speechRateCpm ?? null)
+    && JSON.stringify(persistedFillers) === JSON.stringify(review.summary.fillerOccurrences)
+    && snapshot.reflection_text === review.reflectionText
+    && snapshot.focus_kind === review.focusKind
+    && snapshot.origin_snapshot_id === review.originSnapshotId;
 }
 
 export default function MockInterviewDrawer({
@@ -193,6 +214,7 @@ export default function MockInterviewDrawer({
       voiceCoachingReview: null,
       voicePracticeFocus: null,
       hasSavedVoiceCoachingSnapshot: false,
+      hasConfirmedVoiceAnswer: false,
       error: error === undefined ? null : safeError(error),
     });
   }
@@ -345,8 +367,31 @@ export default function MockInterviewDrawer({
         hasSavedVoiceCoachingSnapshot: true,
       });
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      if (!status || status >= 500 || status === 409) {
+      const response = (error as { response?: { status?: number; data?: { error_code?: string } } })?.response;
+      const status = response?.status;
+      const errorCode = response?.data?.error_code;
+      if (status === 409) {
+        if (errorCode === 'voice_coaching_snapshot_exists') {
+          try {
+            const snapshot = await getVoiceCoachingSnapshot({ applicationId, eventId, attemptId: draft.attemptId, turnNo: draft.turnNo });
+            if (persistedReviewMatches(snapshot, frozenReview)) {
+              onDraftChange({
+                voiceCoachingReview: { ...frozenReview, saveState: 'saved', snapshotId: snapshot.id },
+                hasSavedVoiceCoachingSnapshot: true,
+              });
+              return;
+            }
+          } catch {
+            // A deterministic conflict remains deterministic even when the read also fails.
+          }
+        }
+        onDraftChange({
+          voiceCoachingReview: { ...frozenReview, saveState: 'conflict' },
+          error: '这道回答已经保存了另一份表达复盘，当前草稿不会覆盖历史。',
+        });
+        return;
+      }
+      if (!status || status >= 500) {
         try {
           const snapshot = await getVoiceCoachingSnapshot({
             applicationId,
@@ -354,22 +399,21 @@ export default function MockInterviewDrawer({
             attemptId: draft.attemptId,
             turnNo: draft.turnNo,
           });
-          onDraftChange({
-            voiceCoachingReview: {
-              ...frozenReview,
-              saveState: 'saved',
-              snapshotId: snapshot.id,
-            },
-            hasSavedVoiceCoachingSnapshot: true,
-          });
-          return;
+          if (persistedReviewMatches(snapshot, frozenReview)) {
+            onDraftChange({
+              voiceCoachingReview: { ...frozenReview, saveState: 'saved', snapshotId: snapshot.id },
+              hasSavedVoiceCoachingSnapshot: true,
+            });
+            return;
+          }
         } catch {
-          onDraftChange({
-            voiceCoachingReview: { ...frozenReview, saveState: 'unknown' },
-            error: '表达复盘保存结果待确认，请使用原保存请求重试。',
-          });
-          return;
+          // The write outcome remains unknown and must keep the original key/input frozen.
         }
+        onDraftChange({
+          voiceCoachingReview: { ...frozenReview, saveState: 'unknown' },
+          error: '表达复盘保存结果待确认，请使用原保存请求重试。',
+        });
+        return;
       }
       onDraftChange({
         voiceCoachingReview: {
@@ -499,6 +543,14 @@ export default function MockInterviewDrawer({
           <SourceStateTag state="current" detail="当前面试事件与本次输入" />
         ) : null}
         {draft.error ? <Alert type="warning" showIcon message={draft.error} /> : null}
+        {draft.voicePracticeFocus ? (
+          <Alert
+            type="info"
+            showIcon
+            message={`本次刻意练习：${draft.voicePracticeFocus.title}`}
+            description={`来自已确认表达记录 #${draft.voicePracticeFocus.source_snapshot_id}：${draft.voicePracticeFocus.question_text}`}
+          />
+        ) : null}
         {pending ? (
           <Alert
             type="info"
@@ -574,14 +626,6 @@ export default function MockInterviewDrawer({
         {draft.attemptId && !draft.proposal ? (
           <section className={workflowStyles.section}>
             <div className={workflowStyles.sectionHeader}><h3>第 {draft.turnNo} 题</h3></div>
-            {draft.voicePracticeFocus ? (
-              <Alert
-                type="info"
-                showIcon
-                message={`本次刻意练习：${draft.voicePracticeFocus.title}`}
-                description={`来自已确认表达记录：${draft.voicePracticeFocus.question_text}`}
-              />
-            ) : null}
             <p className="op-long-text">{draft.question || '请介绍一次与本次岗位相关的经历。'}</p>
             <VoiceAnswerComposer
               key={`${applicationId}:${eventId}:${draft.attemptId}:${draft.turnNo}`}
@@ -593,6 +637,7 @@ export default function MockInterviewDrawer({
               onConfirmTranscript={(answer) => onDraftChange({ answer })}
               onVoiceReviewConfirmed={(answer, summary) => onDraftChange({
                 answer,
+                hasConfirmedVoiceAnswer: true,
                 voiceCoachingReview: {
                   turnNo: draft.turnNo,
                   summary: {
@@ -604,13 +649,7 @@ export default function MockInterviewDrawer({
                     fillerOccurrences: summary.fillerOccurrences,
                   },
                   reflectionText: '',
-                  focusKind: summary.longestPauseMs >= 2_500
-                    ? 'long_pause_control'
-                    : summary.fillerOccurrences.some((item) => item.count > 0)
-                      ? 'filler_reduction'
-                      : summary.speechRateCpm
-                        ? 'pace_consistency'
-                        : null,
+                  focusKind: draft.voicePracticeFocus?.focus_kind ?? null,
                   originSnapshotId: draft.voicePracticeFocus?.source_snapshot_id ?? null,
                   idempotencyKey: null,
                   saveState: 'idle',

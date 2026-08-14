@@ -85,6 +85,6 @@ export interface VoiceCoachingPendingReview {
   focusKind: VoiceCoachingFocusKind | null;
   originSnapshotId: number | null;
   idempotencyKey: string | null;
-  saveState: 'idle' | 'saving' | 'unknown' | 'saved';
+  saveState: 'idle' | 'saving' | 'unknown' | 'conflict' | 'saved';
   snapshotId: number | null;
 }

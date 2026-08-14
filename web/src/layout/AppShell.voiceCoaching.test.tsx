@@ -101,6 +101,8 @@ vi.mock('@/components/MockInterviewDrawer', () => ({
     <section>
       <output data-testid="mock-focus" data-attempt-id={props.draft.attemptId ?? 'none'}>{props.draft.voicePracticeFocus?.title ?? 'none'}</output>
       <button type="button" data-testid="mark-voice-saved" onClick={() => props.onDraftChange({ attemptId: 41, hasSavedVoiceCoachingSnapshot: true })}>saved</button>
+      <button type="button" data-testid="mark-voice-skipped" onClick={() => props.onDraftChange({ attemptId: 42, answerSubmitted: true, hasConfirmedVoiceAnswer: true, voiceCoachingReview: null })}>skipped</button>
+      <button type="button" data-testid="mark-voice-unknown" onClick={() => props.onDraftChange({ attemptId: 43, answerSubmitted: true, hasConfirmedVoiceAnswer: true, voiceCoachingReview: { turnNo: 1, saveState: 'unknown' } })}>unknown</button>
       <button type="button" data-testid="close-mock" onClick={props.onClose}>close</button>
     </section>
   ),
@@ -162,4 +164,24 @@ describe('AppShell voice coaching navigation', () => {
     await flush();
     expect(host.querySelector('[data-testid="mock-focus"]')?.getAttribute('data-attempt-id')).toBe('none');
   });
+
+  it.each(['mark-voice-skipped', 'mark-voice-unknown'])(
+    'preserves an already submitted voice answer when closing after %s',
+    async (action) => {
+      await act(async () => root.render(<AppShell />));
+      await flush();
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="nav-interview"]')?.click());
+      await flush();
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="open-ui-growth"]')?.click());
+      await flush();
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="practice-growth"]')?.click());
+      await flush();
+      act(() => host.querySelector<HTMLButtonElement>(`[data-testid="${action}"]`)?.click());
+      act(() => host.querySelector<HTMLButtonElement>('[data-testid="close-mock"]')?.click());
+      await flush();
+
+      expect(mockServices.discard).not.toHaveBeenCalled();
+      expect(host.querySelector('[data-testid="mock-focus"]')).toBeNull();
+    },
+  );
 });

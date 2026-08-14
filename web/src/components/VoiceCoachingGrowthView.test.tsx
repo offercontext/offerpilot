@@ -149,4 +149,29 @@ describe('VoiceCoachingGrowthView', () => {
     expect(host.textContent).toContain('部分表达记录暂时无法加载');
     expect(host.textContent).toContain(snapshot.question_text);
   });
+
+  it('does not present an empty history or recommendation when history loading fails', async () => {
+    services.list.mockRejectedValue(new Error('history unavailable'));
+    await act(async () => root.render(<VoiceCoachingGrowthView onBack={vi.fn()} onPractice={vi.fn()} />));
+    await flush();
+
+    expect(host.textContent).toContain('表达记录暂时无法加载');
+    expect(host.textContent).not.toContain('完成一次语音回答并确认保存后');
+    expect(host.textContent).not.toContain('针对这项再练一次');
+  });
+
+  it('invalidates a stale recommendation immediately after deletion even when trend refresh fails', async () => {
+    services.trends
+      .mockResolvedValueOnce(trends)
+      .mockRejectedValueOnce(new Error('trend unavailable'));
+    services.list.mockResolvedValueOnce([snapshot]).mockResolvedValueOnce([]);
+    await act(async () => root.render(<VoiceCoachingGrowthView onBack={vi.fn()} onPractice={vi.fn()} />));
+    await flush();
+    act(() => button('删除').click());
+    act(() => button('确认删除').click());
+    await flush();
+
+    expect(host.textContent).not.toContain('针对这项再练一次');
+    expect(host.textContent).not.toContain('减少长停顿');
+  });
 });

@@ -86,7 +86,8 @@ class VoiceCoachingRepository:
             fillers = _validate_fillers(validated["filler_occurrences"], answer)
             if origin_snapshot_id is not None:
                 _bounded_int("origin_snapshot_id", origin_snapshot_id, minimum=1)
-                if session.get(VoiceCoachingSnapshot, origin_snapshot_id) is None:
+                origin = session.get(VoiceCoachingSnapshot, origin_snapshot_id)
+                if origin is None or not _snapshot_source_available(session, origin):
                     raise VoiceCoachingValidationError("voice coaching origin snapshot is unavailable")
 
             answer_sha256 = sha256_text(answer)
@@ -317,16 +318,21 @@ def _owned_turn(
     return attempt, turn
 
 
-def _snapshot_json(session: Session, row: VoiceCoachingSnapshot) -> dict[str, Any]:
+def _snapshot_source_available(session: Session, row: VoiceCoachingSnapshot) -> bool:
     application = session.get(Application, row.application_id)
     event = session.get(ApplicationEvent, row.event_id)
-    source_available = bool(
+    return bool(
         application is not None
         and application.deleted_at is None
         and event is not None
         and event.application_id == row.application_id
         and event.event_type == "interview"
     )
+
+
+def _snapshot_json(session: Session, row: VoiceCoachingSnapshot) -> dict[str, Any]:
+    application = session.get(Application, row.application_id)
+    source_available = _snapshot_source_available(session, row)
     try:
         fillers = json.loads(row.filler_occurrences_json)
     except (TypeError, ValueError):

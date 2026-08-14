@@ -136,6 +136,7 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
     voiceCoachingReview: null,
     voicePracticeFocus: null,
     hasSavedVoiceCoachingSnapshot: false,
+    hasConfirmedVoiceAnswer: false,
     error: null,
   };
 }
@@ -1015,7 +1016,12 @@ function AppShellContent() {
       setMockInterviewDraft(null);
       return;
     }
-    if (draft.hasSavedVoiceCoachingSnapshot) {
+    const preserveSubmittedVoiceAnswer = Boolean(
+      draft.hasConfirmedVoiceAnswer
+      || draft.voiceCoachingReview?.saveState === 'unknown'
+      || draft.voiceCoachingReview?.saveState === 'conflict',
+    );
+    if (draft.hasSavedVoiceCoachingSnapshot || preserveSubmittedVoiceAnswer) {
       mockInterviewDraftsRef.current.set(`${context.applicationId}:${context.eventId}`, draft);
       setMockInterviewContext(null);
       setMockInterviewDraft(null);

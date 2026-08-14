@@ -10,7 +10,8 @@ interface Props {
   onSkip: () => void;
 }
 
-const focusOptions: Array<{ value: VoiceCoachingFocusKind; label: string }> = [
+const focusOptions: Array<{ value: VoiceCoachingFocusKind | null; label: string }> = [
+  { value: null, label: '暂不设置重点' },
   { value: 'long_pause_control', label: '减少长停顿' },
   { value: 'filler_reduction', label: '减少口头禅' },
   { value: 'pace_consistency', label: '稳定表达节奏' },
@@ -22,7 +23,7 @@ function duration(value: number): string {
 }
 
 export default function VoiceCoachingSnapshotSaveCard({ review, onChange, onSave, onSkip }: Props) {
-  const frozen = review.saveState === 'saving' || review.saveState === 'unknown';
+  const frozen = review.saveState === 'saving' || review.saveState === 'unknown' || review.saveState === 'conflict';
   const fillerCount = review.summary.fillerOccurrences.reduce((total, item) => total + item.count, 0);
 
   if (review.saveState === 'saved') {
@@ -54,6 +55,14 @@ export default function VoiceCoachingSnapshotSaveCard({ review, onChange, onSave
           showIcon
           message="保存结果待确认"
           description="输入已冻结。请使用原保存请求重试，避免生成重复记录。"
+        />
+      ) : null}
+      {review.saveState === 'conflict' ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="已有另一份表达复盘"
+          description="这道回答已经保存了不同内容。当前草稿不会覆盖历史，你可以暂不保存后继续。"
         />
       ) : null}
 
@@ -110,6 +119,8 @@ export default function VoiceCoachingSnapshotSaveCard({ review, onChange, onSave
       <div className={styles.actions}>
         {review.saveState === 'unknown' ? (
           <Button type="primary" onClick={onSave}>使用原保存请求重试</Button>
+        ) : review.saveState === 'conflict' ? (
+          <Button onClick={onSkip}>暂不保存</Button>
         ) : (
           <>
             <Button onClick={onSkip} disabled={review.saveState === 'saving'}>暂不保存</Button>
