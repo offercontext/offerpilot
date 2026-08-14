@@ -224,7 +224,7 @@ export default function MockInterviewDrawer({
     const responseAttemptId = response?.data?.attempt_id;
     const currentAttemptKey = attemptKeyOverride ?? draft.attemptKey;
     const attemptId = draft.attemptId ?? (typeof responseAttemptId === 'number' ? responseAttemptId : null);
-    if (attemptId && draft.hasSavedVoiceCoachingSnapshot) {
+    if (attemptId && (draft.hasSavedVoiceCoachingSnapshot || draft.hasSubmittedVoiceAnswer)) {
       resetDraft(sourceError);
       return true;
     }
@@ -258,8 +258,16 @@ export default function MockInterviewDrawer({
       resetDraft(sourceError);
       return true;
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      if (status === 404) {
+      const discardResponse = (error as {
+        response?: { status?: number; data?: { error_code?: string } };
+      })?.response;
+      if (
+        discardResponse?.status === 404
+        || (
+          discardResponse?.status === 409
+          && discardResponse.data?.error_code === 'mock_interview_attempt_confirmed'
+        )
+      ) {
         resetDraft(sourceError);
         return true;
       }

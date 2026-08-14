@@ -637,6 +637,49 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       .toMatchObject({ attemptId: null, hasSavedVoiceCoachingSnapshot: false });
   });
 
+  it('keeps a submitted voice answer when the user skipped saving and a later question fails', async () => {
+    services.generateMockInterviewQuestion.mockRejectedValue({
+      response: { status: 422, data: { error_code: 'mock_interview_question_invalid' } },
+    });
+    render({
+      ...baseDraft,
+      attemptId: 409,
+      attemptKey: 'attempt-409',
+      answer: 'answer',
+      answerSubmitted: true,
+      hasSubmittedVoiceAnswer: true,
+      hasSavedVoiceCoachingSnapshot: false,
+      voiceCoachingReview: null,
+    });
+
+    act(() => drawerButtons()[2]?.click());
+    await flush();
+
+    expect(services.discardMockInterviewAttempt).not.toHaveBeenCalled();
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .toMatchObject({ attemptId: null, hasSubmittedVoiceAnswer: false });
+  });
+
+  it('treats a protected Attempt DELETE conflict as a completed local cleanup', async () => {
+    services.submitMockInterviewAnswer.mockRejectedValue({
+      response: { status: 502, data: { error_code: 'mock_interview_unverifiable' } },
+    });
+    services.discardMockInterviewAttempt.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'mock_interview_attempt_confirmed' } },
+    });
+    render({ ...baseDraft, attemptId: 410, attemptKey: 'attempt-410', answer: 'answer' });
+
+    act(() => drawerButtons()[0]?.click());
+    await flush();
+
+    expect(services.discardMockInterviewAttempt).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}')).toMatchObject({
+      attemptId: null,
+      attemptKey: null,
+      resultUnknown: false,
+    });
+  });
+
   it('treats DELETE 404 as an already-completed cleanup', async () => {
     services.submitMockInterviewAnswer.mockRejectedValue({
       response: { status: 502, data: { error_code: 'mock_interview_unverifiable' } },
