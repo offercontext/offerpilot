@@ -350,7 +350,7 @@ def _snapshot_json(session: Session, row: VoiceCoachingSnapshot) -> dict[str, An
         "reflection_text": row.reflection_text,
         "focus_kind": row.focus_kind,
         "origin_snapshot_id": row.origin_snapshot_id,
-        "created_at": row.created_at,
+        "created_at": row.created_at.isoformat() if row.created_at is not None else None,
         "source_available": source_available,
         "company_name": application.company_name if application is not None else "",
         "position_name": application.position_name if application is not None else "",
@@ -449,4 +449,3 @@ def _recommendation_json(focus_kind: str, rows: list[dict[str, Any]], reason: st
         "question_text": source["question_text"],
         "source_available": bool(source.get("source_available")),
     }
-

@@ -411,6 +411,67 @@ class AdaptivePracticePlanOut(BaseModel):
     completed_at: str | None
 
 
+class VoiceCoachingFillerOccurrenceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    text: str = Field(min_length=1, max_length=20)
+    count: int = Field(ge=1, le=100)
+    transcript_offsets: list[int] = Field(max_length=100)
+
+
+class VoiceCoachingSnapshotCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str = Field(min_length=16, max_length=128)
+    total_duration_ms: int = Field(ge=1, le=299_000)
+    voiced_duration_ms: int = Field(ge=0, le=299_000)
+    pause_count: int = Field(ge=0, le=300)
+    longest_pause_ms: int = Field(ge=0, le=299_000)
+    speech_rate_cpm: int | None = Field(default=None, ge=1, le=1_000)
+    filler_occurrences: list[VoiceCoachingFillerOccurrenceIn] = Field(max_length=20)
+    reflection_text: str = Field(max_length=1_000)
+    focus_kind: Literal[
+        "long_pause_control", "filler_reduction", "pace_consistency"
+    ] | None = None
+    origin_snapshot_id: int | None = Field(default=None, ge=1)
+
+
+class VoiceCoachingSnapshotOut(BaseModel):
+    id: int
+    attempt_id: int
+    turn_id: int
+    application_id: int
+    event_id: int
+    question_text: str
+    confirmed_answer_text: str
+    answer_sha256: str
+    measurement_source: Literal["local_browser_measurement"]
+    total_duration_ms: int
+    voiced_duration_ms: int
+    pause_count: int
+    longest_pause_ms: int
+    speech_rate_cpm: int | None
+    filler_occurrences: list[dict[str, Any]]
+    reflection_text: str
+    focus_kind: str | None
+    origin_snapshot_id: int | None
+    created_at: datetime | str
+    source_available: bool
+    company_name: str
+    position_name: str
+
+
+class VoiceCoachingSnapshotListOut(BaseModel):
+    items: list[VoiceCoachingSnapshotOut]
+
+
+class VoiceCoachingTrendOut(BaseModel):
+    snapshot_count: int
+    window_size: int
+    metrics: dict[str, dict[str, Any]]
+    recommendation: dict[str, Any] | None
+
+
 class InterviewPreparationProposalOut(BaseModel):
     id: int
     application_id: int

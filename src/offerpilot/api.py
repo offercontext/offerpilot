@@ -198,6 +198,12 @@ from offerpilot.repositories.mock_interview_review_drafts import (
     MockInterviewReviewDraftRepository,
     MockInterviewReviewDraftValidationError,
 )
+from offerpilot.repositories.voice_coaching import (
+    VoiceCoachingConflict,
+    VoiceCoachingNotFound,
+    VoiceCoachingRepository,
+    VoiceCoachingValidationError,
+)
 from offerpilot.repositories.notes import (
     UNSET,
     NoteBindingError,
@@ -243,6 +249,7 @@ from offerpilot.schemas import (
     QuestionOut,
     QuestionReviewOut,
     ResumeMatchOut,
+    VoiceCoachingSnapshotCreateIn,
     normalize_resume_content,
     resume_payload,
 )
@@ -845,6 +852,7 @@ def create_app(
     interview_stories = InterviewStoriesRepository(session_factory)
     mock_interviews = MockInterviewRepository(session_factory)
     mock_interview_review_drafts = MockInterviewReviewDraftRepository(session_factory)
+    voice_coaching = VoiceCoachingRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
     knowledge_config = app_config
@@ -1357,7 +1365,7 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
-        _request: Request,
+        request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
         errors = exc.errors()
@@ -1368,6 +1376,12 @@ def create_app(
             for err in errors
         ):
             return error_response(400, "Invalid ID")
+        if "/voice-coaching" in request.url.path:
+            return error_response(
+                422,
+                "语音复盘数据不完整，请检查后重试。",
+                code="voice_coaching_invalid_payload",
+            )
         return JSONResponse(
             status_code=422,
             content={"error": "validation_failed", "detail": errors},
@@ -5603,6 +5617,84 @@ def create_app(
         )
 
     @app.post(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/"
+        "{attempt_id}/turns/{turn_no}/voice-coaching-snapshot"
+    )
+    def save_voice_coaching_snapshot(
+        application_id: int,
+        event_id: int,
+        attempt_id: int,
+        turn_no: int,
+        payload: VoiceCoachingSnapshotCreateIn,
+    ) -> JSONResponse:
+        try:
+            snapshot, created = voice_coaching.create_or_replay(
+                application_id=application_id,
+                event_id=event_id,
+                attempt_id=attempt_id,
+                turn_no=turn_no,
+                **payload.model_dump(),
+            )
+        except VoiceCoachingNotFound:
+            return _voice_coaching_error(404, "voice_coaching_source_not_found")
+        except VoiceCoachingValidationError:
+            return _voice_coaching_error(422, "voice_coaching_invalid_payload")
+        except VoiceCoachingConflict as exc:
+            code = (
+                "voice_coaching_idempotency_conflict"
+                if "idempotency" in str(exc)
+                else "voice_coaching_snapshot_exists"
+            )
+            return _voice_coaching_error(409, code)
+        return JSONResponse(snapshot, status_code=201 if created else 200)
+
+    @app.get(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/"
+        "{attempt_id}/turns/{turn_no}/voice-coaching-snapshot"
+    )
+    def get_voice_coaching_snapshot(
+        application_id: int,
+        event_id: int,
+        attempt_id: int,
+        turn_no: int,
+    ) -> JSONResponse:
+        try:
+            snapshot = voice_coaching.get_for_turn(
+                application_id=application_id,
+                event_id=event_id,
+                attempt_id=attempt_id,
+                turn_no=turn_no,
+            )
+        except VoiceCoachingNotFound:
+            return _voice_coaching_error(404, "voice_coaching_source_not_found")
+        if snapshot is None:
+            return _voice_coaching_error(404, "voice_coaching_snapshot_not_found")
+        return JSONResponse(snapshot)
+
+    @app.get("/api/interview/voice-coaching/snapshots")
+    def list_voice_coaching_snapshots(
+        limit: int = Query(20, ge=1, le=100),
+        before_id: int | None = Query(None, ge=1),
+    ) -> JSONResponse:
+        try:
+            items = voice_coaching.list_snapshots(limit=limit, before_id=before_id)
+        except VoiceCoachingValidationError:
+            return _voice_coaching_error(422, "voice_coaching_invalid_payload")
+        return JSONResponse({"items": items})
+
+    @app.get("/api/interview/voice-coaching/trends")
+    def get_voice_coaching_trends() -> JSONResponse:
+        return JSONResponse(voice_coaching.trends())
+
+    @app.delete("/api/interview/voice-coaching/snapshots/{snapshot_id}")
+    def delete_voice_coaching_snapshot(snapshot_id: int) -> Response:
+        try:
+            voice_coaching.delete_snapshot(snapshot_id)
+        except VoiceCoachingValidationError:
+            return _voice_coaching_error(422, "voice_coaching_invalid_payload")
+        return Response(status_code=204)
+
+    @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/turns/{turn_no}/question"
     )
     def generate_mock_interview_question(
@@ -6445,6 +6537,17 @@ def _adaptive_practice_error(status_code: int, code: str) -> JSONResponse:
         "adaptive_practice_idempotency_conflict": "本次操作内容已变化，请重新开始。",
         "adaptive_practice_revision_conflict": "练习状态已变化，请重新加载。",
         "adaptive_practice_invalid_payload": "练习内容不完整，请检查后重试。",
+    }
+    return error_response(status_code, messages[code], code=code)
+
+
+def _voice_coaching_error(status_code: int, code: str) -> JSONResponse:
+    messages = {
+        "voice_coaching_source_not_found": "对应的模拟面试回答已不可用，请重新打开面试记录。",
+        "voice_coaching_snapshot_not_found": "这道回答还没有保存语音复盘。",
+        "voice_coaching_idempotency_conflict": "本次保存内容已经变化，请重新确认后保存。",
+        "voice_coaching_snapshot_exists": "这道回答已经保存过语音复盘。",
+        "voice_coaching_invalid_payload": "语音复盘数据不完整，请检查后重试。",
     }
     return error_response(status_code, messages[code], code=code)
 
