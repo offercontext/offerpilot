@@ -63,13 +63,6 @@ export function buildRealInterviewReadiness(input: RealInterviewReadinessInput):
       detail: input.event ? '已选择已排期的面试事件。' : '需要选择一条已排期且可见的面试事件。',
       actionLabel: input.event ? undefined : '安排面试',
     },
-    {
-      key: 'preparation',
-      label: '准备建议',
-      status: 'ready',
-      detail: '可选：只发送你明确勾选的建议。',
-      actionLabel: '查看建议',
-    },
   ];
   return {
     ready: items.slice(0, 4).every((item) => item.status === 'ready'),
@@ -108,7 +101,7 @@ export function buildQuickPracticeReadiness(draft: QuickPracticeDraft): Readines
     },
     {
       key: 'preparation',
-      label: 'AI 输入',
+      label: '输入边界',
       status: 'ready',
       detail: '仅发送冻结 JD、冻结简历和本次确认的问答。',
     },

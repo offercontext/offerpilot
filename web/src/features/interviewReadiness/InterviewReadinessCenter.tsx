@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Checkbox, Input, Select } from 'antd';
 import type { Application } from '@/types/application';
 import type { ScheduleEvent } from '@/types/event';
 import type { Resume } from '@/types/resume';
@@ -11,6 +12,8 @@ import {
   type ReadinessItem,
 } from './interviewReadinessModel';
 import styles from './InterviewReadinessCenter.module.css';
+
+const { TextArea } = Input;
 
 export interface RealInterviewStudioContext {
   kind: 'application_event';
@@ -83,11 +86,11 @@ export default function InterviewReadinessCenter({
   onOpenStudio,
 }: Props) {
   const [mode, setMode] = useState<'real' | 'quick'>('real');
-  const [applicationId, setApplicationId] = useState<number | null>(applications[0]?.id ?? null);
+  const [applicationId, setApplicationId] = useState<number | null>(null);
   const [eventId, setEventId] = useState<number | null>(null);
-  const [resumeId, setResumeId] = useState<number | undefined>(resumes[0]?.id);
-  const [jdState, setJdState] = useState<{ status: 'ready' | 'missing' | 'unknown'; id?: number; text?: string }>({ status: applications[0] ? 'unknown' : 'missing' });
-  const [quickDraft, setQuickDraft] = useState<QuickPracticeDraft>({ positionName: '', jdText: '', jdConfirmed: false, resumeId: resumes[0]?.id });
+  const [resumeId, setResumeId] = useState<number | undefined>();
+  const [jdState, setJdState] = useState<{ status: 'ready' | 'missing' | 'unknown'; id?: number; text?: string }>({ status: 'missing' });
+  const [quickDraft, setQuickDraft] = useState<QuickPracticeDraft>({ positionName: '', jdText: '', jdConfirmed: false, resumeId: undefined });
   const [quickError, setQuickError] = useState<string | null>(null);
   const [creatingCase, setCreatingCase] = useState(false);
 
@@ -100,8 +103,31 @@ export default function InterviewReadinessCenter({
     [applicationId, events],
   );
   const selectedApplication = visibleApplications.find((item) => item.id === applicationId) ?? null;
-  const selectedEvent = interviewEvents.find((item) => item.id === eventId) ?? interviewEvents[0] ?? null;
+  const selectedEvent = interviewEvents.find((item) => item.id === eventId) ?? null;
   const selectedResume = resumes.find((item) => item.id === resumeId && !item.deleted_at) ?? null;
+
+  useEffect(() => {
+    if (applicationId !== null && !visibleApplications.some((item) => item.id === applicationId)) {
+      setApplicationId(null);
+    }
+  }, [applicationId, visibleApplications]);
+
+  useEffect(() => {
+    if (eventId !== null && !interviewEvents.some((item) => item.id === eventId)) {
+      setEventId(null);
+    }
+  }, [eventId, interviewEvents]);
+
+  useEffect(() => {
+    if (resumeId !== undefined && !resumes.some((item) => item.id === resumeId && !item.deleted_at)) {
+      setResumeId(undefined);
+    }
+  }, [resumeId, resumes]);
+
+  useEffect(() => {
+    setEventId(null);
+    setJdState({ status: applicationId === null ? 'missing' : 'unknown' });
+  }, [applicationId]);
 
   useEffect(() => {
     if (!applicationId) {
@@ -120,7 +146,7 @@ export default function InterviewReadinessCenter({
   }, [applicationId]);
 
   useEffect(() => {
-    if (!interviewEvents.some((item) => item.id === eventId)) setEventId(interviewEvents[0]?.id ?? null);
+    if (eventId !== null && !interviewEvents.some((item) => item.id === eventId)) setEventId(null);
   }, [eventId, interviewEvents]);
 
   const realReadiness = buildRealInterviewReadiness({
@@ -131,6 +157,12 @@ export default function InterviewReadinessCenter({
   });
   const quickReadiness = buildQuickPracticeReadiness(quickDraft);
   const readiness = mode === 'real' ? realReadiness : quickReadiness;
+
+  const focusControl = (id: string) => {
+    const target = document.getElementById(id);
+    target?.focus();
+    target?.querySelector<HTMLElement>('.ant-select-selector')?.focus();
+  };
 
   const startQuickPractice = async () => {
     if (!quickReadiness.ready || !quickDraft.resumeId) return;
@@ -159,12 +191,18 @@ export default function InterviewReadinessCenter({
   };
 
   const actionFor = (item: ReadinessItem) => {
-    if (item.key === 'application' && visibleApplications[0]) setApplicationId(visibleApplications[0].id);
-    if (item.key === 'resume' && resumes[0]) setResumeId(resumes[0].id);
-    if (item.key === 'event' && interviewEvents[0]) setEventId(interviewEvents[0].id);
-    if (item.key === 'jd' && selectedApplication) {
-      if (selectedEvent) onOpenPreparation?.(selectedApplication.id, selectedEvent.id);
-      else onOpenApplication?.(selectedApplication.id);
+    if (item.key === 'application') focusControl('readiness-application');
+    if (item.key === 'resume') focusControl(mode === 'quick' ? 'quick-readiness-resume' : 'readiness-resume');
+    if (item.key === 'event') focusControl('readiness-event');
+    if (item.key === 'jd') {
+      if (mode === 'quick') focusControl('quick-readiness-jd');
+      else if (selectedApplication && selectedEvent) onOpenPreparation?.(selectedApplication.id, selectedEvent.id);
+      else if (selectedApplication) onOpenApplication?.(selectedApplication.id);
+      else focusControl('readiness-application');
+    }
+    if (item.key === 'preparation' && mode === 'real') {
+      if (selectedApplication && selectedEvent) onOpenPreparation?.(selectedApplication.id, selectedEvent.id);
+      else focusControl('readiness-application');
     }
   };
 
@@ -172,7 +210,7 @@ export default function InterviewReadinessCenter({
     <section className={styles.surface} data-testid="interview-readiness-center" aria-labelledby="readiness-title">
       <div className={styles.hero}>
         <div>
-          <span className={styles.kicker}>INTERVIEW ROOM / 01</span>
+          <span className={styles.kicker}>面试准备</span>
           <h1 id="readiness-title">面试准备中心</h1>
           <p>先把要带进面试的证据准备好，再进入一间只属于这次练习的工作台。</p>
         </div>
@@ -197,15 +235,15 @@ export default function InterviewReadinessCenter({
       <div className={styles.workspaceGrid}>
         <div className={styles.prepPanel}>
           <div className={styles.panelHeader}>
-            <div><span className={styles.eyebrow}>START HERE</span><h2>开始前检查</h2></div>
+            <div><span className={styles.eyebrow}>准备检查</span><h2>开始前检查</h2></div>
             <span className={styles.roundBadge}>{readiness.ready ? '可以出发' : '还差一点'}</span>
           </div>
           {mode === 'real' ? (
             <>
               <div className={styles.controls}>
-                <label>选择投递<select value={applicationId ?? ''} onChange={(event) => setApplicationId(event.target.value ? Number(event.target.value) : null)}><option value="">请选择投递</option>{visibleApplications.map((item) => <option key={item.id} value={item.id}>{item.company_name} · {item.position_name}</option>)}</select></label>
-                <label>选择面试事件<select value={selectedEvent?.id ?? ''} onChange={(event) => setEventId(event.target.value ? Number(event.target.value) : null)}><option value="">请选择已排期面试</option>{interviewEvents.map((item) => <option key={item.id} value={item.id}>{item.round ? `第 ${item.round} 轮 · ` : ''}{new Date(item.scheduled_at).toLocaleString()}</option>)}</select></label>
-                <label>选择简历<select value={resumeId ?? ''} onChange={(event) => setResumeId(event.target.value ? Number(event.target.value) : undefined)}><option value="">请选择已保存简历</option>{resumes.filter((item) => !item.deleted_at).map((item) => <option key={item.id} value={item.id}>{item.title || item.name || `简历 ${item.id}`}</option>)}</select></label>
+                <label>选择投递<Select id="readiness-application" value={applicationId ?? undefined} placeholder="请选择投递" allowClear onChange={(value) => setApplicationId(value ?? null)} options={visibleApplications.map((item) => ({ value: item.id, label: `${item.company_name} · ${item.position_name}` }))} /></label>
+                <label>选择面试事件<Select id="readiness-event" value={eventId ?? undefined} placeholder="请选择已排期面试" allowClear onChange={(value) => setEventId(value ?? null)} options={interviewEvents.map((item) => ({ value: item.id, label: `${item.round ? `第 ${item.round} 轮 · ` : ''}${new Date(item.scheduled_at).toLocaleString()}` }))} /></label>
+                <label>选择简历<Select id="readiness-resume" value={resumeId} placeholder="请选择已保存简历" allowClear onChange={(value) => setResumeId(value)} options={resumes.filter((item) => !item.deleted_at).map((item) => ({ value: item.id, label: item.title || item.name || `简历 ${item.id}` }))} /></label>
               </div>
               <div className={styles.readOnlyJd} aria-live="polite">
                 <span>当前 JD（只读）</span>
@@ -214,10 +252,10 @@ export default function InterviewReadinessCenter({
             </>
           ) : (
             <div className={styles.controls}>
-              <label>岗位名称<input value={quickDraft.positionName} maxLength={200} placeholder="例如：后端工程师" onChange={(event) => setQuickDraft((current) => ({ ...current, positionName: event.target.value }))} /></label>
-              <label>粘贴 JD<textarea value={quickDraft.jdText} rows={5} placeholder="粘贴你已核对的岗位描述原文，不抓取 URL。" onChange={(event) => setQuickDraft((current) => ({ ...current, jdText: event.target.value }))} /></label>
-              <label className={styles.confirmLabel}><input type="checkbox" checked={quickDraft.jdConfirmed} onChange={(event) => setQuickDraft((current) => ({ ...current, jdConfirmed: event.target.checked }))} /> 已核对，本次按此岗位资料练习</label>
-              <label>选择简历<select value={quickDraft.resumeId ?? ''} onChange={(event) => setQuickDraft((current) => ({ ...current, resumeId: event.target.value ? Number(event.target.value) : undefined }))}><option value="">请选择已保存简历</option>{resumes.filter((item) => !item.deleted_at).map((item) => <option key={item.id} value={item.id}>{item.title || item.name || `简历 ${item.id}`}</option>)}</select></label>
+              <label>岗位名称<Input value={quickDraft.positionName} maxLength={200} placeholder="例如：后端工程师" onChange={(event) => setQuickDraft((current) => ({ ...current, positionName: event.target.value }))} /></label>
+              <label>粘贴 JD<TextArea id="quick-readiness-jd" value={quickDraft.jdText} rows={5} placeholder="粘贴你已核对的岗位描述原文，不抓取 URL。" onChange={(event) => setQuickDraft((current) => ({ ...current, jdText: event.target.value }))} /></label>
+              <label className={styles.confirmLabel}><Checkbox checked={quickDraft.jdConfirmed} onChange={(event) => setQuickDraft((current) => ({ ...current, jdConfirmed: event.target.checked }))}>已核对，本次按此岗位资料练习</Checkbox></label>
+              <label>选择简历<Select id="quick-readiness-resume" value={quickDraft.resumeId} placeholder="请选择已保存简历" allowClear onChange={(value) => setQuickDraft((current) => ({ ...current, resumeId: value }))} options={resumes.filter((item) => !item.deleted_at).map((item) => ({ value: item.id, label: item.title || item.name || `简历 ${item.id}` }))} /></label>
             </div>
           )}
           <Checklist items={readiness.items} onAction={actionFor} />
@@ -235,9 +273,9 @@ export default function InterviewReadinessCenter({
         </div>
 
         <aside className={styles.sidePanel} aria-label="面试说明">
-          <div className={styles.sideBlock}><span className={styles.eyebrow}>WHAT GOES IN</span><h3>本次会带入什么</h3><p>冻结的 JD、已保存简历、你明确选择的准备建议，以及本次已确认的回答。</p></div>
-          <div className={styles.sideBlock}><span className={styles.eyebrow}>WHAT STAYS LOCAL</span><h3>什么不会离开浏览器</h3><p>原始音频、临时转写、VAD 帧和 Haru 的位置只在本地处理或保存。</p></div>
-          <div className={styles.sideBlock}><span className={styles.eyebrow}>AFTER PRACTICE</span><h3>练习结束后</h3><p>你可以查看确认过的回答与复盘入口。快速练习会标记为“快速练习”，不会出现在投递或日历里。</p></div>
+          <div className={styles.sideBlock}><span className={styles.eyebrow}>本次输入</span><h3>只带入已确认来源</h3><p>冻结的 JD、明确选择的简历、已排期面试，以及本次练习中已经确认的回答。</p></div>
+          <div className={styles.sideBlock}><span className={styles.eyebrow}>仅在本地</span><h3>什么不会离开浏览器</h3><p>原始音频、临时转写、VAD 帧和 Haru 的位置只在本地处理或保存。</p></div>
+          <div className={styles.sideBlock}><span className={styles.eyebrow}>练习结束后</span><h3>保留清晰的来源边界</h3><p>你可以查看确认过的回答与复盘入口。快速练习会标记为“快速练习”，不会出现在投递或日历里。</p></div>
         </aside>
       </div>
     </section>

@@ -44,7 +44,7 @@ def _seed_resume(data_dir: Path) -> int:
         resume = Resume(
             title="筱哲简历",
             parsed_data="Python FastAPI",
-            content_json=json.dumps({"summary": "后端工程师", "skills": ["Python"]}),
+            content_json=json.dumps({"raw_text": "Python FastAPI", "summary": "后端工程师", "skills": ["Python"]}),
         )
         session.add(resume)
         session.commit()
@@ -141,3 +141,52 @@ def test_quick_practice_finish_uses_last_confirmed_answer(tmp_path):
     assert finished.status_code == 201
     assert finished.json()["context_kind"] == "quick_practice"
     assert finished.json()["practice_case_id"] == case["id"]
+
+
+def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_path):
+    resume_id = _seed_resume(tmp_path)
+    with TestClient(create_app(data_dir=tmp_path, chat_model=_QuickPracticeModel())) as client:
+        case = client.post(
+            "/api/interview-practice-cases",
+            json={
+                "idempotency_key": "case-api-evidence-001",
+                "position_name": "后端工程师",
+                "jd_text": "负责 Python 服务稳定性",
+                "resume_id": resume_id,
+            },
+        ).json()
+        base = f"/api/interview-practice-cases/{case['id']}/mock-interview"
+        started = client.post(
+            f"{base}/attempts",
+            json={
+                "attempt_idempotency_key": "quick-evidence-attempt-001",
+                "initial_question_idempotency_key": "quick-evidence-question-001",
+            },
+        ).json()
+        attempt_id = started["attempt_id"]
+        assert started["turn"]["basis_refs"] == [
+            {"source": "jd", "path": "/jd/text", "excerpt": "负责 Python 服务稳定性"},
+            {"source": "resume", "path": "/resume/content_json/raw_text", "excerpt": "Python FastAPI"},
+        ]
+        client.post(
+            f"{base}/attempts/{attempt_id}/turns",
+            json={
+                "turn_no": 1,
+                "answer_text": "我会先拆分接口边界。",
+                "turn_idempotency_key": "quick-evidence-answer-001",
+            },
+        )
+        follow_up = client.post(
+            f"{base}/attempts/{attempt_id}/turns/2/question",
+            json={"question_idempotency_key": "quick-evidence-question-002"},
+        )
+
+    assert follow_up.status_code == 201
+    turn = follow_up.json()["turn"]
+    assert turn["question_kind"] == "follow_up"
+    assert turn["parent_turn_no"] == 1
+    assert turn["basis_refs"] == [{
+        "source": "turn",
+        "path": "/turns/001/answer",
+        "excerpt": "我会先拆分接口边界。",
+    }]

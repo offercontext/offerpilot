@@ -13,6 +13,9 @@ import {
   PILOT_MASCOT_MIN_ZOOM,
   readPilotMascotPositions,
   resetPilotMascotPosition,
+  positionPilotMascotOutsideSafeAreas,
+  writePilotMascotPosition,
+  type PilotMascotRect,
   type PilotMascotPlacement,
   type PilotMascotPosition,
 } from './pilotMascotPreference';
@@ -34,6 +37,7 @@ interface Props {
   onZoomChange?: (zoom: number) => void;
   notification?: PilotMascotNotification | null;
   placement?: 'contextual' | 'pilot-page' | 'interview-studio';
+  studioEvidenceOpen?: boolean;
   position?: PilotMascotPosition;
   onPositionChange?: (position: PilotMascotPosition) => void;
   runtime?: PilotMascotRuntime;
@@ -74,6 +78,7 @@ export default function PilotMascot({
   onZoomChange = () => undefined,
   notification,
   placement = 'contextual',
+  studioEvidenceOpen = true,
   position,
   onPositionChange,
   runtime = live2dPilotMascotRuntime,
@@ -94,12 +99,15 @@ export default function PilotMascot({
     width: typeof window === 'undefined' ? 1440 : window.innerWidth,
     height: typeof window === 'undefined' ? 900 : window.innerHeight,
   }));
+  const [safeAreaRevision, setSafeAreaRevision] = useState(0);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; startPosition: PilotMascotPosition; moved: boolean }>();
   const suppressClickRef = useRef(false);
   latestActivityRef.current = activity;
   const copy = notificationCopy(notification) ?? ACTIVITY_COPY[activity];
   const normalizedZoom = normalizePilotMascotZoom(zoom);
   const zoomPercent = Math.round(normalizedZoom * 100);
+  const studioPlacement = placement === 'interview-studio';
+  const placementKey: PilotMascotPlacement = studioPlacement ? 'interview_studio' : 'normal';
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -162,13 +170,22 @@ export default function PilotMascot({
       ? '聚焦 Pilot 输入框'
       : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
 
-  const frame = panelOpen ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
+  const frame = panelOpen || (studioPlacement && viewport.height < 740) ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
   const frameWidth = Math.round(frame.width * normalizedZoom * 10) / 10;
   const frameHeight = Math.round(frame.height * normalizedZoom * 10) / 10;
   const activePosition = position ?? localPosition;
-  const frameLeft = Math.min(Math.max(activePosition.xRatio * viewport.width - frameWidth / 2, 8), Math.max(8, viewport.width - frameWidth - 8));
-  const frameTop = Math.min(Math.max(activePosition.yRatio * viewport.height - frameHeight / 2, 8), Math.max(8, viewport.height - frameHeight - 8));
-  const studioPlacement = placement === 'interview-studio';
+  void safeAreaRevision;
+  const measuredSafeAreas = typeof document !== 'undefined' && studioPlacement
+    ? [
+      document.querySelector<HTMLElement>('[data-interview-studio] > header')?.getBoundingClientRect(),
+      document.querySelector<HTMLElement>('[data-interview-studio] [aria-label="回答区"]')?.getBoundingClientRect(),
+      studioEvidenceOpen ? document.querySelector<HTMLElement>('[data-interview-studio] [aria-label="本轮依据"]')?.getBoundingClientRect() : undefined,
+    ].filter((rect): rect is DOMRect => Boolean(rect && rect.width > 0 && rect.height > 0))
+    : [];
+  const safeAreas: PilotMascotRect[] = measuredSafeAreas.map((rect) => ({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }));
+  const constrainedPosition = positionPilotMascotOutsideSafeAreas(activePosition, viewport, { width: frameWidth, height: frameHeight }, safeAreas);
+  const frameLeft = constrainedPosition.xRatio * viewport.width - frameWidth / 2;
+  const frameTop = constrainedPosition.yRatio * viewport.height - frameHeight / 2;
 
   useEffect(() => {
     const resize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -176,14 +193,35 @@ export default function PilotMascot({
     return () => window.removeEventListener('resize', resize);
   }, []);
 
+  useEffect(() => {
+    if (!studioPlacement || typeof document === 'undefined' || typeof ResizeObserver === 'undefined') return;
+    const studio = document.querySelector<HTMLElement>('[data-interview-studio]');
+    if (!studio) return;
+    const observer = new ResizeObserver(() => setSafeAreaRevision((revision) => revision + 1));
+    [
+      studio.querySelector<HTMLElement>(':scope > header'),
+      studio.querySelector<HTMLElement>('[aria-label="回答区"]'),
+      studio.querySelector<HTMLElement>('[aria-label="本轮依据"]'),
+    ].forEach((element) => element && observer.observe(element));
+    return () => observer.disconnect();
+  }, [studioPlacement, studioEvidenceOpen]);
+
   const setPosition = (next: PilotMascotPosition) => {
     const safe = {
       xRatio: Math.min(0.98, Math.max(0.02, next.xRatio)),
       yRatio: Math.min(0.98, Math.max(0.02, next.yRatio)),
     };
     setLocalPosition(safe);
+    writePilotMascotPosition(placementKey, safe);
     onPositionChange?.(safe);
   };
+
+  useEffect(() => {
+    if (Math.abs(constrainedPosition.xRatio - activePosition.xRatio) < 0.001 && Math.abs(constrainedPosition.yRatio - activePosition.yRatio) < 0.001) return;
+    setLocalPosition(constrainedPosition);
+    writePilotMascotPosition(placementKey, constrainedPosition);
+    onPositionChange?.(constrainedPosition);
+  }, [activePosition.xRatio, activePosition.yRatio, constrainedPosition.xRatio, constrainedPosition.yRatio, onPositionChange]);
 
   const finishDrag = (event?: PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
@@ -221,7 +259,6 @@ export default function PilotMascot({
     };
   }, []);
 
-  const placementKey: PilotMascotPlacement = studioPlacement ? 'interview_studio' : 'normal';
   const resetPosition = () => {
     resetPilotMascotPosition(placementKey);
     setPosition(DEFAULT_PILOT_MASCOT_POSITIONS[placementKey]);
@@ -235,6 +272,7 @@ export default function PilotMascot({
       } ${studioPlacement ? styles.interviewStudio : ''} ${dragRef.current?.moved ? styles.dragging : ''}`}
       data-activity={activity}
       data-notification={notification?.status}
+      data-interview-studio-companion={studioPlacement ? 'true' : undefined}
       aria-label="Haru Pilot 看板娘"
       style={{ width: frameWidth, height: frameHeight, left: `${frameLeft}px`, top: `${frameTop}px`, right: 'auto', bottom: 'auto' }}
     >

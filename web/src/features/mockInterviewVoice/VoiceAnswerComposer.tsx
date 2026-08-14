@@ -729,7 +729,7 @@ export default function VoiceAnswerComposer({
     <section className={styles.composer} aria-label="回答方式" data-testid="voice-answer-composer">
       <div className={styles.modeHeader}>
         <div>
-          <span className={styles.eyebrow}>ANSWER STUDIO</span>
+          <span className={styles.eyebrow}>回答区</span>
           <h4>选择你的回答方式</h4>
         </div>
         <div className={styles.modeSwitch} role="group" aria-label="回答方式">

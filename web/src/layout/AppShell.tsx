@@ -219,6 +219,7 @@ function AppShellContent() {
   const [mockInterviewDraft, setMockInterviewDraft] = useState<MockInterviewDrawerDraft | null>(null);
   const [interviewStudioContext, setInterviewStudioContext] = useState<(RealInterviewStudioContext | QuickPracticeStudioContext) | null>(null);
   const [interviewStudioHaruVisible, setInterviewStudioHaruVisible] = useState(false);
+  const [interviewStudioEvidenceOpen, setInterviewStudioEvidenceOpen] = useState(true);
   const [offerNegotiationOffer, setOfferNegotiationOffer] = useState<Offer | null>(null);
   const [offerNegotiationEntryPoint, setOfferNegotiationEntryPoint] = useState<'ui' | 'pilot'>('ui');
   const offerNegotiationDraftsRef = useRef(new Map<number, OfferNegotiationDraft>());
@@ -1883,17 +1884,19 @@ function AppShellContent() {
           onClose={() => setInterviewStudioContext(null)}
           onToggleHaru={() => setInterviewStudioHaruVisible((visible) => !visible)}
           onActivityChange={setPilotMascotActivity}
+          onEvidenceVisibilityChange={setInterviewStudioEvidenceOpen}
         />
       ) : null}
 
       {interviewStudioContext && interviewStudioHaruVisible ? (
         <PilotMascot
           activity={pilotMascotActivity}
-          panelOpen={false}
+          panelOpen
           onTogglePilot={() => undefined}
           onHide={() => setInterviewStudioHaruVisible(false)}
           zoom={pilotMascotZoom}
           onZoomChange={setPilotMascotZoomPreference}
+          studioEvidenceOpen={interviewStudioEvidenceOpen}
           placement="interview-studio"
         />
       ) : null}

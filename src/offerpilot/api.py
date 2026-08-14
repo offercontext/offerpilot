@@ -814,23 +814,52 @@ def _mock_interview_attempt_context_json(attempt: Any) -> dict[str, Any]:
     }
 
 
+def _frozen_question_basis_refs(turn: Any) -> list[dict[str, str]]:
+    """Expose only exact excerpts from the turn's frozen source snapshot."""
+    try:
+        snapshot = json.loads(turn.question_source_snapshot_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(snapshot, dict):
+        return []
+    references: list[dict[str, str]] = []
+    jd = snapshot.get("jd")
+    if isinstance(jd, dict) and isinstance(jd.get("text"), str) and jd["text"].strip():
+        references.append({"source": "jd", "path": "/jd/text", "excerpt": jd["text"][:160]})
+    resume = snapshot.get("resume")
+    content = resume.get("content_json") if isinstance(resume, dict) else None
+    if isinstance(content, dict):
+        raw_text = content.get("raw_text")
+        if isinstance(raw_text, str) and raw_text.strip():
+            excerpt = raw_text[:160]
+        else:
+            excerpt = json.dumps(content, ensure_ascii=False, sort_keys=True)[:160]
+        if excerpt.strip():
+            references.append({
+                "source": "resume",
+                "path": "/resume/content_json/raw_text" if isinstance(raw_text, str) and raw_text.strip() else "/resume/content_json",
+                "excerpt": excerpt,
+            })
+    return references
+
+
 def _mock_interview_turn_json(turn: Any, turns: list[Any]) -> dict[str, Any]:
     """Expose bounded follow-up metadata while keeping old turns readable."""
     if turn.turn_no == 1:
         question_kind = "new_topic"
         parent_turn_no = None
         topic_root_turn_no = 1
-        basis_refs = []
+        basis_refs = _frozen_question_basis_refs(turn)
     else:
         previous = next((item for item in turns if item.turn_no == turn.turn_no - 1), None)
         previous_answer = previous.answer_text if previous is not None else ""
-        question_kind = "follow_up" if previous_answer.strip() else "new_topic"
+        question_kind = "follow_up" if previous_answer.strip() and turn.turn_no <= 3 else "new_topic"
         parent_turn_no = turn.turn_no - 1 if question_kind == "follow_up" else None
         topic_root_turn_no = 1 if question_kind == "follow_up" else turn.turn_no
         basis_refs = (
             [{"source": "turn", "path": f"/turns/{turn.turn_no - 1:03d}/answer", "excerpt": previous_answer[:160]}]
             if question_kind == "follow_up" and previous_answer.strip()
-            else []
+            else _frozen_question_basis_refs(turn)
         )
     return {
         "turn_no": turn.turn_no,

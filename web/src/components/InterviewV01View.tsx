@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Empty, List, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Empty, List, Space, Spin, Tabs, Tag, Typography } from 'antd';
 import { ArrowRightOutlined, CompassOutlined, SoundOutlined } from '@ant-design/icons';
 import { listInterviews } from '@/services/interviews';
 import { listAdaptivePracticeRecommendations } from '@/services/adaptiveInterviewPractice';
@@ -34,6 +34,8 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
   const [error, setError] = useState(false);
   const [practice, setPractice] = useState<AdaptivePracticeRecommendation | null>(null);
   const [practiceError, setPracticeError] = useState(false);
+  const hasReadinessCenter = applications !== undefined || events !== undefined || resumes !== undefined || onOpenStudio !== undefined;
+  const [activeTab, setActiveTab] = useState<'start' | 'history' | 'growth'>(hasReadinessCenter ? 'start' : 'history');
 
   useEffect(() => {
     let active = true;
@@ -58,7 +60,16 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
 
   return (
     <div data-testid="interview-surface" className={`${workflowStyles.surface} op-view-enter`} style={{ padding: 24 }}>
-      {applications !== undefined || events !== undefined || resumes !== undefined || onOpenStudio ? (
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as 'start' | 'history' | 'growth')}
+        items={[
+          { key: 'start', label: '开始面试' },
+          { key: 'history', label: '记录与复盘' },
+          { key: 'growth', label: '训练与成长' },
+        ]}
+      />
+      {activeTab === 'start' && hasReadinessCenter ? (
         <InterviewReadinessCenter
           applications={applications}
           events={events}
@@ -68,6 +79,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
           onOpenStudio={onOpenStudio}
         />
       ) : null}
+      {activeTab !== 'start' || !hasReadinessCenter ? <>
       <div className="op-section-heading" style={{ marginBottom: 20 }}>
         <div>
           <Title level={3} style={{ margin: 0 }}>面试</Title>
@@ -145,6 +157,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
           )}
         />
       ) : null}
+      </> : null}
     </div>
   );
 }

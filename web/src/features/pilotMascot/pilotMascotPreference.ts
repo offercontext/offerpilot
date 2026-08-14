@@ -7,12 +7,64 @@ export const PILOT_MASCOT_POSITION_KEY = 'offerpilot:pilot-mascot-position';
 export type PilotMascotPlacement = 'normal' | 'interview_studio';
 export interface PilotMascotPosition { xRatio: number; yRatio: number }
 export interface PilotMascotPositions { version: 1; normal: PilotMascotPosition; interview_studio: PilotMascotPosition }
+export interface PilotMascotRect { left: number; top: number; right: number; bottom: number }
+
+interface PilotMascotViewport { width: number; height: number }
+interface PilotMascotFrame { width: number; height: number }
 
 export const DEFAULT_PILOT_MASCOT_POSITIONS: PilotMascotPositions = {
   version: 1,
   normal: { xRatio: 0.92, yRatio: 0.82 },
-  interview_studio: { xRatio: 0.88, yRatio: 0.68 },
+  interview_studio: { xRatio: 0.72, yRatio: 0.46 },
 };
+
+function boundedPosition(position: PilotMascotPosition, viewport: PilotMascotViewport, frame: PilotMascotFrame): PilotMascotPosition {
+  const minX = 8 + frame.width / 2;
+  const maxX = Math.max(minX, viewport.width - 8 - frame.width / 2);
+  const minY = 8 + frame.height / 2;
+  const maxY = Math.max(minY, viewport.height - 8 - frame.height / 2);
+  return {
+    xRatio: Math.min(0.98, Math.max(0.02, Math.min(maxX, Math.max(minX, position.xRatio * viewport.width)) / viewport.width)),
+    yRatio: Math.min(0.98, Math.max(0.02, Math.min(maxY, Math.max(minY, position.yRatio * viewport.height)) / viewport.height)),
+  };
+}
+
+function mascotRect(position: PilotMascotPosition, viewport: PilotMascotViewport, frame: PilotMascotFrame): PilotMascotRect {
+  const left = position.xRatio * viewport.width - frame.width / 2;
+  const top = position.yRatio * viewport.height - frame.height / 2;
+  return { left, top, right: left + frame.width, bottom: top + frame.height };
+}
+
+function intersects(first: PilotMascotRect, second: PilotMascotRect): boolean {
+  return first.left < second.right && first.right > second.left && first.top < second.bottom && first.bottom > second.top;
+}
+
+export function positionPilotMascotOutsideSafeAreas(
+  position: PilotMascotPosition,
+  viewport: PilotMascotViewport,
+  frame: PilotMascotFrame,
+  safeAreas: PilotMascotRect[],
+): PilotMascotPosition {
+  const bounded = boundedPosition(position, viewport, frame);
+  if (!safeAreas.length || !safeAreas.some((area) => intersects(mascotRect(bounded, viewport, frame), area))) return bounded;
+
+  const current = { x: bounded.xRatio * viewport.width, y: bounded.yRatio * viewport.height };
+  const gap = 16;
+  const xCandidates = [current.x];
+  const yCandidates = [current.y];
+  for (const area of safeAreas) {
+    xCandidates.push(area.left - gap - frame.width / 2, area.right + gap + frame.width / 2);
+    yCandidates.push(area.top - gap - frame.height / 2, area.bottom + gap + frame.height / 2);
+  }
+  const candidates = xCandidates.flatMap((x) => yCandidates.map((y) => boundedPosition({ xRatio: x / viewport.width, yRatio: y / viewport.height }, viewport, frame)));
+  const valid = candidates.filter((candidate) => !safeAreas.some((area) => intersects(mascotRect(candidate, viewport, frame), area)));
+  if (!valid.length) return bounded;
+  return valid.sort((first, second) => {
+    const firstDistance = Math.hypot(first.xRatio * viewport.width - current.x, first.yRatio * viewport.height - current.y);
+    const secondDistance = Math.hypot(second.xRatio * viewport.width - current.x, second.yRatio * viewport.height - current.y);
+    return firstDistance - secondDistance;
+  })[0];
+}
 
 function normalizeRatio(value: number): number {
   if (!Number.isFinite(value)) return 0;

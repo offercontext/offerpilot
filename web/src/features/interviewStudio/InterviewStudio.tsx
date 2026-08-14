@@ -18,6 +18,7 @@ import {
   shouldGenerateNextQuestion,
   type StudioState,
 } from './interviewStudioController';
+import { buildEvidenceEntries, evidenceKey, type StudioEvidenceEntry } from './evidenceLocator';
 import styles from './InterviewStudio.module.css';
 
 export interface InterviewStudioContext {
@@ -44,6 +45,7 @@ type Props = {
   onClose: () => void;
   onActivityChange?: (activity: VoiceAnswerActivity) => void;
   onToggleHaru?: () => void;
+  onEvidenceVisibilityChange?: (open: boolean) => void;
 };
 
 type TimelineEntry = MockInterviewTurn & { confirmed?: boolean };
@@ -78,7 +80,15 @@ function questionLabel(turn: TimelineEntry): string {
   return '新话题';
 }
 
-export default function InterviewStudio({ context, onClose, onActivityChange, onToggleHaru }: Props) {
+function previewText(value: string, length = 180): string {
+  const trimmed = value.trim();
+  return trimmed.length > length ? `${trimmed.slice(0, length)}…` : trimmed;
+}
+
+export default function InterviewStudio({ context, onClose, onActivityChange, onToggleHaru, onEvidenceVisibilityChange }: Props) {
+  const studioRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const serviceContext = useMemo(() => toServiceContext(context), [context]);
   const attemptKeyRef = useRef(key('attempt'));
   const initialQuestionKeyRef = useRef(key('question'));
@@ -88,9 +98,64 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [proposal, setProposal] = useState<MockInterviewProposalResponse | null>(null);
   const [voiceSubmitRevision, setVoiceSubmitRevision] = useState(0);
   const [evidenceOpen, setEvidenceOpen] = useState(true);
+  const [selectedEvidenceKey, setSelectedEvidenceKey] = useState<string | null>(null);
+  const [jdExpanded, setJdExpanded] = useState(false);
   const [working, setWorking] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [voiceReview, setVoiceReview] = useState<{ turnNo: number; summary: VoiceDeliverySummary; saveState: 'idle' | 'saving' | 'saved' | 'unknown'; idempotencyKey: string } | null>(null);
+
+  useEffect(() => {
+    const studio = studioRef.current;
+    if (!studio) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    const siblings = studio.parentElement
+      ? Array.from(studio.parentElement.children)
+        .filter((element) => element !== studio && !(element as HTMLElement).hasAttribute('data-interview-studio-companion'))
+        .map((element) => ({ element: element as HTMLElement, inert: Boolean((element as HTMLElement & { inert?: boolean }).inert) }))
+      : [];
+
+    document.body.style.overflow = 'hidden';
+    for (const sibling of siblings) (sibling.element as HTMLElement & { inert?: boolean }).inert = true;
+    (studio.querySelector<HTMLElement>('.topbar button') ?? studio).focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(studio.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter((element) => !element.hidden);
+      if (!focusable.length) {
+        event.preventDefault();
+        studio.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    studio.addEventListener('keydown', onKeyDown);
+    return () => {
+      studio.removeEventListener('keydown', onKeyDown);
+      for (const sibling of siblings) (sibling.element as HTMLElement & { inert?: boolean }).inert = sibling.inert;
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+    // A Studio keeps one focus trap for its lifetime; the callback is read from a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    onEvidenceVisibilityChange?.(evidenceOpen);
+  }, [evidenceOpen, onEvidenceVisibilityChange]);
 
   const update = (action: Parameters<typeof reduceStudioState>[1]) => {
     setState((current) => current ? reduceStudioState(current, action) : current);
@@ -239,13 +304,35 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const currentQuestion = state?.question ?? '正在准备第一题…';
   const canSubmit = Boolean(state?.answer.trim()) && !working && !state?.resultUnknown && state?.phase !== 'completed';
   const hasConfirmedAnswer = Boolean(state && timeline.some((turn) => turn.turn_no === state.turnNo && turn.confirmed));
+  const currentTimelineTurn = timeline.find((turn) => turn.turn_no === state?.turnNo) ?? timeline[timeline.length - 1];
+  const currentEvidence = buildEvidenceEntries(currentTimelineTurn?.basis_refs);
+  const contextJdReference = {
+    source: 'jd',
+    path: '/jd/text',
+    excerpt: previewText(context.jdText),
+  };
+
+  const focusEvidence = (entry: StudioEvidenceEntry) => {
+    setEvidenceOpen(true);
+    setSelectedEvidenceKey(entry.key);
+  };
+
+  useEffect(() => {
+    if (!selectedEvidenceKey || !evidenceOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = Array.from(document.querySelectorAll<HTMLElement>('[data-evidence-key]'))
+        .find((element) => element.dataset.evidenceKey === selectedEvidenceKey);
+      target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [evidenceOpen, selectedEvidenceKey]);
 
   return (
-    <div className={styles.studio} data-testid="interview-studio" role="dialog" aria-modal="true" aria-labelledby="interview-studio-title">
+    <div ref={studioRef} className={styles.studio} data-testid="interview-studio" data-interview-studio role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="interview-studio-title">
       <header className={styles.topbar}>
         <Button type="text" icon={<ArrowLeftOutlined />} onClick={onClose}>退出工作台</Button>
         <div className={styles.titleBlock}>
-          <span className={styles.kicker}>INTERVIEW STUDIO / {context.kind === 'quick_practice' ? 'QUICK' : 'LIVE'}</span>
+          <span className={styles.kicker}>{context.kind === 'quick_practice' ? '快速练习' : '真实投递'}</span>
           <h1 id="interview-studio-title">{title}</h1>
         </div>
         <div className={styles.topActions}>
@@ -258,7 +345,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
 
       <main className={styles.main}>
         <section className={styles.timeline} aria-label="面试对话时间线">
-          <div className={styles.timelineHeader}><div><span className={styles.kicker}>LIVE TRANSCRIPT</span><h2>保持对话，答案由你确认</h2></div><span className={styles.livePill}><i /> {state?.phase === 'result_unknown' ? '需要对账' : '本轮进行中'}</span></div>
+          <div className={styles.timelineHeader}><div><span className={styles.kicker}>面试对话</span><h2>保持对话，答案由你确认</h2></div><span className={styles.livePill}><i /> {state?.phase === 'result_unknown' ? '需要对账' : '本轮进行中'}</span></div>
           {startError ? <Alert className={styles.alert} type="warning" showIcon message={startError} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} /> : null}
           {state?.phase === 'result_unknown' && state.error ? <div tabIndex={-1}><Alert className={styles.alert} type="warning" showIcon message={state.error} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} /></div> : null}
           <div className={styles.turnList} aria-live="polite">
@@ -269,6 +356,33 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
                   <div className={styles.turnMeta}><span>面试官</span>{turn.turn_no > 1 ? <Tag>{questionLabel(turn)}</Tag> : null}<span className={styles.turnState}>{turn.confirmed ? '回答已确认' : turn.turn_no === state?.turnNo ? '等待回答' : ''}</span></div>
                   <h3>{turn.question}</h3>
                   {turn.answer ? <p className={styles.answerBubble}>{turn.answer}</p> : null}
+                  {buildEvidenceEntries(turn.basis_refs).length ? (
+                    <div className={styles.turnEvidence} aria-label="提问依据">
+                      <span className={styles.evidenceLabel}>提问依据</span>
+                      {buildEvidenceEntries(turn.basis_refs).map((entry) => (
+                        <button
+                          key={entry.key}
+                          type="button"
+                          className={styles.evidenceLink}
+                          onClick={() => focusEvidence(entry)}
+                        >
+                          {entry.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {turn.question_kind === 'follow_up' && turn.parent_turn_no ? (
+                    <button
+                      type="button"
+                      className={styles.followUpLink}
+                      onClick={() => {
+                        const entry = buildEvidenceEntries(turn.basis_refs)[0];
+                        if (entry) focusEvidence(entry);
+                      }}
+                    >
+                      上一轮回答 → 当前追问
+                    </button>
+                  ) : null}
                   {turn.turn_no === state?.turnNo && !turn.confirmed ? <span className={styles.questionHint}>当前问题 · 先回答，再由你确认提交</span> : null}
                 </div>
               </article>
@@ -278,10 +392,46 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           {state?.phase === 'next_question_generating' ? <div className={styles.generating} role="status" aria-live="polite"><span className={styles.loader} />正在根据已确认回答准备下一题…</div> : null}
           {voiceReview?.saveState === 'unknown' ? <Alert className={styles.alert} type="warning" showIcon message="表达复盘保存结果待确认，原保存 key 已保留。" /> : null}
           {state?.phase === 'completed' && !proposal ? <div className={styles.completeCard}><CheckCircleOutlined /><div><strong>本轮已完成</strong><span>你可以结束并生成复盘，或退出保留已确认的回答。</span></div></div> : null}
-          {proposal ? <section className={styles.feedbackCard} aria-label="复盘建议"><span className={styles.kicker}>REFLECTION READY</span><h2>复盘建议已准备好</h2><p>建议只来自本次已确认回答与冻结来源。正式投递和快速练习会保持各自的来源边界。</p><ul>{[...proposal.proposal.strengths, ...proposal.proposal.practice_points, ...proposal.proposal.next_practice_steps].slice(0, 4).map((item) => <li key={item.id}>{item.text}</li>)}</ul></section> : null}
+          {proposal ? <section className={styles.feedbackCard} aria-label="复盘建议"><span className={styles.kicker}>复盘建议</span><h2>复盘建议已准备好</h2><p>建议只来自本次已确认回答与冻结来源。正式投递和快速练习会保持各自的来源边界。</p><ul>{[...proposal.proposal.strengths, ...proposal.proposal.practice_points, ...proposal.proposal.next_practice_steps].slice(0, 4).map((item) => <li key={item.id}>{item.text}</li>)}</ul></section> : null}
         </section>
 
-        {evidenceOpen ? <aside className={styles.evidence} aria-label="本轮依据"><div className={styles.evidenceHeader}><div><span className={styles.kicker}>EVIDENCE RAIL</span><h2>本轮依据</h2></div><Button type="text" onClick={() => setEvidenceOpen(false)}>收起</Button></div><div className={styles.sourceCard}><FileTextOutlined /><div><strong>JD · 冻结版本</strong><p>{context.jdText || '当前 JD 为空'}</p></div></div><div className={styles.sourceCard}><FileTextOutlined /><div><strong>简历 · 已选快照</strong><p>已使用候选人确认的简历快照；原始内容不会在 Studio 中编辑。</p></div></div><div className={styles.sourceNote}>快速练习只关联 Practice Case，不会写入投递、日程、Knowledge、Memory、Story 或 Offer。</div></aside> : <Button className={styles.openEvidence} onClick={() => setEvidenceOpen(true)}>查看本轮依据</Button>}
+        {evidenceOpen ? (
+          <aside className={styles.evidence} aria-label="本轮依据">
+            <div className={styles.evidenceHeader}>
+              <div><span className={styles.kicker}>本轮来源</span><h2>提问依据</h2></div>
+              <Button type="text" onClick={() => setEvidenceOpen(false)}>收起</Button>
+            </div>
+            <div className={styles.sourceCard} data-evidence-key={evidenceKey(contextJdReference)} data-evidence-active={selectedEvidenceKey === evidenceKey(contextJdReference)}>
+              <FileTextOutlined />
+              <div>
+                <strong>JD · 冻结版本</strong>
+                <p>{jdExpanded ? context.jdText : previewText(context.jdText)}</p>
+                {context.jdText.length > 180 ? <button type="button" className={styles.expandEvidence} onClick={() => setJdExpanded((expanded) => !expanded)}>{jdExpanded ? '收起全文' : '展开全文'}</button> : null}
+              </div>
+            </div>
+            <div className={styles.sourceCard}>
+              <FileTextOutlined />
+              <div><strong>简历 · 已选快照</strong><p>已使用候选人确认的第 {context.resumeId} 份简历快照；原始内容不会在 Studio 中编辑。</p></div>
+            </div>
+            <div className={styles.evidenceList} aria-label="当前问题引用">
+              <strong>当前问题引用</strong>
+              {currentEvidence.length ? currentEvidence.map((entry) => (
+                <button
+                  type="button"
+                  key={entry.key}
+                  className={styles.evidenceExcerpt}
+                  data-evidence-key={entry.key}
+                  data-evidence-active={selectedEvidenceKey === entry.key}
+                  onClick={() => focusEvidence(entry)}
+                >
+                  <span>{entry.label}</span>
+                  <q>{entry.excerpt}</q>
+                </button>
+              )) : <p className={styles.emptyEvidence}>当前问题的来源正在整理，旧历史仍保持只读。</p>}
+            </div>
+            <div className={styles.sourceNote}>快速练习只关联 Practice Case，不会写入投递、日程、Knowledge、Memory、Story 或 Offer。</div>
+          </aside>
+        ) : <Button className={styles.openEvidence} onClick={() => setEvidenceOpen(true)}>查看本轮依据</Button>}
       </main>
 
       <footer className={styles.composer} aria-label="回答区">
