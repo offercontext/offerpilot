@@ -224,6 +224,10 @@ export default function MockInterviewDrawer({
     const responseAttemptId = response?.data?.attempt_id;
     const currentAttemptKey = attemptKeyOverride ?? draft.attemptKey;
     const attemptId = draft.attemptId ?? (typeof responseAttemptId === 'number' ? responseAttemptId : null);
+    if (attemptId && draft.hasSavedVoiceCoachingSnapshot) {
+      resetDraft(sourceError);
+      return true;
+    }
     if (!attemptId) {
       if (response?.status === 422) {
         resetDraft(sourceError);

@@ -22,6 +22,7 @@ src/offerpilot/models.py
 src/offerpilot/schemas.py
 src/offerpilot/api.py
 src/offerpilot/repositories/voice_coaching.py
+src/offerpilot/repositories/mock_interviews.py
 tests/test_voice_coaching_migrations.py
 tests/test_voice_coaching_repository.py
 tests/test_voice_coaching_api.py

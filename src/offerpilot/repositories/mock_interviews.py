@@ -19,6 +19,7 @@ from offerpilot.models import (
     MockInterviewTurn,
     Resume,
     InterviewPreparationProposal,
+    VoiceCoachingSnapshot,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 from offerpilot.repositories.interview_preparation_proposals import (
@@ -645,7 +646,16 @@ class MockInterviewRepository:
                     MockInterviewReviewDraft.attempt_id == attempt_id
                 )
             )
-            if draft_exists is not None or attempt.attempt_status == "confirmed":
+            voice_snapshot_exists = session.scalar(
+                select(VoiceCoachingSnapshot.id).where(
+                    VoiceCoachingSnapshot.attempt_id == attempt_id
+                )
+            )
+            if (
+                draft_exists is not None
+                or voice_snapshot_exists is not None
+                or attempt.attempt_status == "confirmed"
+            ):
                 raise MockInterviewAttemptConfirmed("mock_interview_attempt_confirmed")
             session.execute(
                 delete(MockInterviewFeedbackProposal).where(

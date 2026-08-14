@@ -161,3 +161,21 @@ def test_voice_coaching_api_rejects_unknown_fields_and_invalid_measurements(tmp_
         response = client.post(_turn_url(ids), json=body)
         assert response.status_code == 422
         assert response.json()["error_code"] == "voice_coaching_invalid_payload"
+
+
+def test_attempt_discard_cannot_delete_an_immutable_voice_snapshot(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=ForbiddenModel()))
+    ids = _seed(tmp_path)
+    created = client.post(_turn_url(ids), json=_body())
+    assert created.status_code == 201
+
+    application_id, event_id, attempt_id = ids
+    discarded = client.delete(
+        f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}"
+    )
+
+    assert discarded.status_code == 409
+    assert discarded.json()["error_code"] == "mock_interview_attempt_confirmed"
+    fetched = client.get(_turn_url(ids))
+    assert fetched.status_code == 200
+    assert fetched.json()["id"] == created.json()["id"]

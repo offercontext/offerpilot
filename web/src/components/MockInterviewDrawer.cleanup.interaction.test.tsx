@@ -598,6 +598,45 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     });
   });
 
+  it('keeps a saved voice snapshot when a later question fails deterministically', async () => {
+    services.generateMockInterviewQuestion.mockRejectedValue({
+      response: { status: 422, data: { error_code: 'mock_interview_question_invalid' } },
+    });
+    render({
+      ...baseDraft,
+      attemptId: 408,
+      attemptKey: 'attempt-408',
+      answer: 'answer',
+      answerSubmitted: true,
+      hasSavedVoiceCoachingSnapshot: true,
+      hasSubmittedVoiceAnswer: true,
+      voiceCoachingReview: {
+        turnNo: 1,
+        summary: {
+          totalDurationMs: 42_000,
+          voicedDurationMs: 30_000,
+          pauseCount: 1,
+          longestPauseMs: 2_800,
+          speechRateCpm: 120,
+          fillerOccurrences: [],
+        },
+        reflectionText: '',
+        focusKind: null,
+        originSnapshotId: null,
+        idempotencyKey: 'voice-save-key-408',
+        saveState: 'saved',
+        snapshotId: 408,
+      },
+    });
+
+    act(() => buttonByText('生成下一题').click());
+    await flush();
+
+    expect(services.discardMockInterviewAttempt).not.toHaveBeenCalled();
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}'))
+      .toMatchObject({ attemptId: null, hasSavedVoiceCoachingSnapshot: false });
+  });
+
   it('treats DELETE 404 as an already-completed cleanup', async () => {
     services.submitMockInterviewAnswer.mockRejectedValue({
       response: { status: 502, data: { error_code: 'mock_interview_unverifiable' } },
