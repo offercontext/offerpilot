@@ -76,7 +76,7 @@ export default function OfflineWhisperModelCard({
       <div className={styles.heading}>
         <span className={styles.icon} aria-hidden><SafetyCertificateOutlined /></span>
         <div className={styles.titleGroup}>
-          <span className={styles.eyebrow}>LOCAL SPEECH MODEL</span>
+          <span className={styles.eyebrow}>离线语音转写</span>
           <h4 id={titleId}>离线语音转写</h4>
           <p>录音不会上传；模型只在你点击下载后保存到当前浏览器。</p>
         </div>

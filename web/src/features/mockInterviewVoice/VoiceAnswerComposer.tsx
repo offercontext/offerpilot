@@ -823,7 +823,7 @@ export default function VoiceAnswerComposer({
           <div ref={transcriptPanelRef} className={styles.transcriptPanel}>
             <div className={styles.transcriptHeader}>
               <div>
-                <span className={styles.eyebrow}>TRANSCRIPT CHECK</span>
+                <span className={styles.eyebrow}>核对回答文字</span>
                 <h4>核对回答文字</h4>
               </div>
               <Tag color={localLanguageState === 'available' ? 'green' : 'default'}>{localLabel}</Tag>
