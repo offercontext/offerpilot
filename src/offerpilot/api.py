@@ -822,6 +822,19 @@ def _frozen_question_basis_refs(turn: Any) -> list[dict[str, str]]:
         return []
     if not isinstance(snapshot, dict):
         return []
+    selected = snapshot.get("selected_evidence_refs")
+    if isinstance(selected, list):
+        selected_refs = [
+            {"source": ref["source"], "path": ref["path"], "excerpt": ref["excerpt"]}
+            for ref in selected
+            if isinstance(ref, dict)
+            and isinstance(ref.get("source"), str)
+            and isinstance(ref.get("path"), str)
+            and isinstance(ref.get("excerpt"), str)
+            and ref["excerpt"].strip()
+        ]
+        if selected_refs:
+            return selected_refs
     references: list[dict[str, str]] = []
     jd = snapshot.get("jd")
     if isinstance(jd, dict) and isinstance(jd.get("text"), str) and jd["text"].strip():
@@ -856,11 +869,14 @@ def _mock_interview_turn_json(turn: Any, turns: list[Any]) -> dict[str, Any]:
         question_kind = "follow_up" if previous_answer.strip() and turn.turn_no <= 3 else "new_topic"
         parent_turn_no = turn.turn_no - 1 if question_kind == "follow_up" else None
         topic_root_turn_no = 1 if question_kind == "follow_up" else turn.turn_no
-        basis_refs = (
-            [{"source": "turn", "path": f"/turns/{turn.turn_no - 1:03d}/answer", "excerpt": previous_answer[:160]}]
-            if question_kind == "follow_up" and previous_answer.strip()
-            else _frozen_question_basis_refs(turn)
-        )
+        basis_refs = _frozen_question_basis_refs(turn)
+        if question_kind == "follow_up" and previous_answer.strip():
+            parent_ref = {
+                "source": "turn",
+                "path": f"/turns/{turn.turn_no - 1:03d}/answer",
+                "excerpt": previous_answer[:160],
+            }
+            basis_refs = [parent_ref] + [ref for ref in basis_refs if ref != parent_ref]
     return {
         "turn_no": turn.turn_no,
         "question": turn.question_text,
@@ -5598,7 +5614,7 @@ def create_app(
             configured_model = _chat_model(chat_model, resolved_data_dir)
             if isinstance(configured_model, JSONResponse):
                 raise MockInterviewProviderError("mock_interview_provider_error")
-            question = generate_question(
+            question_result = generate_question(
                 configured_model,
                 provider_mock_interview_snapshot(result.attempt),
                 [],
@@ -5609,7 +5625,8 @@ def create_app(
                 revision,
                 provider_token,
                 transcript_fingerprint,
-                question,
+                question_result["question"],
+                question_result["evidence_refs"],
             )
             if completed is None:
                 return error_response(409, "快速练习回答状态已变化。", code="mock_interview_context_mismatch")
@@ -5751,7 +5768,7 @@ def create_app(
             configured_model = _chat_model(chat_model, resolved_data_dir)
             if isinstance(configured_model, JSONResponse):
                 raise MockInterviewProviderError("mock_interview_provider_error")
-            question = generate_question(
+            question_result = generate_question(
                 configured_model,
                 provider_mock_interview_snapshot(result.attempt),
                 [],
@@ -5762,7 +5779,8 @@ def create_app(
                 revision,
                 provider_token,
                 transcript_fingerprint,
-                question,
+                question_result["question"],
+                question_result["evidence_refs"],
             )
             if completed is None:
                 return error_response(409, "mock_interview_transcript_conflict")
@@ -5893,9 +5911,15 @@ def create_app(
             configured_model = _chat_model(chat_model, resolved_data_dir)
             if isinstance(configured_model, JSONResponse):
                 raise MockInterviewProviderError("mock_interview_provider_error")
-            question = generate_question(configured_model, provider_mock_interview_snapshot(attempt), list(claim.turns))
+            question_result = generate_question(configured_model, provider_mock_interview_snapshot(attempt), list(claim.turns))
             completed = mock_interviews.complete_question(
-                attempt_id, turn_no, revision, provider_token, transcript_fingerprint, question
+                attempt_id,
+                turn_no,
+                revision,
+                provider_token,
+                transcript_fingerprint,
+                question_result["question"],
+                question_result["evidence_refs"],
             )
             if completed is None:
                 return error_response(409, "下一题写入状态已变化。", code="mock_interview_context_mismatch")
@@ -5912,12 +5936,18 @@ def create_app(
         except MockInterviewProviderError as exc:
             _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="question", kind="provider", diagnostic=exc.diagnostic)
             if "claim" in locals() and claim is not None:
-                mock_interviews.mark_provider_unknown(attempt_id, claim[0], claim[1], "question")
+                try:
+                    mock_interviews.mark_provider_unknown(attempt_id, claim[0], claim[1], "question")
+                except MockInterviewSourceChanged:
+                    return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
             return error_response(502, "下一题结果待确认，请使用原 key 恢复。", code="mock_interview_question_result_unknown", details={"attempt_id": attempt_id})
         except MockInterviewUnverifiableError as exc:
             _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="question", kind="contract", diagnostic=exc.diagnostic)
             if "claim" in locals() and claim is not None:
-                mock_interviews.mark_contract_failure(attempt_id, claim[0], claim[1], exc.category, "contract_failed")
+                try:
+                    mock_interviews.mark_contract_failure(attempt_id, claim[0], claim[1], exc.category, "contract_failed")
+                except MockInterviewSourceChanged:
+                    return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
             return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
         except MockInterviewContractFailed:
             return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
@@ -6158,9 +6188,15 @@ def create_app(
             if isinstance(configured_model, JSONResponse):
                 raise MockInterviewProviderError("mock_interview_provider_error")
             snapshot = provider_mock_interview_snapshot(attempt)
-            question = generate_question(configured_model, snapshot, list(claim.turns))
+            question_result = generate_question(configured_model, snapshot, list(claim.turns))
             completed = mock_interviews.complete_question(
-                attempt_id, turn_no, revision, provider_token, transcript_fingerprint, question
+                attempt_id,
+                turn_no,
+                revision,
+                provider_token,
+                transcript_fingerprint,
+                question_result["question"],
+                question_result["evidence_refs"],
             )
             if completed is None:
                 return error_response(409, "mock_interview_transcript_conflict")
@@ -6300,12 +6336,18 @@ def create_app(
             proposal, diagnostic = generate_feedback(legacy_model, snapshot, list(claim.turns))
         except MockInterviewUnverifiableError as exc:
             _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="feedback", kind="contract", diagnostic=exc.diagnostic)
-            mock_interviews.mark_contract_failure(attempt_id, revision, provider_token, "contract_unverifiable", "contract_failed")
+            try:
+                mock_interviews.mark_contract_failure(attempt_id, revision, provider_token, "contract_unverifiable", "contract_failed")
+            except MockInterviewSourceChanged:
+                return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
             return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
         except MockInterviewProviderError as exc:
             _log_mock_interview_ai_failure(resolved_data_dir, attempt_id=attempt_id, stage="feedback", kind="provider", diagnostic=exc.diagnostic)
-            mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
-            return error_response(502, "复盘结果待确认，请使用原 key 恢复。", code="mock_interview_question_result_unknown", details={"attempt_id": attempt_id})
+            try:
+                mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
+            except MockInterviewSourceChanged:
+                return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
+            return error_response(502, "复盘结果待确认，请使用原 key 恢复。", code="mock_interview_feedback_result_unknown", details={"attempt_id": attempt_id})
         try:
             record, created = mock_interviews.complete_feedback(
                 attempt_id,

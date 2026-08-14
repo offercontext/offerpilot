@@ -177,10 +177,17 @@ export default function PilotMascot({
   void safeAreaRevision;
   const measuredSafeAreas = typeof document !== 'undefined' && studioPlacement
     ? [
-      document.querySelector<HTMLElement>('[data-interview-studio] > header')?.getBoundingClientRect(),
-      document.querySelector<HTMLElement>('[data-interview-studio] [aria-label="回答区"]')?.getBoundingClientRect(),
-      studioEvidenceOpen ? document.querySelector<HTMLElement>('[data-interview-studio] [aria-label="本轮依据"]')?.getBoundingClientRect() : undefined,
-    ].filter((rect): rect is DOMRect => Boolean(rect && rect.width > 0 && rect.height > 0))
+      document.querySelector<HTMLElement>('[data-interview-studio] > header'),
+      document.querySelector<HTMLElement>('[data-interview-studio] [aria-label="回答区"]'),
+      ...(studioEvidenceOpen ? [document.querySelector<HTMLElement>('[data-interview-studio] [aria-label="本轮依据"]')] : []),
+      ...Array.from(document.querySelectorAll<HTMLElement>(
+        '[data-interview-studio] [data-interview-studio-question], ' +
+        '[data-interview-studio] [data-interview-studio-evidence-trigger], ' +
+        '[data-interview-studio] [data-interview-studio-follow-up], ' +
+        '[data-interview-studio] [role="alert"]',
+      )),
+    ].map((element) => element?.getBoundingClientRect())
+      .filter((rect): rect is DOMRect => Boolean(rect && rect.width > 0 && rect.height > 0))
     : [];
   const safeAreas: PilotMascotRect[] = measuredSafeAreas.map((rect) => ({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }));
   const constrainedPosition = positionPilotMascotOutsideSafeAreas(activePosition, viewport, { width: frameWidth, height: frameHeight }, safeAreas);
@@ -202,6 +209,9 @@ export default function PilotMascot({
       studio.querySelector<HTMLElement>(':scope > header'),
       studio.querySelector<HTMLElement>('[aria-label="回答区"]'),
       studio.querySelector<HTMLElement>('[aria-label="本轮依据"]'),
+      ...Array.from(studio.querySelectorAll<HTMLElement>(
+        '[data-interview-studio-question], [data-interview-studio-evidence-trigger], [data-interview-studio-follow-up], [role="alert"]',
+      )),
     ].forEach((element) => element && observer.observe(element));
     return () => observer.disconnect();
   }, [studioPlacement, studioEvidenceOpen]);

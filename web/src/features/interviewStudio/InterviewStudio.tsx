@@ -49,6 +49,13 @@ type Props = {
 };
 
 type TimelineEntry = MockInterviewTurn & { confirmed?: boolean };
+type VoiceReview = {
+  turnNo: number;
+  summary: VoiceDeliverySummary;
+  saveState: 'idle' | 'saving' | 'saved' | 'unknown';
+  idempotencyKey: string;
+};
+type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voiceReview: VoiceReview };
 
 function key(prefix: string): string {
   return `${prefix}-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Date.now()}`;
@@ -70,6 +77,7 @@ function errorCopy(error: unknown): string {
   if (code === 'mock_interview_source_conflict') return '冻结来源暂时无法验证，请回到准备中心重新确认。';
   if (code === 'mock_interview_unverifiable') return 'AI 输出未通过验证，保留原 key，可安全重试。';
   if (code === 'mock_interview_question_result_unknown') return '下一题结果待确认，已保留原 question key。';
+  if (code === 'mock_interview_feedback_result_unknown') return '复盘结果待确认，已保留原 feedback key。';
   if (response?.status === 422) return '当前回答或来源无法用于本次练习，请检查后重试。';
   if (response?.status === 409) return '本次操作与已有结果冲突，请使用原 key 对账。';
   return '网络或服务结果待确认，输入和原 key 已冻结。';
@@ -85,15 +93,44 @@ function previewText(value: string, length = 180): string {
   return trimmed.length > length ? `${trimmed.slice(0, length)}…` : trimmed;
 }
 
+function voiceRecoveryStorageKey(context: Props['context']): string {
+  return context.kind === 'quick_practice'
+    ? `offerpilot:interview-studio:voice-recovery:quick:${context.caseId}`
+    : `offerpilot:interview-studio:voice-recovery:real:${context.applicationId}:${context.eventId}`;
+}
+
+function readVoiceReviewRecovery(storageKey: string): VoiceReviewRecovery | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<VoiceReviewRecovery>;
+    return parsed && typeof parsed.attemptKey === 'string' && parsed.voiceReview
+      ? parsed as VoiceReviewRecovery
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function InterviewStudio({ context, onClose, onActivityChange, onToggleHaru, onEvidenceVisibilityChange }: Props) {
   const studioRef = useRef<HTMLDivElement>(null);
+  const questionHeadingRef = useRef<HTMLHeadingElement>(null);
   const onCloseRef = useRef(onClose);
+  const closeRequestRef = useRef<() => void>(() => undefined);
   onCloseRef.current = onClose;
   const serviceContext = useMemo(() => toServiceContext(context), [context]);
-  const attemptKeyRef = useRef(key('attempt'));
+  const recoveryStorageKey = useMemo(() => voiceRecoveryStorageKey(context), [context]);
+  const recoveryRef = useRef<VoiceReviewRecovery | null | undefined>(undefined);
+  if (recoveryRef.current === undefined) recoveryRef.current = readVoiceReviewRecovery(recoveryStorageKey);
+  const recovery = recoveryRef.current;
+  const attemptKeyRef = useRef(recovery?.attemptKey ?? key('attempt'));
   const initialQuestionKeyRef = useRef(key('question'));
+  const startRetryTimerRef = useRef<number | null>(null);
+  const startRequestRef = useRef(0);
+  const initialQuestionFocusedRef = useRef(false);
   const [state, setState] = useState<StudioState | null>(null);
-  const [attemptId, setAttemptId] = useState<number | null>(null);
+  const [attemptId, setAttemptId] = useState<number | null>(() => recovery?.attemptId ?? null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [proposal, setProposal] = useState<MockInterviewProposalResponse | null>(null);
   const [voiceSubmitRevision, setVoiceSubmitRevision] = useState(0);
@@ -102,7 +139,21 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [jdExpanded, setJdExpanded] = useState(false);
   const [working, setWorking] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
-  const [voiceReview, setVoiceReview] = useState<{ turnNo: number; summary: VoiceDeliverySummary; saveState: 'idle' | 'saving' | 'saved' | 'unknown'; idempotencyKey: string } | null>(null);
+  const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
+
+  useEffect(() => {
+    try {
+      if (voiceReview?.saveState === 'unknown') {
+        if (attemptId !== null) {
+          window.sessionStorage.setItem(recoveryStorageKey, JSON.stringify({ attemptKey: attemptKeyRef.current, attemptId, voiceReview }));
+        }
+      } else if (voiceReview?.saveState === 'saved') {
+        window.sessionStorage.removeItem(recoveryStorageKey);
+      }
+    } catch {
+      // Session storage is only a best-effort recovery aid; the server remains authoritative.
+    }
+  }, [attemptId, recoveryStorageKey, voiceReview]);
 
   useEffect(() => {
     const studio = studioRef.current;
@@ -122,7 +173,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onCloseRef.current();
+        closeRequestRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -157,11 +208,29 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     onEvidenceVisibilityChange?.(evidenceOpen);
   }, [evidenceOpen, onEvidenceVisibilityChange]);
 
+  useEffect(() => {
+    if (initialQuestionFocusedRef.current || !state || !timeline.length) return;
+    const frame = window.requestAnimationFrame(() => {
+      questionHeadingRef.current?.focus();
+      initialQuestionFocusedRef.current = true;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [state, timeline.length]);
+
   const update = (action: Parameters<typeof reduceStudioState>[1]) => {
     setState((current) => current ? reduceStudioState(current, action) : current);
   };
 
+  const cancelStartRetry = () => {
+    if (startRetryTimerRef.current !== null) {
+      window.clearTimeout(startRetryTimerRef.current);
+      startRetryTimerRef.current = null;
+    }
+  };
+
   const start = async () => {
+    cancelStartRetry();
+    const requestId = ++startRequestRef.current;
     setStartError(null);
     setWorking(true);
     try {
@@ -172,22 +241,41 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         attemptKey: attemptKeyRef.current,
         questionKey: initialQuestionKeyRef.current,
       });
+      if (requestId !== startRequestRef.current) return;
       if (!isTurnResponse(result)) {
         setStartError('第一题结果待确认，输入已冻结。请使用原 key 重试。');
+        const retryAfterMs = 'retry_after_ms' in result && typeof result.retry_after_ms === 'number'
+          ? Math.max(250, Math.min(5000, result.retry_after_ms))
+          : 1000;
+        if (startRetryTimerRef.current === null) {
+          startRetryTimerRef.current = window.setTimeout(() => {
+            startRetryTimerRef.current = null;
+            void start();
+          }, retryAfterMs);
+        }
         return;
+      }
+      if (startRetryTimerRef.current !== null) {
+        window.clearTimeout(startRetryTimerRef.current);
+        startRetryTimerRef.current = null;
       }
       setAttemptId(result.attempt_id);
       setTimeline([{ ...result.turn, confirmed: false }]);
       setState(createStudioState({ turnNo: result.turn.turn_no, question: result.turn.question }));
     } catch (error) {
+      if (requestId !== startRequestRef.current) return;
       setStartError(errorCopy(error));
     } finally {
-      setWorking(false);
+      if (requestId === startRequestRef.current) setWorking(false);
     }
   };
 
   useEffect(() => {
     void start();
+    return () => {
+      startRequestRef.current += 1;
+      cancelStartRetry();
+    };
     // A Studio instance owns one frozen context and one attempt key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceContext]);
@@ -195,6 +283,49 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const appendConfirmedAnswer = (answer: string) => {
     setTimeline((current) => current.map((turn) => turn.turn_no === state?.turnNo ? { ...turn, answer, confirmed: true } : turn));
   };
+
+  const saveVoiceReview = async (review: VoiceReview, currentAttemptId: number): Promise<boolean> => {
+    setVoiceReview((current) => current ? { ...current, saveState: 'saving' } : current);
+    try {
+      await saveInterviewStudioVoiceCoachingSnapshot({
+        context: serviceContext,
+        attemptId: currentAttemptId,
+        turnNo: review.turnNo,
+        payload: {
+          idempotency_key: review.idempotencyKey,
+          total_duration_ms: review.summary.totalDurationMs,
+          voiced_duration_ms: review.summary.voicedDurationMs,
+          pause_count: review.summary.pauseCount,
+          longest_pause_ms: review.summary.longestPauseMs,
+          speech_rate_cpm: review.summary.speechRateCpm ?? null,
+          filler_occurrences: review.summary.fillerOccurrences.map((item) => ({ text: item.text, count: item.count, transcript_offsets: item.transcriptOffsets })),
+          reflection_text: '',
+          focus_kind: null,
+          origin_snapshot_id: null,
+        },
+      });
+      setVoiceReview((current) => current ? { ...current, saveState: 'saved' } : current);
+      return true;
+    } catch {
+      setVoiceReview((current) => current ? { ...current, saveState: 'unknown' } : current);
+      return false;
+    }
+  };
+
+  const retryVoiceReview = async () => {
+    if (!voiceReview || !attemptId || voiceReview.saveState !== 'unknown') return;
+    await saveVoiceReview(voiceReview, attemptId);
+  };
+
+  const requestClose = () => {
+    const hasUnconfirmedDraft = Boolean(state?.answer.trim())
+      && state?.phase === 'answering'
+      && !timeline.some((turn) => turn.turn_no === state?.turnNo && turn.confirmed);
+    const hasPendingVoiceSave = voiceReview?.saveState === 'unknown' || voiceReview?.saveState === 'saving';
+    if ((hasUnconfirmedDraft || hasPendingVoiceSave) && !window.confirm('当前还有未确认的回答或待恢复的语音复盘，确定退出工作台吗？')) return;
+    onCloseRef.current();
+  };
+  closeRequestRef.current = requestClose;
 
   const generateNextQuestion = async (currentState: StudioState, currentAttemptId: number) => {
     const questionKey = currentState.questionKey ?? key('question');
@@ -230,29 +361,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       appendConfirmedAnswer(state.answer);
       const reviewForTurn = voiceReview?.turnNo === state.turnNo ? voiceReview : null;
       if (reviewForTurn) {
-        setVoiceReview({ ...reviewForTurn, saveState: 'saving' });
-        try {
-          await saveInterviewStudioVoiceCoachingSnapshot({
-            context: serviceContext,
-            attemptId,
-            turnNo: state.turnNo,
-            payload: {
-              idempotency_key: reviewForTurn.idempotencyKey,
-              total_duration_ms: reviewForTurn.summary.totalDurationMs,
-              voiced_duration_ms: reviewForTurn.summary.voicedDurationMs,
-              pause_count: reviewForTurn.summary.pauseCount,
-              longest_pause_ms: reviewForTurn.summary.longestPauseMs,
-              speech_rate_cpm: reviewForTurn.summary.speechRateCpm ?? null,
-              filler_occurrences: reviewForTurn.summary.fillerOccurrences.map((item) => ({ text: item.text, count: item.count, transcript_offsets: item.transcriptOffsets })),
-              reflection_text: '',
-              focus_kind: null,
-              origin_snapshot_id: null,
-            },
-          });
-          setVoiceReview((current) => current ? { ...current, saveState: 'saved' } : current);
-        } catch {
-          setVoiceReview((current) => current ? { ...current, saveState: 'unknown' } : current);
-        }
+        await saveVoiceReview(reviewForTurn, attemptId);
       }
       update({ type: 'answer_succeeded' });
       setVoiceSubmitRevision((revision) => revision + 1);
@@ -330,7 +439,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   return (
     <div ref={studioRef} className={styles.studio} data-testid="interview-studio" data-interview-studio role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="interview-studio-title">
       <header className={styles.topbar}>
-        <Button type="text" icon={<ArrowLeftOutlined />} onClick={onClose}>退出工作台</Button>
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => closeRequestRef.current()}>退出工作台</Button>
         <div className={styles.titleBlock}>
           <span className={styles.kicker}>{context.kind === 'quick_practice' ? '快速练习' : '真实投递'}</span>
           <h1 id="interview-studio-title">{title}</h1>
@@ -354,10 +463,10 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
                 <div className={styles.turnMarker}>{String(turn.turn_no).padStart(2, '0')}</div>
                 <div className={styles.turnBody}>
                   <div className={styles.turnMeta}><span>面试官</span>{turn.turn_no > 1 ? <Tag>{questionLabel(turn)}</Tag> : null}<span className={styles.turnState}>{turn.confirmed ? '回答已确认' : turn.turn_no === state?.turnNo ? '等待回答' : ''}</span></div>
-                  <h3>{turn.question}</h3>
+                  <h3 ref={turn.turn_no === state?.turnNo ? questionHeadingRef : undefined} tabIndex={turn.turn_no === state?.turnNo ? -1 : undefined} data-interview-studio-question>{turn.question}</h3>
                   {turn.answer ? <p className={styles.answerBubble}>{turn.answer}</p> : null}
                   {buildEvidenceEntries(turn.basis_refs).length ? (
-                    <div className={styles.turnEvidence} aria-label="提问依据">
+                    <div className={styles.turnEvidence} aria-label="提问依据" data-interview-studio-evidence-trigger>
                       <span className={styles.evidenceLabel}>提问依据</span>
                       {buildEvidenceEntries(turn.basis_refs).map((entry) => (
                         <button
@@ -375,6 +484,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
                     <button
                       type="button"
                       className={styles.followUpLink}
+                      data-interview-studio-follow-up
                       onClick={() => {
                         const entry = buildEvidenceEntries(turn.basis_refs)[0];
                         if (entry) focusEvidence(entry);
@@ -390,7 +500,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
             {!timeline.length ? <div className={styles.loadingTurn}><span className={styles.loader} />正在创建冻结 Attempt…</div> : null}
           </div>
           {state?.phase === 'next_question_generating' ? <div className={styles.generating} role="status" aria-live="polite"><span className={styles.loader} />正在根据已确认回答准备下一题…</div> : null}
-          {voiceReview?.saveState === 'unknown' ? <Alert className={styles.alert} type="warning" showIcon message="表达复盘保存结果待确认，原保存 key 已保留。" /> : null}
+          {voiceReview?.saveState === 'unknown' ? <Alert className={styles.alert} type="warning" showIcon message="表达复盘保存结果待确认，原保存 key 已保留。" action={<Button size="small" onClick={() => void retryVoiceReview()} disabled={working}>使用原 key 重试</Button>} /> : null}
           {state?.phase === 'completed' && !proposal ? <div className={styles.completeCard}><CheckCircleOutlined /><div><strong>本轮已完成</strong><span>你可以结束并生成复盘，或退出保留已确认的回答。</span></div></div> : null}
           {proposal ? <section className={styles.feedbackCard} aria-label="复盘建议"><span className={styles.kicker}>复盘建议</span><h2>复盘建议已准备好</h2><p>建议只来自本次已确认回答与冻结来源。正式投递和快速练习会保持各自的来源边界。</p><ul>{[...proposal.proposal.strengths, ...proposal.proposal.practice_points, ...proposal.proposal.next_practice_steps].slice(0, 4).map((item) => <li key={item.id}>{item.text}</li>)}</ul></section> : null}
         </section>
@@ -401,7 +511,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
               <div><span className={styles.kicker}>本轮来源</span><h2>提问依据</h2></div>
               <Button type="text" onClick={() => setEvidenceOpen(false)}>收起</Button>
             </div>
-            <div className={styles.sourceCard} data-evidence-key={evidenceKey(contextJdReference)} data-evidence-active={selectedEvidenceKey === evidenceKey(contextJdReference)}>
+            <div className={styles.sourceCard} data-evidence-key={evidenceKey(contextJdReference)} data-evidence-active={selectedEvidenceKey === evidenceKey(contextJdReference)} data-evidence-expanded={jdExpanded}>
               <FileTextOutlined />
               <div>
                 <strong>JD · 冻结版本</strong>
@@ -431,7 +541,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
             </div>
             <div className={styles.sourceNote}>快速练习只关联 Practice Case，不会写入投递、日程、Knowledge、Memory、Story 或 Offer。</div>
           </aside>
-        ) : <Button className={styles.openEvidence} onClick={() => setEvidenceOpen(true)}>查看本轮依据</Button>}
+        ) : <Button className={styles.openEvidence} aria-label="查看本轮依据" data-interview-studio-evidence-trigger onClick={() => setEvidenceOpen(true)}>查看本轮依据</Button>}
       </main>
 
       <footer className={styles.composer} aria-label="回答区">

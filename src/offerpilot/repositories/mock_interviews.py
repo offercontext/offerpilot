@@ -481,6 +481,7 @@ class MockInterviewRepository:
         provider_call_token: str,
         transcript_fingerprint: str,
         question_text: str,
+        evidence_refs: list[dict[str, str]] | None = None,
     ) -> MockInterviewAttempt | None:
         with self._session_factory() as session:
             self._begin_immediate(session)
@@ -508,6 +509,12 @@ class MockInterviewRepository:
                 session.commit()
                 raise
             turn.question_text = question_text
+            if evidence_refs is not None:
+                source_snapshot = json.loads(turn.question_source_snapshot_json or "{}")
+                if not isinstance(source_snapshot, dict):
+                    source_snapshot = {}
+                source_snapshot["selected_evidence_refs"] = evidence_refs
+                turn.question_source_snapshot_json = canonical_json(source_snapshot)
             turn.turn_status = "awaiting_answer"
             attempt.current_turn_no = max(attempt.current_turn_no, turn_no)
             attempt.attempt_status = "awaiting_answer"

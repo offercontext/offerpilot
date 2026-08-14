@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Checkbox, Input, Select } from 'antd';
 import type { Application } from '@/types/application';
 import type { ScheduleEvent } from '@/types/event';
@@ -93,6 +93,10 @@ export default function InterviewReadinessCenter({
   const [quickDraft, setQuickDraft] = useState<QuickPracticeDraft>({ positionName: '', jdText: '', jdConfirmed: false, resumeId: undefined });
   const [quickError, setQuickError] = useState<string | null>(null);
   const [creatingCase, setCreatingCase] = useState(false);
+  const quickCaseKeyRef = useRef<string | null>(null);
+  const quickCaseFingerprintRef = useRef<string | null>(null);
+  const latestQuickDraftRef = useRef(quickDraft);
+  latestQuickDraftRef.current = quickDraft;
 
   const visibleApplications = useMemo(
     () => applications.filter((item) => !item.deleted_at && item.status !== 'closed'),
@@ -164,17 +168,39 @@ export default function InterviewReadinessCenter({
     target?.querySelector<HTMLElement>('.ant-select-selector')?.focus();
   };
 
+  const quickDraftFingerprint = (draft: QuickPracticeDraft) => JSON.stringify({
+    positionName: draft.positionName.trim(),
+    jdText: draft.jdText,
+    jdConfirmed: draft.jdConfirmed,
+    resumeId: draft.resumeId ?? null,
+  });
+
   const startQuickPractice = async () => {
-    if (!quickReadiness.ready || !quickDraft.resumeId) return;
+    const draft = quickDraft;
+    const resumeId = draft.resumeId;
+    if (!quickReadiness.ready || !resumeId) return;
+    const draftFingerprint = quickDraftFingerprint(draft);
+    if (quickCaseFingerprintRef.current !== draftFingerprint) {
+      quickCaseKeyRef.current = null;
+      quickCaseFingerprintRef.current = draftFingerprint;
+    }
+    const idempotencyKey = quickCaseKeyRef.current ?? makeKey('quick-case');
+    quickCaseKeyRef.current = idempotencyKey;
     setQuickError(null);
     setCreatingCase(true);
     try {
       const practiceCase = await createInterviewPracticeCase({
-        idempotencyKey: makeKey('quick-case'),
-        positionName: quickDraft.positionName.trim(),
-        jdText: quickDraft.jdText,
-        resumeId: quickDraft.resumeId,
+        idempotencyKey,
+        positionName: draft.positionName.trim(),
+        jdText: draft.jdText,
+        resumeId,
       });
+      if (draftFingerprint !== quickDraftFingerprint(latestQuickDraftRef.current)) {
+        quickCaseKeyRef.current = null;
+        setQuickError('练习资料已改变，已取消本次冻结；请确认后重新开始。');
+        return;
+      }
+      quickCaseKeyRef.current = null;
       onOpenStudio?.({
         kind: 'quick_practice',
         caseId: practiceCase.id,

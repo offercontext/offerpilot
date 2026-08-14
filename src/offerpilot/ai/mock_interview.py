@@ -452,7 +452,7 @@ def generate_feedback(
 
 def generate_question(
     model: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]
-) -> str:
+) -> dict[str, Any]:
     if model is None:
         raise MockInterviewProviderError("mock_interview_provider_error")
     last_category = "invalid_json"
@@ -538,7 +538,10 @@ def generate_question(
                 raise MockInterviewContractError("limit_exceeded")
             for ref in refs:
                 _validate_reference(ref, snapshot, turns)
-            return question
+            return {
+                "question": question,
+                "evidence_refs": [dict(ref) for ref in refs],
+            }
         except MockInterviewProviderError:
             raise
         except MockInterviewContractError as exc:

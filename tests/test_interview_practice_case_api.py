@@ -38,6 +38,48 @@ class _QuickPracticeModel:
         )
 
 
+class _NormalFeedbackPracticeModel:
+    supports_json_schema = False
+
+    def complete(self, messages, tools, **kwargs):
+        if any("mock-interview-feedback-v1" in message.content for message in messages):
+            evidence = {
+                "source": "turn",
+                "path": "/turns/001/answer",
+                "excerpt": "我会先拆解接口，再用指标验证稳定性。",
+            }
+            return Assistant(
+                content=json.dumps(
+                    {
+                        "schema_version": "mock-interview-feedback-v1",
+                        "proposal_status": "normal",
+                        "strengths": [
+                            {"id": "strength-1", "text": "回答有清晰的拆解顺序。", "evidence_refs": [evidence]},
+                        ],
+                        "practice_points": [
+                            {"id": "practice-1", "text": "可以补充指标选择的原因。", "evidence_refs": [evidence]},
+                        ],
+                        "follow_up_questions": [],
+                        "next_practice_steps": [
+                            {"id": "next-1", "text": "练习用指标说明验证方案。", "evidence_refs": [evidence]},
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        return Assistant(
+            content=json.dumps(
+                {
+                    "question": "请结合 Python 服务经验说明你的推进方式。",
+                    "evidence_refs": [
+                        {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
 def _seed_resume(data_dir: Path) -> int:
     factory = init_database(data_dir / "data.db")
     with factory() as session:
@@ -143,6 +185,46 @@ def test_quick_practice_finish_uses_last_confirmed_answer(tmp_path):
     assert finished.json()["practice_case_id"] == case["id"]
 
 
+def test_quick_practice_finish_persists_normal_feedback_contract(tmp_path):
+    resume_id = _seed_resume(tmp_path)
+    with TestClient(create_app(data_dir=tmp_path, chat_model=_NormalFeedbackPracticeModel())) as client:
+        case = client.post(
+            "/api/interview-practice-cases",
+            json={
+                "idempotency_key": "case-api-normal-feedback-001",
+                "position_name": "后端工程师",
+                "jd_text": "负责 Python 服务",
+                "resume_id": resume_id,
+            },
+        ).json()
+        base = f"/api/interview-practice-cases/{case['id']}/mock-interview"
+        started = client.post(
+            f"{base}/attempts",
+            json={
+                "attempt_idempotency_key": "normal-feedback-attempt-001",
+                "initial_question_idempotency_key": "normal-feedback-question-001",
+            },
+        ).json()
+        attempt_id = started["attempt_id"]
+        answered = client.post(
+            f"{base}/attempts/{attempt_id}/turns",
+            json={
+                "turn_no": 1,
+                "answer_text": "我会先拆解接口，再用指标验证稳定性。",
+                "turn_idempotency_key": "normal-feedback-answer-001",
+            },
+        )
+        finished = client.post(
+            f"{base}/attempts/{attempt_id}/finish",
+            json={"feedback_idempotency_key": "normal-feedback-finish-001"},
+        )
+
+    assert answered.status_code == 200
+    assert finished.status_code == 201
+    assert finished.json()["proposal_status"] == "normal"
+    assert finished.json()["proposal"]["strengths"][0]["evidence_refs"][0]["path"] == "/turns/001/answer"
+
+
 def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_path):
     resume_id = _seed_resume(tmp_path)
     with TestClient(create_app(data_dir=tmp_path, chat_model=_QuickPracticeModel())) as client:
@@ -165,8 +247,7 @@ def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_pa
         ).json()
         attempt_id = started["attempt_id"]
         assert started["turn"]["basis_refs"] == [
-            {"source": "jd", "path": "/jd/text", "excerpt": "负责 Python 服务稳定性"},
-            {"source": "resume", "path": "/resume/content_json/raw_text", "excerpt": "Python FastAPI"},
+            {"source": "jd", "path": "/jd/text", "excerpt": "Python"},
         ]
         client.post(
             f"{base}/attempts/{attempt_id}/turns",
@@ -185,8 +266,11 @@ def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_pa
     turn = follow_up.json()["turn"]
     assert turn["question_kind"] == "follow_up"
     assert turn["parent_turn_no"] == 1
-    assert turn["basis_refs"] == [{
-        "source": "turn",
-        "path": "/turns/001/answer",
-        "excerpt": "我会先拆分接口边界。",
-    }]
+    assert turn["basis_refs"] == [
+        {
+            "source": "turn",
+            "path": "/turns/001/answer",
+            "excerpt": "我会先拆分接口边界。",
+        },
+        {"source": "jd", "path": "/jd/text", "excerpt": "Python"},
+    ]

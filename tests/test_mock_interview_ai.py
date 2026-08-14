@@ -85,7 +85,14 @@ def test_structural_evidence_error_is_repaired_once():
 
     question = generate_question(model, _snapshot(), _turns())
 
-    assert question == "请分享一次经历？"
+    assert question == {
+        "question": "请分享一次经历？",
+        "evidence_refs": [{
+            "source": "turn",
+            "path": "/turns/001/answer",
+            "excerpt": "我做过 Python 服务",
+        }],
+    }
     assert model.calls == 2
     repair_prompt = model.messages[1][0].content
     assert "evidence_ref_not_object" in repair_prompt
