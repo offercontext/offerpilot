@@ -59,11 +59,13 @@ type TimelineEntry = MockInterviewTurn & { confirmed?: boolean };
 type VoiceReview = {
   turnNo: number;
   summary: VoiceDeliverySummary;
-  saveState: 'idle' | 'saving' | 'saved' | 'unknown';
+  saveState: 'idle' | 'saving' | 'saved' | 'unknown' | 'conflict' | 'invalid';
   idempotencyKey: string;
+  saveError?: string;
 };
 type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voiceReview: VoiceReview };
 type StudioBusinessRecovery = { attemptKey: string; attemptId: number; state: StudioState; timeline: TimelineEntry[] };
+type StudioStartRecovery = { attemptKey: string; questionKey: string; message: string };
 
 const CONTINUOUS_VOICE_PREFERENCE_KEY = 'offerpilot:interview-studio:continuous-voice-preference';
 
@@ -127,6 +129,12 @@ function studioRecoveryStorageKey(context: Props['context']): string {
     : `offerpilot:interview-studio:business-recovery:real:${context.applicationId}:${context.eventId}`;
 }
 
+function studioStartRecoveryStorageKey(context: Props['context']): string {
+  return context.kind === 'quick_practice'
+    ? `offerpilot:interview-studio:start-recovery:quick:${context.caseId}`
+    : `offerpilot:interview-studio:start-recovery:real:${context.applicationId}:${context.eventId}`;
+}
+
 function readVoiceReviewRecovery(storageKey: string): VoiceReviewRecovery | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -157,6 +165,21 @@ function readStudioBusinessRecovery(storageKey: string): StudioBusinessRecovery 
   }
 }
 
+function readStudioStartRecovery(storageKey: string): StudioStartRecovery | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null') as Partial<StudioStartRecovery> | null;
+    return parsed
+      && typeof parsed.attemptKey === 'string'
+      && typeof parsed.questionKey === 'string'
+      && typeof parsed.message === 'string'
+      ? parsed as StudioStartRecovery
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function InterviewStudio({ context, onClose, onActivityChange, onToggleHaru, onEvidenceVisibilityChange }: Props) {
   const studioRef = useRef<HTMLDivElement>(null);
   const questionHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -166,15 +189,21 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const serviceContext = useMemo(() => toServiceContext(context), [context]);
   const recoveryStorageKey = useMemo(() => voiceRecoveryStorageKey(context), [context]);
   const studioRecoveryKey = useMemo(() => studioRecoveryStorageKey(context), [context]);
+  const studioStartRecoveryKey = useMemo(() => studioStartRecoveryStorageKey(context), [context]);
   const recoveryRef = useRef<VoiceReviewRecovery | null | undefined>(undefined);
   if (recoveryRef.current === undefined) recoveryRef.current = readVoiceReviewRecovery(recoveryStorageKey);
   const recovery = recoveryRef.current;
   const businessRecoveryRef = useRef<StudioBusinessRecovery | null | undefined>(undefined);
   if (businessRecoveryRef.current === undefined) businessRecoveryRef.current = readStudioBusinessRecovery(studioRecoveryKey);
   const businessRecovery = businessRecoveryRef.current;
-  const attemptKeyRef = useRef(businessRecovery?.attemptKey ?? recovery?.attemptKey ?? key('attempt'));
-  const initialQuestionKeyRef = useRef(key('question'));
+  const startRecoveryRef = useRef<StudioStartRecovery | null | undefined>(undefined);
+  if (startRecoveryRef.current === undefined) startRecoveryRef.current = readStudioStartRecovery(studioStartRecoveryKey);
+  const startRecovery = startRecoveryRef.current;
+  const attemptKeyRef = useRef(businessRecovery?.attemptKey ?? startRecovery?.attemptKey ?? recovery?.attemptKey ?? key('attempt'));
+  const initialQuestionKeyRef = useRef(startRecovery?.questionKey ?? key('question'));
   const startRetryTimerRef = useRef<number | null>(null);
+  const startCleanupTimerRef = useRef<number | null>(null);
+  const startEffectContextRef = useRef<InterviewApiContext | null>(null);
   const startRequestRef = useRef(0);
   const initialQuestionFocusedRef = useRef(false);
   const [state, setState] = useState<StudioState | null>(() => businessRecovery?.state ?? null);
@@ -195,7 +224,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [selectedEvidenceKey, setSelectedEvidenceKey] = useState<string | null>(null);
   const [jdExpanded, setJdExpanded] = useState(false);
   const [working, setWorking] = useState(false);
-  const [startError, setStartError] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(() => startRecovery?.message ?? null);
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
   const [voiceDirty, setVoiceDirty] = useState(false);
   const voiceReviewRef = useRef<VoiceReview | null>(voiceReview);
@@ -267,6 +296,8 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         }
       } else if (voiceReview?.saveState === 'saved') {
         window.sessionStorage.removeItem(recoveryStorageKey);
+      } else if (voiceReview?.saveState === 'conflict' || voiceReview?.saveState === 'invalid') {
+        window.sessionStorage.removeItem(recoveryStorageKey);
       }
     } catch {
       // Session storage is only a best-effort recovery aid; the server remains authoritative.
@@ -290,6 +321,23 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const clearStudioBusinessRecovery = () => {
     businessRecoveryRef.current = null;
     try { window.sessionStorage.removeItem(studioRecoveryKey); } catch { /* best effort */ }
+  };
+
+  const persistStudioStartRecovery = (message: string) => {
+    try {
+      window.sessionStorage.setItem(studioStartRecoveryKey, JSON.stringify({
+        attemptKey: attemptKeyRef.current,
+        questionKey: initialQuestionKeyRef.current,
+        message,
+      } satisfies StudioStartRecovery));
+    } catch {
+      // Session storage is only a best-effort recovery aid; the server remains authoritative.
+    }
+  };
+
+  const clearStudioStartRecovery = () => {
+    startRecoveryRef.current = null;
+    try { window.sessionStorage.removeItem(studioStartRecoveryKey); } catch { /* best effort */ }
   };
 
   useEffect(() => {
@@ -418,7 +466,9 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       });
       if (requestId !== startRequestRef.current || !isBusinessRequestCurrent(businessGeneration)) return;
       if (!isTurnResponse(result)) {
-        setStartError('第一题结果待确认，输入已冻结。请使用原 key 重试。');
+        const message = '第一题结果待确认，输入已冻结。请使用原 key 重试。';
+        persistStudioStartRecovery(message);
+        setStartError(message);
         const retryAfterMs = 'retry_after_ms' in result && typeof result.retry_after_ms === 'number'
           ? Math.max(250, Math.min(5000, result.retry_after_ms))
           : 1000;
@@ -434,24 +484,41 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         window.clearTimeout(startRetryTimerRef.current);
         startRetryTimerRef.current = null;
       }
+      clearStudioStartRecovery();
+      setStartError(null);
       setAttemptId(result.attempt_id);
       setTimeline([{ ...result.turn, confirmed: false }]);
       setState(createStudioState({ turnNo: result.turn.turn_no, question: result.turn.question }));
     } catch (error) {
       if (requestId !== startRequestRef.current || !isBusinessRequestCurrent(businessGeneration)) return;
-      setStartError(errorCopy(error));
+      const message = errorCopy(error);
+      persistStudioStartRecovery(message);
+      setStartError(message);
     } finally {
       if (requestId === startRequestRef.current && isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
   };
 
   useEffect(() => {
-    if (businessRecoveryRef.current) return;
-    void start();
-    return () => {
-      startRequestRef.current += 1;
-      cancelStartRetry();
+    if (businessRecoveryRef.current || startRecoveryRef.current) return;
+    const scheduleStartCleanup = () => {
+      startCleanupTimerRef.current = window.setTimeout(() => {
+        if (startEffectContextRef.current === serviceContext) {
+          startEffectContextRef.current = null;
+          startRequestRef.current += 1;
+          cancelStartRetry();
+        }
+        startCleanupTimerRef.current = null;
+      }, 0);
     };
+    if (startCleanupTimerRef.current !== null) {
+      window.clearTimeout(startCleanupTimerRef.current);
+      startCleanupTimerRef.current = null;
+    }
+    if (startEffectContextRef.current === serviceContext) return scheduleStartCleanup;
+    startEffectContextRef.current = serviceContext;
+    void start();
+    return scheduleStartCleanup;
     // A Studio instance owns one frozen context and one attempt key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceContext]);
@@ -463,6 +530,15 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const saveVoiceReview = async (review: VoiceReview, currentAttemptId: number): Promise<boolean> => {
     const businessGeneration = businessGenerationRef.current;
     if (!isBusinessRequestCurrent(businessGeneration)) return false;
+    try {
+      window.sessionStorage.setItem(recoveryStorageKey, JSON.stringify({
+        attemptKey: attemptKeyRef.current,
+        attemptId: currentAttemptId,
+        voiceReview: { ...review, saveState: 'unknown', saveError: undefined },
+      } satisfies VoiceReviewRecovery));
+    } catch {
+      // Session storage is only a best-effort recovery aid; the server remains authoritative.
+    }
     setVoiceReview((current) => current ? { ...current, saveState: 'saving' } : current);
     try {
       await saveInterviewStudioVoiceCoachingSnapshot({
@@ -485,9 +561,16 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       if (!isBusinessRequestCurrent(businessGeneration)) return false;
       setVoiceReview((current) => current ? { ...current, saveState: 'saved' } : current);
       return true;
-    } catch {
+    } catch (error) {
       if (!isBusinessRequestCurrent(businessGeneration)) return false;
-      setVoiceReview((current) => current ? { ...current, saveState: 'unknown' } : current);
+      const response = (error as { response?: { status?: number } } | null)?.response;
+      if (response?.status === 409) {
+        setVoiceReview((current) => current ? { ...current, saveState: 'conflict', saveError: '表达复盘已存在不同内容，原保存 key 无法覆盖历史快照。' } : current);
+      } else if (response?.status === 422) {
+        setVoiceReview((current) => current ? { ...current, saveState: 'invalid', saveError: '表达复盘数据未通过校验，回答已提交，可继续文本面试。' } : current);
+      } else {
+        setVoiceReview((current) => current ? { ...current, saveState: 'unknown', saveError: undefined } : current);
+      }
       return false;
     }
   };
@@ -501,7 +584,8 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     const hasUnconfirmedDraft = Boolean(state?.answer.trim())
       && state?.phase === 'answering'
       && !timeline.some((turn) => turn.turn_no === state?.turnNo && turn.confirmed);
-    const hasPendingVoiceSave = voiceReview?.saveState === 'unknown'
+    const hasPendingVoiceSave = Boolean(startError)
+      || voiceReview?.saveState === 'unknown'
       || voiceReview?.saveState === 'saving'
       || voiceDirty
       || state?.phase === 'result_unknown'
@@ -569,7 +653,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       appendConfirmedAnswer(answer);
       const reviewForTurn = voiceReviewRef.current?.turnNo === state.turnNo ? voiceReviewRef.current : null;
       if (reviewForTurn) {
-        await saveVoiceReview(reviewForTurn, attemptId);
+        void saveVoiceReview(reviewForTurn, attemptId);
       }
       clearStudioBusinessRecovery();
       update({ type: 'answer_succeeded' });
@@ -736,6 +820,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           </div>
           {state?.phase === 'next_question_generating' ? <div className={styles.generating} role="status" aria-live="polite"><span className={styles.loader} />正在根据已确认回答准备下一题…</div> : null}
           {voiceReview?.saveState === 'unknown' ? <Alert className={styles.alert} type="warning" showIcon message="表达复盘保存结果待确认，原保存 key 已保留。" action={<Button size="small" onClick={() => void retryVoiceReview()} disabled={working}>使用原 key 重试</Button>} /> : null}
+          {voiceReview?.saveError ? <Alert className={styles.alert} type="warning" showIcon message={voiceReview.saveError} /> : null}
           {state?.phase === 'completed' && !proposal ? <div className={styles.completeCard}><CheckCircleOutlined /><div><strong>本轮已完成</strong><span>你可以结束并生成复盘，或退出保留已确认的回答。</span></div></div> : null}
           {proposal ? <section className={styles.feedbackCard} aria-label="复盘建议"><span className={styles.kicker}>复盘建议</span><h2>复盘建议已准备好</h2><p>建议只来自本次已确认回答与冻结来源。正式投递和快速练习会保持各自的来源边界。</p><ul>{[...proposal.proposal.strengths, ...proposal.proposal.practice_points, ...proposal.proposal.next_practice_steps].slice(0, 4).map((item) => <li key={item.id}>{item.text}</li>)}</ul></section> : null}
         </section>

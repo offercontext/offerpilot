@@ -216,4 +216,133 @@ describe('InterviewStudio continuous voice integration', () => {
     }));
     expect(window.sessionStorage.getItem('offerpilot:interview-studio:business-recovery:real:7:8')).toBeNull();
   });
+
+  it('persists an initial result-unknown attempt key until the user retries it', async () => {
+    serviceSpies.start.mockRejectedValueOnce({ response: { status: 502 } });
+    const context = { kind: 'application_event' as const, applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: 'Debugging and rollback.', companyName: 'Example', positionName: 'Platform Engineer' };
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(<InterviewStudio context={context} onClose={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const stored = JSON.parse(window.sessionStorage.getItem('offerpilot:interview-studio:start-recovery:real:7:8') ?? 'null') as { attemptKey: string; questionKey: string };
+    expect(stored.attemptKey).toMatch(/^attempt-/);
+    expect(stored.questionKey).toMatch(/^question-/);
+
+    await act(async () => {
+      root?.unmount();
+      host?.remove();
+      root = undefined;
+      host = undefined;
+    });
+    serviceSpies.start.mockResolvedValueOnce({
+      attempt_id: 41,
+      turn: { turn_no: 1, question: '请介绍一次排障经历。', answer: '', question_kind: 'new_topic', basis_refs: [] },
+    });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(<InterviewStudio context={context} onClose={vi.fn()} />);
+      await Promise.resolve();
+    });
+    expect(serviceSpies.start).toHaveBeenCalledTimes(1);
+    await act(async () => { button('使用原 key 重试').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(serviceSpies.start).toHaveBeenCalledWith(expect.objectContaining({ attemptKey: stored.attemptKey, questionKey: stored.questionKey }));
+    expect(window.sessionStorage.getItem('offerpilot:interview-studio:start-recovery:real:7:8')).toBeNull();
+  });
+
+  it('does not start two attempts during a React StrictMode effect probe', async () => {
+    const context = { kind: 'application_event' as const, applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: 'Debugging and rollback.', companyName: 'Example', positionName: 'Platform Engineer' };
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(<React.StrictMode><InterviewStudio context={context} onClose={vi.fn()} /></React.StrictMode>);
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(serviceSpies.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans the initial retry timer when StrictMode Studio unmounts', async () => {
+    vi.useFakeTimers();
+    try {
+      serviceSpies.start.mockResolvedValueOnce({ status: 'pending', retry_after_ms: 1000 });
+      const context = { kind: 'application_event' as const, applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: 'Debugging and rollback.', companyName: 'Example', positionName: 'Platform Engineer' };
+      await act(async () => {
+        root = createRoot(host = document.createElement('div'));
+        document.body.appendChild(host);
+        root.render(<React.StrictMode><InterviewStudio context={context} onClose={vi.fn()} /></React.StrictMode>);
+        await Promise.resolve();
+      });
+      await act(async () => { await Promise.resolve(); });
+      expect(serviceSpies.start).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        root?.unmount();
+        host?.remove();
+        root = undefined;
+        host = undefined;
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(serviceSpies.start).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('continues to the next question when voice review persistence is still pending', async () => {
+    let releaseReview!: (value: unknown) => void;
+    serviceSpies.saveVoiceReview.mockImplementationOnce(() => new Promise((resolve) => { releaseReview = resolve; }));
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。', companyName: '示例公司', positionName: '平台工程师' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+    await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+    await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(serviceSpies.answer).toHaveBeenCalledTimes(1);
+    expect(serviceSpies.nextQuestion).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem('offerpilot:interview-studio:voice-recovery:real:7:8')).not.toBeNull();
+    releaseReview({ ok: true });
+    await act(async () => { await Promise.resolve(); });
+    expect(window.sessionStorage.getItem('offerpilot:interview-studio:voice-recovery:real:7:8')).toBeNull();
+  });
+
+  it('keeps deterministic voice review validation failures distinct from unknown results', async () => {
+    serviceSpies.saveVoiceReview.mockRejectedValueOnce({ response: { status: 422 } });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。', companyName: '示例公司', positionName: '平台工程师' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+    await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+    await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(serviceSpies.nextQuestion).toHaveBeenCalledTimes(1);
+    expect(host!.textContent).toContain('表达复盘数据未通过校验');
+  });
 });

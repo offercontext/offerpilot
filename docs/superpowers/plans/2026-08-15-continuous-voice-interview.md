@@ -24,8 +24,8 @@ Files may be created or modified only in this list unless a failing test proves 
 - Modify \`web/src/features/interviewStudio/InterviewStudio.tsx\` to own one controller instance, route controlled events, submit only confirmed text, continue the existing recovery flow, and map observable status to Haru activity.
 - Modify \`web/src/features/interviewStudio/InterviewStudio.module.css\` for the single responsive content layout and fixed answer area.
 - Modify \`web/src/features/interviewStudio/interviewStudioController.ts\` and its test only if an integration test proves an explicit continuous lifecycle action is required; preserve existing actions.
-- Create \`artifacts/2026-08-15-continuous-voice-interview/\` only for final browser screenshots and the release evidence report; never add raw audio or PCM fixtures.
-- Create \`docs/superpowers/reports/2026-08-15-continuous-voice-interview-release.md\` for grouped gate results, browser evidence, environment risks, and the no-API/no-migration statement.
+- Use the tracked \`artifacts/continuous-voice-interview/\` directory only for final browser screenshots and release evidence; never add raw audio or PCM fixtures.
+- Create \`docs/reports/2026-08-15-continuous-voice-interview-release.md\` for grouped gate results, browser evidence, environment risks, and the no-API/no-migration statement.
 
 No backend, database migration, public API, provider, Story, Knowledge, Memory, Application, Offer, or README file is in scope.
 
@@ -282,8 +282,8 @@ git commit -m "test: AI harden continuous voice recovery boundaries"
 
 **Files:**
 
-- Create \`docs/superpowers/reports/2026-08-15-continuous-voice-interview-release.md\`.
-- Create final screenshots under \`artifacts/2026-08-15-continuous-voice-interview/\`.
+- Create \`docs/reports/2026-08-15-continuous-voice-interview-release.md\`.
+- Use the existing final screenshots under \`artifacts/continuous-voice-interview/\`.
 
 - [ ] **Step 1: Run an independent code review before browser claims.**
 
@@ -326,7 +326,8 @@ Record exact commands/results, design baseline, commits, screenshots, backend di
 git diff --check
 git status --short --branch
 git diff --stat e74d54e..HEAD
-git add docs/superpowers/reports/2026-08-15-continuous-voice-interview-release.md artifacts/2026-08-15-continuous-voice-interview
+git add -f docs/reports/2026-08-15-continuous-voice-interview-release.md
+git add artifacts/continuous-voice-interview
 git commit -m "docs: AI record continuous voice interview release evidence"
 \`\`\`
 

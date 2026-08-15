@@ -1,0 +1,49 @@
+# 第五期“可确认的连续语音面试模式”发布报告
+
+## 交付范围
+
+- 新增纯前端 `ContinuousVoiceSessionController`，以 generation fencing 管理朗读、等待开口、VAD 候选结束、倒计时、停止、转写、人工确认、回答提交和下一题。
+- `VoiceAnswerComposer` 增加受控语音意图，继续复用现有 TTS、MediaRecorder、VAD、浏览器识别和离线 Whisper；媒体阶段不发业务请求，只有确认文字后才进入原有回答 API。
+- Interview Studio 接入连续模式，保留标准文字/语音模式、证据栏、追问引用、幂等 key、结果未知重试和人工确认语义。
+- 补强 pending `getUserMedia`、TTS、MediaRecorder `onstop`、页面隐藏、组件卸载、重录、转写及 StrictMode 的资源清理和代际隔离。
+- 结果未知时把 Attempt、时间线、原始 operation key 和状态写入 `sessionStorage`，重新打开 Studio 可使用原 key 恢复；连续语音的表达复盘快照沿用原保存链路。
+- Studio 回答区在宽窄屏使用紧凑 Surface；Haru 的普通页尺寸、状态提示和 Studio 位置继续分离，默认位置受安全区约束。
+
+## 破坏性变化
+
+无。没有数据库迁移、公开 API 或后端领域模型变化；没有修改现有 Mock Interview、Voice Coaching、HITL、lease/CAS/fencing、202、结果未知和历史只读语义。
+
+## 浏览器验收
+
+使用中文候选人“筱哲”、亮色主题完成真实投递 Studio 的准备、首题、证据化追问、完成复盘、Haru 拖动及 1440×900 / 390×844 无溢出验收。已有截图位于 [artifacts/continuous-voice-interview](../../artifacts/continuous-voice-interview/)。
+
+本轮要求的“外部 Chrome + 可授权麦克风”闭环尚未完成：Chrome 浏览器绑定当前不可用，无法在不伪造结果的前提下执行真实 MediaRecorder → VAD → Whisper → 人工确认 → 自动追问。此前 in-app browser 仅验证了麦克风不可用时的安全降级，不能替代本项验收。
+
+## 验证结果
+
+- 后端分组门禁全部通过：2103 tests；agent 454、domain 73、knowledge 659（4 个既定允许跳过）、proposals 431、misc 486。
+- 前端分组门禁全部通过：164 个文件、1193 个测试；本轮新增的连续语音恢复与 StrictMode 边界测试包含在 features 组的 303 个测试中。
+- `uv run ruff check .`、`uv run mypy src`（73 个源文件）和 `npm.cmd run build` 通过。
+- `uv run oc verify --profile local --static-dir web/dist` 通过，包含真实 HTTP、HITL 确认、CRUD、proposal terminal matrix、outcome feedback 和清理。
+- `uv run oc verify --profile real-ai --static-dir web/dist` 通过，完成 interview preparation、material、opportunity fit、interview review、knowledge capture、mock interview 及 HITL 写确认。
+- Windows PowerShell 会在子进程错误输出中插入换行和空格；对既有 Story Harness 的错误码断言做了仅测试侧的空白归一化，未改变 Harness 或产品语义。
+
+## 独立代码复审
+
+复审范围覆盖连续语音状态机、Composer 受控意图、Studio 提交/恢复、资源 fencing、Haru 位置和测试门禁；在修复首次结果未知 key 持久化、复盘保存不阻塞追问、确定性错误分类、报告迁移、计划截图路径和 StrictMode 启动竞态后，最终复审结论为：无剩余 P0/P1/P2。
+
+## 剩余事项
+
+- 必须在已安装并连接 ChatGPT 浏览器扩展的外部 Chrome 中完成一次真实麦克风闭环后，才具备最终发布验收证据；这是当前唯一未完成的外部验收前置条件，不是产品代码剩余风险。
+- 本分支不推送、不合并，等待用户审核。
+
+## 截图索引
+
+- [准备中心](../../artifacts/continuous-voice-interview/01-preparation-1440x900-light-xizhe.png)
+- [首题与证据](../../artifacts/continuous-voice-interview/02-first-question-1440x900-light-xizhe.png)
+- [连续语音预检](../../artifacts/continuous-voice-interview/03-continuous-voice-preflight-1440x900-light-xizhe.png)
+- [追问证据](../../artifacts/continuous-voice-interview/04-evidence-followup-1440x900-light-xizhe.png)
+- [完成复盘](../../artifacts/continuous-voice-interview/05-completed-review-1440x900-light-xizhe.png)
+- [Haru 拖动](../../artifacts/continuous-voice-interview/06-haru-drag-1440x900-light-xizhe.png)
+- [窄屏准备中心](../../artifacts/continuous-voice-interview/07-preparation-390x844-light-xizhe.png)
+- [窄屏 Studio](../../artifacts/continuous-voice-interview/08-studio-390x844-light-xizhe.png)
