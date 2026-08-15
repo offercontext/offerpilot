@@ -73,7 +73,7 @@ export interface VoiceAnswerBrowser {
 
 export type VoiceAnswerComposerCommand = {
   id: number;
-  type: 'preflight' | 'read_question' | 'start_recording' | 'stop_recording' | 'pause_capture' | 'resume_capture' | 'cleanup';
+  type: 'preflight' | 'read_question' | 'start_recording' | 'stop_recording' | 'start_transcription' | 'pause_capture' | 'resume_capture' | 'cleanup';
 };
 
 export type VoiceAnswerComposerEvent =
@@ -86,6 +86,7 @@ export type VoiceAnswerComposerEvent =
   | { type: 'silence_detected'; commandId: number }
   | { type: 'page_hidden'; commandId: number }
   | { type: 'review_available'; commandId: number }
+  | { type: 'recording_reset'; commandId: number }
   | { type: 'error'; commandId: number; message: string };
 
 interface Props {
@@ -96,6 +97,7 @@ interface Props {
   submitRevision: number;
   onConfirmTranscript: (text: string) => void;
   onVoiceReviewConfirmed?: (text: string, summary: VoiceDeliverySummary) => void;
+  onAnswerModeChange?: (mode: AnswerMode) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onActivityChange?: (activity: VoiceAnswerActivity) => void;
   browser?: VoiceAnswerBrowser;
@@ -104,6 +106,7 @@ interface Props {
   createCaptureRuntime?: typeof createVoiceCaptureRuntime;
   cleanupRef?: MutableRefObject<(() => void) | null>;
   continuous?: boolean;
+  compact?: boolean;
   continuousCommand?: VoiceAnswerComposerCommand;
   onContinuousEvent?: (event: VoiceAnswerComposerEvent) => void;
 }
@@ -156,6 +159,7 @@ export default function VoiceAnswerComposer({
   submitRevision,
   onConfirmTranscript,
   onVoiceReviewConfirmed,
+  onAnswerModeChange,
   onDirtyChange,
   onActivityChange,
   browser: suppliedBrowser,
@@ -164,6 +168,7 @@ export default function VoiceAnswerComposer({
   createCaptureRuntime = createVoiceCaptureRuntime,
   cleanupRef,
   continuous = false,
+  compact = false,
   continuousCommand,
   onContinuousEvent,
 }: Props) {
@@ -199,6 +204,9 @@ export default function VoiceAnswerComposer({
   const transcriptionGenerationRef = useRef(0);
   const recordingGenerationRef = useRef(0);
   const recordingStartPendingRef = useRef(false);
+  const cancelledRecordingStartGenerationRef = useRef<number>();
+  const pendingPreflightCommandRef = useRef<number>();
+  const transcriptionStarterRef = useRef<(() => void) | undefined>();
   const activeTranscriptionRef = useRef(false);
   const recognitionSettleRef = useRef<(() => void) | undefined>();
   const intervalRef = useRef<number>();
@@ -206,6 +214,8 @@ export default function VoiceAnswerComposer({
   const activityTimeoutRef = useRef<number>();
   const latestAudioUrlRef = useRef<string | null>(null);
   const disposedRef = useRef(false);
+  const narrationGenerationRef = useRef(0);
+  const activeNarrationCommandRef = useRef<number>();
   const captureRuntimeRef = useRef<VoiceCaptureRuntime>();
   const sessionControllerRef = useRef<VoiceSessionController>();
   const captureOriginRef = useRef<number>();
@@ -248,6 +258,13 @@ export default function VoiceAnswerComposer({
     activityTimeoutRef.current = undefined;
   };
 
+  const cancelNarration = () => {
+    narrationGenerationRef.current += 1;
+    activeNarrationCommandRef.current = undefined;
+    browser.speechSynthesis.cancel();
+    setNarrationState('idle');
+  };
+
   const stopStream = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = undefined;
@@ -277,7 +294,13 @@ export default function VoiceAnswerComposer({
   };
 
   const resetVoiceDraft = () => {
+    const continuousCommandId = activeContinuousCommandRef.current;
+    const shouldRestartContinuousCapture = continuousRef.current
+      && continuousCommandId !== undefined
+      && sessionState.status !== 'idle';
     recordingGenerationRef.current += 1;
+    cancelledRecordingStartGenerationRef.current = recordingGenerationRef.current;
+    pendingPreflightCommandRef.current = undefined;
     activeContinuousCommandRef.current = undefined;
     latestContinuousStopRef.current = undefined;
     recordingStartPendingRef.current = false;
@@ -309,13 +332,18 @@ export default function VoiceAnswerComposer({
     recordingPausedAtRef.current = undefined;
     recordingPausedTotalRef.current = 0;
     recordingPausedRef.current = false;
+    transcriptionStarterRef.current = undefined;
     transcriptionGenerationRef.current += 1;
     if (activeTranscriptionRef.current) offlineController.cancel();
     activeTranscriptionRef.current = false;
     setError(null);
     clearActivityTimeout();
+    cancelNarration();
     onDirtyChange?.(false);
     emitActivity('idle');
+    if (shouldRestartContinuousCapture) {
+      emitContinuousEvent({ type: 'recording_reset', commandId: continuousCommandId });
+    }
   };
 
   if (cleanupRef) cleanupRef.current = resetVoiceDraft;
@@ -343,6 +371,10 @@ export default function VoiceAnswerComposer({
     return () => {
       disposedRef.current = true;
       recordingGenerationRef.current += 1;
+      narrationGenerationRef.current += 1;
+      activeNarrationCommandRef.current = undefined;
+      pendingPreflightCommandRef.current = undefined;
+      transcriptionStarterRef.current = undefined;
       clearTimer();
       clearRecordingSafetyTimeout();
       clearActivityTimeout();
@@ -366,7 +398,10 @@ export default function VoiceAnswerComposer({
 
   const readQuestion = (commandId?: number) => {
     if (disabled || recordingState === 'recording' || recordingState === 'paused') return;
+    const narrationGeneration = ++narrationGenerationRef.current;
+    activeNarrationCommandRef.current = commandId;
     if (!capabilities.speechSynthesis) {
+      activeNarrationCommandRef.current = undefined;
       if (commandId !== undefined) emitContinuousEvent({ type: 'question_read_finished', commandId });
       return;
     }
@@ -375,11 +410,15 @@ export default function VoiceAnswerComposer({
     utterance.lang = 'zh-CN';
     utterance.rate = 0.94;
     utterance.onend = () => {
+      if (disposedRef.current || narrationGeneration !== narrationGenerationRef.current) return;
+      activeNarrationCommandRef.current = undefined;
       setNarrationState('idle');
       emitActivity('idle');
       if (commandId !== undefined) emitContinuousEvent({ type: 'question_read_finished', commandId });
     };
     utterance.onerror = () => {
+      if (disposedRef.current || narrationGeneration !== narrationGenerationRef.current) return;
+      activeNarrationCommandRef.current = undefined;
       setNarrationState('idle');
       setError('当前浏览器无法朗读题目，你仍可阅读题目并继续回答。');
       if (commandId !== undefined) emitContinuousEvent({ type: 'question_read_finished', commandId });
@@ -483,11 +522,15 @@ export default function VoiceAnswerComposer({
     else if (state.status === 'recording') emitActivity('listening');
     else if (state.status === 'transcribing') emitActivity('transcribing');
     else if (state.status === 'error') emitActivity('error');
-    else if (state.status === 'finalizing' && recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
+    else if (state.status === 'finalizing') {
+      if (commandId !== undefined) emitContinuousEvent({ type: 'recording_stopped', commandId });
+      if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
+    }
   };
 
   const startVoiceAnalysis = async (stream: MediaStream) => {
     const generation = ++transcriptionGenerationRef.current;
+    const recordingGeneration = recordingGenerationRef.current;
     let sessionSampleRate = 16_000;
     let receivedFrame = false;
     const session = createVoiceSessionController({
@@ -507,6 +550,7 @@ export default function VoiceAnswerComposer({
     sessionControllerRef.current = session;
     try {
       const runtime = await createCaptureRuntime(stream, (frame: VoiceCaptureFrame) => {
+        if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current || sessionControllerRef.current !== session) return;
         captureOriginRef.current ??= frame.atMs;
         if (captureResumePendingRef.current && captureLastRawEndRef.current !== undefined) {
           captureExcludedMsRef.current += Math.max(0, frame.atMs - captureLastRawEndRef.current);
@@ -526,7 +570,7 @@ export default function VoiceAnswerComposer({
         if (frame.pcm) session.acceptFrame(frame.pcm, relativeAt);
         else session.acceptLevels({ ...frame, atMs: relativeAt });
       });
-      if (disposedRef.current || sessionControllerRef.current !== session) {
+      if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current || sessionControllerRef.current !== session) {
         await runtime.dispose();
         return;
       }
@@ -534,6 +578,7 @@ export default function VoiceAnswerComposer({
       if (recordingPausedRef.current) runtime.pause();
       setBatchOnly(runtime.batchOnly);
     } catch {
+      if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current || sessionControllerRef.current !== session) return;
       setBatchOnly(true);
       setSessionState({ status: 'recording', elapsedMs: 0, voicedMs: 0, transcriptionMode: 'batch' });
     }
@@ -546,9 +591,21 @@ export default function VoiceAnswerComposer({
     recordingPausedAtRef.current = undefined;
   };
 
+  const cancelPendingRecordingStart = () => {
+    if (!recordingStartPendingRef.current) return false;
+    recordingGenerationRef.current += 1;
+    cancelledRecordingStartGenerationRef.current = recordingGenerationRef.current;
+    recordingStartPendingRef.current = false;
+    setRecordingState('idle');
+    emitActivity('idle');
+    return true;
+  };
+
   const requestRecorderStop = () => {
+    const cancelledPendingStart = cancelPendingRecordingStart();
     finishManualPause();
     if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
+    return cancelledPendingStart;
   };
 
   const startRecording = async (): Promise<boolean> => {
@@ -565,7 +622,9 @@ export default function VoiceAnswerComposer({
     setDeliverySummary(undefined);
     setReviewReady(false);
     setTranscriptionStatus('idle');
+    transcriptionStarterRef.current = undefined;
     const recordingGeneration = ++recordingGenerationRef.current;
+    cancelledRecordingStartGenerationRef.current = undefined;
     emitActivity('preparing_voice');
     try {
       const stream = await browser.getUserMedia({ audio: true });
@@ -577,16 +636,20 @@ export default function VoiceAnswerComposer({
       streamRef.current = stream;
       const recorder = browser.createMediaRecorder!(stream);
       recorderRef.current = recorder;
-      chunksRef.current = [];
+      const recordingChunks: Blob[] = [];
+      chunksRef.current = recordingChunks;
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+        if (event.data.size > 0) recordingChunks.push(event.data);
       };
       recorder.onstop = () => {
-        if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current) {
-          chunksRef.current = [];
+        const isCurrentRecorder = recorderRef.current === recorder
+          && recordingGeneration === recordingGenerationRef.current
+          && !disposedRef.current;
+        if (!isCurrentRecorder) {
           return;
         }
-        const blob = new Blob(chunksRef.current, { type: chunksRef.current[0]?.type || 'audio/webm' });
+        recorderRef.current = undefined;
+        const blob = new Blob(recordingChunks, { type: recordingChunks[0]?.type || 'audio/webm' });
         audioBlobRef.current = blob;
         const url = browser.createObjectURL(blob);
         latestAudioUrlRef.current = url;
@@ -608,6 +671,22 @@ export default function VoiceAnswerComposer({
           voicedRangesRef.current = session.getVoicedRanges();
         }
         stopStream();
+        let transcriptionStarted = false;
+        const startTranscription = () => {
+          if (transcriptionStarted) return;
+          transcriptionStarted = true;
+          void sessionFinished.then(async () => {
+            if (recordingGeneration !== recordingGenerationRef.current) return;
+            const result = await runOfflineTranscription(blob);
+            if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
+            setReviewReady(true);
+            if (result === 'ready') emitActivity('reviewing_voice');
+            if (continuousCommandId !== undefined) {
+              emitContinuousEvent({ type: 'review_available', commandId: continuousCommandId });
+            }
+          });
+        };
+        transcriptionStarterRef.current = startTranscription;
         const continuousCommandId = activeContinuousCommandRef.current;
         if (continuousCommandId !== undefined) {
           emitContinuousEvent({ type: 'recording_stopped', commandId: continuousCommandId });
@@ -623,31 +702,13 @@ export default function VoiceAnswerComposer({
             recognition.onerror = null;
             recognition.onend = null;
             if (recognitionRef.current === recognition) recognitionRef.current = undefined;
-            void sessionFinished.then(async () => {
-              if (recordingGeneration !== recordingGenerationRef.current) return;
-              const result = await runOfflineTranscription(blob);
-              if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
-              setReviewReady(true);
-              if (result === 'ready') emitActivity('reviewing_voice');
-              if (continuousCommandId !== undefined) {
-                emitContinuousEvent({ type: 'review_available', commandId: continuousCommandId });
-              }
-            });
+            startTranscription();
           };
           recognitionSettleRef.current = continueAfterRecognition;
           recognition.stop();
           window.setTimeout(continueAfterRecognition, 350);
         } else {
-          void sessionFinished.then(async () => {
-            if (recordingGeneration !== recordingGenerationRef.current) return;
-            const result = await runOfflineTranscription(blob);
-            if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
-            setReviewReady(true);
-            if (result === 'ready') emitActivity('reviewing_voice');
-            if (continuousCommandId !== undefined) {
-              emitContinuousEvent({ type: 'review_available', commandId: continuousCommandId });
-            }
-          });
+          startTranscription();
         }
       };
       recorder.start();
@@ -713,11 +774,19 @@ export default function VoiceAnswerComposer({
 
   useEffect(() => {
     const pauseWhenHidden = () => {
-      if (document.hidden && recordingState === 'recording') {
-        pauseRecording();
-        if (activeContinuousCommandRef.current !== undefined) {
-          emitContinuousEvent({ type: 'page_hidden', commandId: activeContinuousCommandRef.current });
-        }
+      if (document.hidden && (
+        recordingState === 'recording'
+        || recordingStartPendingRef.current
+        || pendingPreflightCommandRef.current !== undefined
+        || activeNarrationCommandRef.current !== undefined
+      )) {
+        const commandId = recordingState === 'recording' || recordingStartPendingRef.current || pendingPreflightCommandRef.current !== undefined
+          ? activeContinuousCommandRef.current
+          : activeNarrationCommandRef.current;
+        if (activeNarrationCommandRef.current !== undefined) cancelNarration();
+        if (recordingState === 'recording') pauseRecording();
+        else cancelPendingRecordingStart();
+        if (commandId !== undefined) emitContinuousEvent({ type: 'page_hidden', commandId });
       }
     };
     document.addEventListener('visibilitychange', pauseWhenHidden);
@@ -729,29 +798,43 @@ export default function VoiceAnswerComposer({
     if (!continuous || !command || command.id <= lastContinuousCommandRef.current) return;
     lastContinuousCommandRef.current = command.id;
     if (command.type === 'preflight') {
+      if (disabled) {
+        emitContinuousEvent({ type: 'preflight_failed', commandId: command.id, message: '当前回答阶段不可开启连续语音。' });
+        return;
+      }
+      changeMode('voice');
+      activeContinuousCommandRef.current = command.id;
+      pendingPreflightCommandRef.current = command.id;
       if (!capabilities.recorder) {
+        pendingPreflightCommandRef.current = undefined;
         emitContinuousEvent({ type: 'preflight_failed', commandId: command.id, message: '当前浏览器不支持本地录音。' });
         return;
       }
       void browser.getUserMedia({ audio: true }).then((stream) => {
-        if (disposedRef.current || lastContinuousCommandRef.current !== command.id) {
+        if (disposedRef.current || pendingPreflightCommandRef.current !== command.id || lastContinuousCommandRef.current !== command.id) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
+        pendingPreflightCommandRef.current = undefined;
         stream.getTracks().forEach((track) => track.stop());
         emitContinuousEvent({ type: 'preflight_succeeded', commandId: command.id });
       }).catch(() => {
+        if (pendingPreflightCommandRef.current !== command.id) return;
+        pendingPreflightCommandRef.current = undefined;
         emitContinuousEvent({ type: 'preflight_failed', commandId: command.id, message: '未获得麦克风权限，已保留标准模式。' });
       });
       return;
     }
     if (command.type === 'read_question') {
+      changeMode('voice');
       readQuestion(command.id);
       return;
     }
     if (command.type === 'start_recording') {
+      changeMode('voice');
       activeContinuousCommandRef.current = command.id;
       void startRecording().then((started) => {
+        if (cancelledRecordingStartGenerationRef.current !== undefined) return;
         if (!started) emitContinuousEvent({ type: 'error', commandId: command.id, message: '连续录音未能启动，已保留手动回答。' });
       });
       return;
@@ -759,17 +842,23 @@ export default function VoiceAnswerComposer({
     if (command.type === 'stop_recording') {
       latestContinuousStopRef.current = command.id;
       activeContinuousCommandRef.current = command.id;
-      requestRecorderStop();
+      const cancelledPendingStart = requestRecorderStop();
+      if (cancelledPendingStart) emitContinuousEvent({ type: 'review_available', commandId: command.id });
+      return;
+    }
+    if (command.type === 'start_transcription') {
+      activeContinuousCommandRef.current = command.id;
+      transcriptionStarterRef.current?.();
       return;
     }
     if (command.type === 'pause_capture') {
       resetVoiceDraft();
-      setMode('text');
+      changeMode('text');
       return;
     }
     if (command.type === 'cleanup') {
       resetVoiceDraft();
-      setMode('text');
+      changeMode('text');
     }
   }, [browser, capabilities.recorder, continuous, continuousCommand]);
 
@@ -807,6 +896,8 @@ export default function VoiceAnswerComposer({
     const canReviewManually = recordingState === 'ready' && Boolean(audioBlobRef.current);
     setReviewReady(canReviewManually);
     emitActivity(canReviewManually ? 'reviewing_voice' : 'idle');
+    const commandId = activeContinuousCommandRef.current ?? activeNarrationCommandRef.current;
+    if (commandId !== undefined) emitContinuousEvent({ type: 'review_available', commandId });
   };
 
   const retryOfflineTranscription = async () => {
@@ -827,6 +918,10 @@ export default function VoiceAnswerComposer({
       : '本机转写不可用';
 
   const changeMode = (nextMode: AnswerMode) => {
+    if (nextMode !== mode) {
+      cancelNarration();
+      onAnswerModeChange?.(nextMode);
+    }
     setMode(nextMode);
     if (nextMode === 'text') emitActivity('idle');
   };
@@ -844,7 +939,7 @@ export default function VoiceAnswerComposer({
             : '准备好后开始录音';
 
   return (
-    <section className={styles.composer} aria-label="回答方式" data-testid="voice-answer-composer">
+    <section className={`${styles.composer} ${compact ? styles.compact : ''}`} aria-label="回答方式" data-testid="voice-answer-composer">
       <div className={styles.modeHeader}>
         <div>
           <span className={styles.eyebrow}>回答区</span>
@@ -938,7 +1033,7 @@ export default function VoiceAnswerComposer({
 
           {audioUrl ? <audio ref={audioElementRef} className={styles.audio} src={audioUrl} controls preload="metadata" /> : null}
 
-          <div ref={transcriptPanelRef} className={styles.transcriptPanel}>
+          {(!compact || Boolean(audioUrl) || recordingState === 'ready') ? <div ref={transcriptPanelRef} className={styles.transcriptPanel}>
             <div className={styles.transcriptHeader}>
               <div>
                 <span className={styles.eyebrow}>核对回答文字</span>
@@ -974,7 +1069,7 @@ export default function VoiceAnswerComposer({
               }}
               disabled={disabled}
               placeholder="本机或离线转写不可用时，可试听录音后在这里手工整理回答。"
-              autoSize={{ minRows: 5, maxRows: 10 }}
+              autoSize={{ minRows: compact ? 3 : 5, maxRows: compact ? 6 : 10 }}
             />
             <div className={styles.confirmRow}>
               <span>只有确认后的文字才会交给模拟面试。</span>
@@ -982,7 +1077,7 @@ export default function VoiceAnswerComposer({
                 确认使用这段文字
               </Button>
             </div>
-          </div>
+          </div> : null}
           {deliverySummary ? (
             <VoiceDeliverySummaryCard summary={deliverySummary} transcriptRef={transcriptTextAreaRef} audioRef={audioElementRef} />
           ) : null}
@@ -996,7 +1091,7 @@ export default function VoiceAnswerComposer({
             onChange={(event) => onTextChange?.(event.target.value)}
             disabled={disabled}
             placeholder="输入你的回答"
-            autoSize={{ minRows: 5, maxRows: 10 }}
+            autoSize={{ minRows: compact ? 3 : 5, maxRows: compact ? 6 : 10 }}
           />
         </div>
       )}

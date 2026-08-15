@@ -170,7 +170,7 @@ describe('PilotMascot', () => {
   it('enlarges the mascot frame so zoom never crops the model inside a fixed canvas', async () => {
     const controller = runtimeController();
     const mounted: PilotMascotRuntime = { mount: vi.fn().mockResolvedValue(controller) };
-    await renderMascot({ runtime: mounted, zoom: 1.3 });
+    await renderMascot({ runtime: mounted, zoom: 1.3, placement: 'interview-studio' });
 
     const mascot = container.querySelector<HTMLElement>('aside');
     expect(mascot?.style.width).toBe('309.4px');

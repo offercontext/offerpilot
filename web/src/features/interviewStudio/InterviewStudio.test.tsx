@@ -41,7 +41,14 @@ vi.mock('@/features/mockInterviewVoice/VoiceAnswerComposer', () => ({
         props.onContinuousEvent?.({ type: 'review_available', commandId: command.id });
       }
     }, [props.continuousCommand, props.onContinuousEvent]);
-    return <button type="button" onClick={() => props.onVoiceReviewConfirmed?.('我先定位日志，再完成回滚。', {} as never)}>确认录音文字</button>;
+    return <button type="button" onClick={() => props.onVoiceReviewConfirmed?.('我先定位日志，再完成回滚。', {
+      totalDurationMs: 1000,
+      voicedDurationMs: 800,
+      pauseCount: 1,
+      longestPauseMs: 200,
+      speechRateCpm: 120,
+      fillerOccurrences: [],
+    } as never)}>确认录音文字</button>;
   },
 }));
 
@@ -69,6 +76,7 @@ afterEach(async () => {
   host?.remove();
   root = undefined;
   host = undefined;
+  window.sessionStorage.clear();
 });
 
 describe('ContinuousVoiceModePanel', () => {
@@ -94,6 +102,14 @@ describe('ContinuousVoiceModePanel', () => {
     expect(host!.textContent).toContain('3 秒后停止录音');
     await act(async () => { button('继续补充').click(); });
     expect(onCancelCountdown).toHaveBeenCalledTimes(1);
+    await act(async () => { button('切换标准模式').click(); });
+    expect(onDisable).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows leaving a pending preflight before the microphone promise resolves', async () => {
+    const onDisable = vi.fn();
+    await renderPanel({ status: 'preflight', onDisable });
+
     await act(async () => { button('切换标准模式').click(); });
     expect(onDisable).toHaveBeenCalledTimes(1);
   });
@@ -147,6 +163,57 @@ describe('InterviewStudio continuous voice integration', () => {
     await act(async () => { await Promise.resolve(); });
     expect(serviceSpies.answer).toHaveBeenCalledTimes(1);
     expect(serviceSpies.answer).toHaveBeenCalledWith(expect.objectContaining({ answerText: '我先定位日志，再完成回滚。' }));
+    expect(serviceSpies.saveVoiceReview).toHaveBeenCalledTimes(1);
     expect(serviceSpies.nextQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores a business result-unknown with the original attempt and turn key', async () => {
+    window.sessionStorage.setItem('offerpilot:interview-studio:business-recovery:real:7:8', JSON.stringify({
+      attemptKey: 'attempt-original',
+      attemptId: 41,
+      state: {
+        phase: 'result_unknown',
+        answerMode: 'text',
+        turnNo: 1,
+        maxTurns: 5,
+        question: 'Describe a debugging incident.',
+        answer: 'I located the logs and completed a rollback.',
+        turnKey: 'turn-original',
+        questionKey: null,
+        feedbackKey: null,
+        pendingOperation: 'answer',
+        resultUnknown: true,
+        error: 'Result needs confirmation',
+      },
+      timeline: [{
+        turn_no: 1,
+        question: 'Describe a debugging incident.',
+        answer: 'I located the logs and completed a rollback.',
+        question_kind: 'new_topic',
+        basis_refs: [],
+        confirmed: false,
+      }],
+    }));
+    const onClose = vi.fn();
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: 'Debugging and rollback.', companyName: 'Example', positionName: 'Platform Engineer' }}
+          onClose={onClose}
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(serviceSpies.start).not.toHaveBeenCalled();
+    await act(async () => { button('使用原 key 重试').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(serviceSpies.answer).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 41,
+      turnKey: 'turn-original',
+      answerText: 'I located the logs and completed a rollback.',
+    }));
+    expect(window.sessionStorage.getItem('offerpilot:interview-studio:business-recovery:real:7:8')).toBeNull();
   });
 });

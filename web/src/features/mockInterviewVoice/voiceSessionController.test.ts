@@ -119,6 +119,28 @@ describe('voice session controller', () => {
     expect(states[states.length - 1]?.status).toBe('finalizing');
   });
 
+  it('does not publish a review after the session is disposed while finalizing', async () => {
+    let release!: (value: string) => void;
+    const transcribe = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));
+    const states: VoiceSessionState[] = [];
+    const controller = createVoiceSessionController({
+      now: () => 0,
+      transcribe,
+      onState: (state) => states.push(state),
+      onInterimTranscript: vi.fn(),
+      chunkMs: 1_000,
+      overlapMs: 0,
+    });
+    controller.start(1, 10);
+    controller.acceptFrame(frame(1), 0);
+    const finishing = controller.finish();
+    controller.dispose();
+    release('late transcript');
+    await finishing;
+
+    expect(states.some((state) => state.status === 'reviewing')).toBe(false);
+  });
+
   it('tracks voiced ranges and long pauses without ending the answer', () => {
     const states: VoiceSessionState[] = [];
     const controller = createVoiceSessionController({

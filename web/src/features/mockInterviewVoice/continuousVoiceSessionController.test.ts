@@ -55,6 +55,8 @@ describe('continuous voice session controller', () => {
     expect(events.states[events.states.length - 1]?.status).toBe('end_candidate');
     expect(events.commands[events.commands.length - 1]?.type).toBe('start_end_countdown');
     events.flushCountdown();
+    events.flushCountdown();
+    events.flushCountdown();
     expect(events.commands[events.commands.length - 1]?.type).toBe('stop_recording');
     expect(events.commands.some((item) => item.type === 'submit_answer')).toBe(false);
   });
@@ -142,6 +144,75 @@ describe('continuous voice session controller', () => {
     expect(events.states[events.states.length - 1]?.status).toBe('transcribing');
     expect(events.commands[events.commands.length - 1]?.type).toBe('stop_recording');
     expect(events.commands.some((item) => item.type === 'submit_answer')).toBe(false);
+  });
+
+  it('moves to transcription when the browser stops capture unexpectedly', () => {
+    const events = createHarness();
+    const controller = createContinuousVoiceSessionController(events.dependencies);
+
+    startListening(controller);
+    controller.recordingStopped();
+
+    expect(events.states[events.states.length - 1]?.status).toBe('transcribing');
+    expect(events.commands[events.commands.length - 1]?.type).toBe('start_transcription');
+  });
+
+  it('can restart capture after a cancelled transcript or a rerecord request', () => {
+    const events = createHarness();
+    const controller = createContinuousVoiceSessionController(events.dependencies);
+
+    startListening(controller);
+    controller.manualStop();
+    controller.recordingStopped();
+    controller.transcriptReady('');
+    controller.recordingReset();
+
+    expect(events.states[events.states.length - 1]?.status).toBe('waiting_for_speech');
+    expect(events.commands[events.commands.length - 1]?.type).toBe('start_recording');
+  });
+
+  it('resumes the correct continuous operation after a result-unknown retry', () => {
+    const events = createHarness();
+    const controller = createContinuousVoiceSessionController(events.dependencies);
+
+    startListening(controller);
+    controller.manualStop();
+    controller.recordingStopped();
+    controller.transcriptReady('confirmed answer');
+    controller.confirmTranscript('confirmed answer');
+    controller.answerSubmissionUnknown('answer unknown');
+    controller.retryAnswerSubmission();
+    controller.answerSubmissionSucceeded();
+    expect(events.states[events.states.length - 1]?.status).toBe('generating_next_question');
+
+    controller.nextQuestionUnknown('question unknown');
+    controller.retryNextQuestion();
+    expect(events.states[events.states.length - 1]?.status).toBe('generating_next_question');
+  });
+
+  it('pauses a pending microphone preflight and requires authorization again on resume', () => {
+    const events = createHarness();
+    const controller = createContinuousVoiceSessionController(events.dependencies);
+
+    controller.enable('pending microphone question');
+    controller.pause();
+    expect(events.states[events.states.length - 1]?.status).toBe('paused');
+    controller.resume();
+    expect(events.states[events.states.length - 1]?.status).toBe('preflight');
+    expect(events.commands[events.commands.length - 1]?.type).toBe('preflight');
+  });
+
+  it('can be re-enabled after falling back to standard mode', () => {
+    const events = createHarness();
+    const controller = createContinuousVoiceSessionController(events.dependencies);
+
+    controller.enable('fallback question');
+    controller.fallback('microphone unavailable');
+    expect(events.states[events.states.length - 1]?.status).toBe('fallback_standard');
+    controller.fallback('try again');
+    expect(events.states[events.states.length - 1]?.status).toBe('disabled');
+    controller.enable('retry question');
+    expect(events.states[events.states.length - 1]?.status).toBe('preflight');
   });
 
   it('ignores late callbacks from a closed generation and cleans the countdown', () => {

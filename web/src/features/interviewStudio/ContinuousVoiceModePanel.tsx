@@ -71,22 +71,23 @@ export default function ContinuousVoiceModePanel({
       <div className={styles.actions}>
         {status === 'disabled' ? <Button type="primary" disabled={disabled} onClick={onEnable}>开启连续语音模式</Button> : null}
         {status === 'preflight' ? <Button disabled>正在准备麦克风…</Button> : null}
-        {status === 'reading_question' ? <Button onClick={onSkipReading}>跳过朗读，开始回答</Button> : null}
+        {status === 'reading_question' ? <Button disabled={disabled} onClick={onSkipReading}>跳过朗读，开始回答</Button> : null}
         {status === 'waiting_for_speech' || status === 'listening' ? (
           <>
-            <Button onClick={onStop}>结束本轮录音</Button>
-            <Button onClick={onPause}>暂停连续模式</Button>
+            <Button disabled={disabled} onClick={onStop}>结束本轮录音</Button>
+            <Button disabled={disabled} onClick={onPause}>暂停连续模式</Button>
           </>
         ) : null}
         {status === 'end_candidate' ? (
           <>
             <span className={styles.countdown}>{countdownSeconds ?? 3} 秒后停止录音</span>
-            <Button onClick={onCancelCountdown}>继续补充</Button>
+            <Button disabled={disabled} onClick={onCancelCountdown}>继续补充</Button>
           </>
         ) : null}
-        {status === 'paused' ? <Button type="primary" onClick={onResume}>继续连续语音</Button> : null}
-        {status === 'fallback_standard' || status === 'result_unknown' ? <Button onClick={onFallback}>回到标准模式</Button> : null}
-        {isActive(status) && status !== 'preflight' ? <Button type="link" onClick={onDisable}>切换标准模式</Button> : null}
+        {status === 'paused' ? <Button type="primary" disabled={disabled} onClick={onResume}>继续连续语音</Button> : null}
+        {status === 'fallback_standard' || status === 'result_unknown' ? <Button disabled={status !== 'result_unknown' && disabled} onClick={onDisable ?? onFallback}>回到标准模式</Button> : null}
+        {isActive(status) && status !== 'preflight' ? <Button type="link" disabled={disabled} onClick={onDisable}>切换标准模式</Button> : null}
+        {status === 'preflight' ? <Button type="link" disabled={disabled} onClick={onDisable}>切换标准模式</Button> : null}
       </div>
     </section>
   );

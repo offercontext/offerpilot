@@ -63,6 +63,7 @@ type VoiceReview = {
   idempotencyKey: string;
 };
 type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voiceReview: VoiceReview };
+type StudioBusinessRecovery = { attemptKey: string; attemptId: number; state: StudioState; timeline: TimelineEntry[] };
 
 const CONTINUOUS_VOICE_PREFERENCE_KEY = 'offerpilot:interview-studio:continuous-voice-preference';
 
@@ -120,6 +121,12 @@ function voiceRecoveryStorageKey(context: Props['context']): string {
     : `offerpilot:interview-studio:voice-recovery:real:${context.applicationId}:${context.eventId}`;
 }
 
+function studioRecoveryStorageKey(context: Props['context']): string {
+  return context.kind === 'quick_practice'
+    ? `offerpilot:interview-studio:business-recovery:quick:${context.caseId}`
+    : `offerpilot:interview-studio:business-recovery:real:${context.applicationId}:${context.eventId}`;
+}
+
 function readVoiceReviewRecovery(storageKey: string): VoiceReviewRecovery | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -134,6 +141,22 @@ function readVoiceReviewRecovery(storageKey: string): VoiceReviewRecovery | null
   }
 }
 
+function readStudioBusinessRecovery(storageKey: string): StudioBusinessRecovery | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(storageKey) ?? 'null') as Partial<StudioBusinessRecovery> | null;
+    return parsed
+      && typeof parsed.attemptKey === 'string'
+      && typeof parsed.attemptId === 'number'
+      && parsed.state?.phase === 'result_unknown'
+      && Array.isArray(parsed.timeline)
+      ? parsed as StudioBusinessRecovery
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function InterviewStudio({ context, onClose, onActivityChange, onToggleHaru, onEvidenceVisibilityChange }: Props) {
   const studioRef = useRef<HTMLDivElement>(null);
   const questionHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -142,15 +165,19 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   onCloseRef.current = onClose;
   const serviceContext = useMemo(() => toServiceContext(context), [context]);
   const recoveryStorageKey = useMemo(() => voiceRecoveryStorageKey(context), [context]);
+  const studioRecoveryKey = useMemo(() => studioRecoveryStorageKey(context), [context]);
   const recoveryRef = useRef<VoiceReviewRecovery | null | undefined>(undefined);
   if (recoveryRef.current === undefined) recoveryRef.current = readVoiceReviewRecovery(recoveryStorageKey);
   const recovery = recoveryRef.current;
-  const attemptKeyRef = useRef(recovery?.attemptKey ?? key('attempt'));
+  const businessRecoveryRef = useRef<StudioBusinessRecovery | null | undefined>(undefined);
+  if (businessRecoveryRef.current === undefined) businessRecoveryRef.current = readStudioBusinessRecovery(studioRecoveryKey);
+  const businessRecovery = businessRecoveryRef.current;
+  const attemptKeyRef = useRef(businessRecovery?.attemptKey ?? recovery?.attemptKey ?? key('attempt'));
   const initialQuestionKeyRef = useRef(key('question'));
   const startRetryTimerRef = useRef<number | null>(null);
   const startRequestRef = useRef(0);
   const initialQuestionFocusedRef = useRef(false);
-  const [state, setState] = useState<StudioState | null>(null);
+  const [state, setState] = useState<StudioState | null>(() => businessRecovery?.state ?? null);
   const [continuousState, setContinuousState] = useState<ContinuousVoiceState>({
     status: 'disabled',
     generation: 0,
@@ -160,8 +187,8 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     error: null,
   });
   const [continuousCommand, setContinuousCommand] = useState<VoiceAnswerComposerCommand>();
-  const [attemptId, setAttemptId] = useState<number | null>(() => recovery?.attemptId ?? null);
-  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  const [attemptId, setAttemptId] = useState<number | null>(() => businessRecovery?.attemptId ?? recovery?.attemptId ?? null);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>(() => businessRecovery?.timeline ?? []);
   const [proposal, setProposal] = useState<MockInterviewProposalResponse | null>(null);
   const [voiceSubmitRevision, setVoiceSubmitRevision] = useState(0);
   const [evidenceOpen, setEvidenceOpen] = useState(true);
@@ -170,12 +197,15 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [working, setWorking] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
+  const [voiceDirty, setVoiceDirty] = useState(false);
   const voiceReviewRef = useRef<VoiceReview | null>(voiceReview);
   const continuousSubmitRef = useRef<(text: string) => void>();
   const continuousGenerateRef = useRef<() => void>();
   const continuousCommandIdRef = useRef(0);
   const continuousCleanupTimerRef = useRef<number | null>(null);
   const studioDisposedRef = useRef(false);
+  const businessGenerationRef = useRef(0);
+  const isBusinessRequestCurrent = (generation: number) => !studioDisposedRef.current && generation === businessGenerationRef.current;
   const onActivityChangeRef = useRef(onActivityChange);
   onActivityChangeRef.current = onActivityChange;
   voiceReviewRef.current = voiceReview;
@@ -200,7 +230,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           return;
         }
         if (command.type === 'preflight' || command.type === 'read_question' || command.type === 'start_recording'
-          || command.type === 'stop_recording' || command.type === 'pause_capture' || command.type === 'resume_capture'
+          || command.type === 'stop_recording' || command.type === 'start_transcription' || command.type === 'pause_capture' || command.type === 'resume_capture'
           || command.type === 'cleanup') {
           setContinuousCommand({ id: ++continuousCommandIdRef.current, type: command.type });
         }
@@ -218,6 +248,9 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     return () => {
       continuousCleanupTimerRef.current = window.setTimeout(() => {
         studioDisposedRef.current = true;
+        businessGenerationRef.current += 1;
+        continuousSubmitRef.current = undefined;
+        continuousGenerateRef.current = undefined;
         continuousController.close();
         continuousCleanupTimerRef.current = null;
       }, 0);
@@ -239,6 +272,25 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       // Session storage is only a best-effort recovery aid; the server remains authoritative.
     }
   }, [attemptId, recoveryStorageKey, voiceReview]);
+
+  useEffect(() => {
+    if (state?.phase !== 'result_unknown' || attemptId === null) return;
+    try {
+      window.sessionStorage.setItem(studioRecoveryKey, JSON.stringify({
+        attemptKey: attemptKeyRef.current,
+        attemptId,
+        state,
+        timeline,
+      } satisfies StudioBusinessRecovery));
+    } catch {
+      // Session storage is only a best-effort recovery aid; the server remains authoritative.
+    }
+  }, [attemptId, state, studioRecoveryKey, timeline]);
+
+  const clearStudioBusinessRecovery = () => {
+    businessRecoveryRef.current = null;
+    try { window.sessionStorage.removeItem(studioRecoveryKey); } catch { /* best effort */ }
+  };
 
   useEffect(() => {
     const studio = studioRef.current;
@@ -332,6 +384,9 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       case 'review_available':
         continuousController.transcriptReady('');
         break;
+      case 'recording_reset':
+        continuousController.recordingReset();
+        break;
       case 'error':
         continuousController.fallback(event.message);
         break;
@@ -350,6 +405,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const start = async () => {
     cancelStartRetry();
     const requestId = ++startRequestRef.current;
+    const businessGeneration = businessGenerationRef.current;
     setStartError(null);
     setWorking(true);
     try {
@@ -360,7 +416,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         attemptKey: attemptKeyRef.current,
         questionKey: initialQuestionKeyRef.current,
       });
-      if (requestId !== startRequestRef.current) return;
+      if (requestId !== startRequestRef.current || !isBusinessRequestCurrent(businessGeneration)) return;
       if (!isTurnResponse(result)) {
         setStartError('第一题结果待确认，输入已冻结。请使用原 key 重试。');
         const retryAfterMs = 'retry_after_ms' in result && typeof result.retry_after_ms === 'number'
@@ -382,14 +438,15 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       setTimeline([{ ...result.turn, confirmed: false }]);
       setState(createStudioState({ turnNo: result.turn.turn_no, question: result.turn.question }));
     } catch (error) {
-      if (requestId !== startRequestRef.current) return;
+      if (requestId !== startRequestRef.current || !isBusinessRequestCurrent(businessGeneration)) return;
       setStartError(errorCopy(error));
     } finally {
-      if (requestId === startRequestRef.current) setWorking(false);
+      if (requestId === startRequestRef.current && isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
   };
 
   useEffect(() => {
+    if (businessRecoveryRef.current) return;
     void start();
     return () => {
       startRequestRef.current += 1;
@@ -404,6 +461,8 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   };
 
   const saveVoiceReview = async (review: VoiceReview, currentAttemptId: number): Promise<boolean> => {
+    const businessGeneration = businessGenerationRef.current;
+    if (!isBusinessRequestCurrent(businessGeneration)) return false;
     setVoiceReview((current) => current ? { ...current, saveState: 'saving' } : current);
     try {
       await saveInterviewStudioVoiceCoachingSnapshot({
@@ -423,9 +482,11 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           origin_snapshot_id: null,
         },
       });
+      if (!isBusinessRequestCurrent(businessGeneration)) return false;
       setVoiceReview((current) => current ? { ...current, saveState: 'saved' } : current);
       return true;
     } catch {
+      if (!isBusinessRequestCurrent(businessGeneration)) return false;
       setVoiceReview((current) => current ? { ...current, saveState: 'unknown' } : current);
       return false;
     }
@@ -440,16 +501,28 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     const hasUnconfirmedDraft = Boolean(state?.answer.trim())
       && state?.phase === 'answering'
       && !timeline.some((turn) => turn.turn_no === state?.turnNo && turn.confirmed);
-    const hasPendingVoiceSave = voiceReview?.saveState === 'unknown' || voiceReview?.saveState === 'saving';
+    const hasPendingVoiceSave = voiceReview?.saveState === 'unknown'
+      || voiceReview?.saveState === 'saving'
+      || voiceDirty
+      || state?.phase === 'result_unknown'
+      || ['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate', 'transcribing', 'reviewing_transcript', 'submitting_confirmed_answer', 'generating_next_question', 'paused', 'result_unknown'].includes(continuousState.status);
     if ((hasUnconfirmedDraft || hasPendingVoiceSave) && !window.confirm('当前还有未确认的回答或待恢复的语音复盘，确定退出工作台吗？')) return;
     studioDisposedRef.current = true;
+    startRequestRef.current += 1;
+    cancelStartRetry();
+    businessGenerationRef.current += 1;
+    continuousSubmitRef.current = undefined;
+    continuousGenerateRef.current = undefined;
     continuousController.close();
     onCloseRef.current();
   };
   closeRequestRef.current = requestClose;
 
   const generateNextQuestion = async (currentState: StudioState, currentAttemptId: number) => {
+    const businessGeneration = businessGenerationRef.current;
+    if (!isBusinessRequestCurrent(businessGeneration)) return;
     const questionKey = currentState.questionKey ?? key('question');
+    if (continuousState.status === 'result_unknown') continuousController.retryNextQuestion();
     update({ type: 'question_submitting', questionKey });
     setWorking(true);
     try {
@@ -459,19 +532,22 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         turnNo: currentState.turnNo + 1,
         questionKey,
       });
+      if (!isBusinessRequestCurrent(businessGeneration)) return;
       if (!isTurnResponse(result)) {
         continuousController.nextQuestionUnknown('下一题结果待确认，已保留原 question key。');
         update({ type: 'result_unknown', operation: 'question', message: '下一题结果待确认，已保留原 question key。' });
         return;
       }
+      clearStudioBusinessRecovery();
       setTimeline((current) => [...current, { ...result.turn, confirmed: false }]);
       update({ type: 'question_succeeded', turnNo: result.turn.turn_no, question: result.turn.question });
       continuousController.nextQuestionReady(result.turn.question);
     } catch (error) {
+      if (!isBusinessRequestCurrent(businessGeneration)) return;
       update({ type: 'result_unknown', operation: 'question', message: errorCopy(error) });
       continuousController.nextQuestionUnknown(errorCopy(error));
     } finally {
-      setWorking(false);
+      if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
   };
 
@@ -481,17 +557,21 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
 
   const submitAnswer = async (answerOverride?: string) => {
     const answer = (answerOverride ?? state?.answer ?? '').trim();
-    if (!state || !attemptId || !answer || working || state.resultUnknown) return;
+    const businessGeneration = businessGenerationRef.current;
+    if (!state || !attemptId || !answer || working || !isBusinessRequestCurrent(businessGeneration)) return;
     const turnKey = state.turnKey ?? key('turn');
+    if (continuousState.status === 'result_unknown') continuousController.retryAnswerSubmission();
     update({ type: 'answer_submitting', turnKey });
     setWorking(true);
     try {
       await submitInterviewStudioAnswer({ context: serviceContext, attemptId, turnNo: state.turnNo, answerText: answer, turnKey });
+      if (!isBusinessRequestCurrent(businessGeneration)) return;
       appendConfirmedAnswer(answer);
       const reviewForTurn = voiceReviewRef.current?.turnNo === state.turnNo ? voiceReviewRef.current : null;
       if (reviewForTurn) {
         await saveVoiceReview(reviewForTurn, attemptId);
       }
+      clearStudioBusinessRecovery();
       update({ type: 'answer_succeeded' });
       setVoiceSubmitRevision((revision) => revision + 1);
       const confirmedState = { ...state, phase: 'answer_confirmed' as const };
@@ -502,32 +582,37 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       } else if (hasNextQuestion) await generateNextQuestion(confirmedState, attemptId);
       else setState((current) => current ? reduceStudioState(current, { type: 'answer_succeeded' }) : current);
     } catch (error) {
+      if (!isBusinessRequestCurrent(businessGeneration)) return;
       update({ type: 'result_unknown', operation: 'answer', message: errorCopy(error) });
       continuousController.answerSubmissionUnknown(errorCopy(error));
     } finally {
-      setWorking(false);
+      if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
   };
 
   continuousSubmitRef.current = (answer) => { void submitAnswer(answer); };
 
   const finish = async () => {
-    if (!state || !attemptId || working || state.phase === 'answer_submitting' || state.phase === 'next_question_generating') return;
+    const businessGeneration = businessGenerationRef.current;
+    if (!state || !attemptId || working || state.phase === 'answer_submitting' || state.phase === 'next_question_generating' || !isBusinessRequestCurrent(businessGeneration)) return;
     const feedbackKey = state.feedbackKey ?? key('feedback');
     update({ type: 'feedback_submitting', feedbackKey });
     setWorking(true);
     try {
       const result = await finishInterviewStudio({ context: serviceContext, attemptId, feedbackKey });
+      if (!isBusinessRequestCurrent(businessGeneration)) return;
       if (!('proposal' in result)) {
         update({ type: 'result_unknown', operation: 'feedback', message: '复盘结果待确认，已保留原 feedback key。' });
         return;
       }
+      clearStudioBusinessRecovery();
       setProposal(result);
       setState((current) => current ? { ...current, pendingOperation: null, resultUnknown: false, phase: 'completed' } : current);
     } catch (error) {
+      if (!isBusinessRequestCurrent(businessGeneration)) return;
       update({ type: 'result_unknown', operation: 'feedback', message: errorCopy(error) });
     } finally {
-      setWorking(false);
+      if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
   };
 
@@ -552,13 +637,16 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     continuousController.enable(currentQuestion);
   };
   const disableContinuous = () => {
+    if (working) return;
+    businessGenerationRef.current += 1;
     try { window.localStorage.setItem(CONTINUOUS_VOICE_PREFERENCE_KEY, 'false'); } catch { /* preference is best effort */ }
     continuousController.disable();
   };
   const fallbackContinuous = () => {
     continuousController.fallback('连续语音不可用，已保留标准回答。');
   };
-  const canSubmit = Boolean(state?.answer.trim()) && !working && !state?.resultUnknown && state?.phase !== 'completed';
+  const continuousInProgress = !['disabled', 'fallback_standard', 'closed'].includes(continuousState.status);
+  const canSubmit = Boolean(state?.answer.trim()) && !working && !state?.resultUnknown && state?.phase !== 'completed' && !continuousInProgress;
   const hasConfirmedAnswer = Boolean(state && timeline.some((turn) => turn.turn_no === state.turnNo && turn.confirmed));
   const currentTimelineTurn = timeline.find((turn) => turn.turn_no === state?.turnNo) ?? timeline[timeline.length - 1];
   const currentEvidence = buildEvidenceEntries(currentTimelineTurn?.basis_refs);
@@ -595,7 +683,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           <span className={styles.round}>{state ? `第 ${state.turnNo} / ${state.maxTurns} 轮` : '准备中'}</span>
           <Tag color={startError ? 'orange' : 'green'}>{startError ? '结果待确认' : '来源已冻结'}</Tag>
           {onToggleHaru ? <Button type="text" icon={<MenuOutlined />} onClick={onToggleHaru}>显示 Haru</Button> : null}
-          <Button onClick={() => void finish()} disabled={!attemptId || !state || working || Boolean(proposal)}>结束并生成复盘</Button>
+          <Button onClick={() => void finish()} disabled={!attemptId || !state || working || Boolean(proposal) || state?.phase === 'result_unknown' || ['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate', 'transcribing', 'reviewing_transcript', 'submitting_confirmed_answer', 'generating_next_question', 'paused', 'result_unknown'].includes(continuousState.status)}>结束并生成复盘</Button>
         </div>
       </header>
 
@@ -696,7 +784,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           status={continuousState.status}
           countdownSeconds={continuousState.countdownSeconds}
           error={continuousState.error}
-          disabled={!state || working || Boolean(startError)}
+          disabled={!state || working || Boolean(startError) || ['result_unknown', 'completed', 'next_question_generating', 'answer_submitting', 'feedback_submitting'].includes(state?.phase ?? '')}
           onEnable={enableContinuous}
           onDisable={disableContinuous}
           onSkipReading={() => continuousController.skipReading()}
@@ -712,21 +800,27 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           textValue={state?.answer ?? ''}
           onTextChange={(answer) => update({ type: 'draft_changed', answer })}
           submitRevision={voiceSubmitRevision}
-          onConfirmTranscript={(answer) => {
-            update({ type: 'transcript_ready', answer });
-            update({ type: 'transcript_confirmed' });
-          }}
-          onVoiceReviewConfirmed={(answer, summary) => {
-            update({ type: 'transcript_ready', answer });
-            update({ type: 'transcript_confirmed' });
-            const review = { turnNo: state?.turnNo ?? 1, summary, saveState: 'idle' as const, idempotencyKey: key('voice') };
-            voiceReviewRef.current = review;
-            setVoiceReview(review);
-            if (continuousState.status === 'reviewing_transcript') continuousController.confirmTranscript(answer);
-          }}
+           onConfirmTranscript={(answer) => {
+             update({ type: 'transcript_ready', answer });
+             update({ type: 'transcript_confirmed' });
+           }}
+           onVoiceReviewConfirmed={(answer, summary) => {
+             update({ type: 'transcript_ready', answer });
+             update({ type: 'transcript_confirmed' });
+             const review = { turnNo: state?.turnNo ?? 1, summary, saveState: 'idle' as const, idempotencyKey: key('voice') };
+             voiceReviewRef.current = review;
+             setVoiceReview(review);
+             if (continuousState.status === 'reviewing_transcript') {
+               continuousController.confirmTranscript(answer);
+               return;
+             }
+           }}
+           onAnswerModeChange={(mode) => update({ type: 'answer_mode', mode })}
           continuous
+          compact
           continuousCommand={continuousCommand}
           onContinuousEvent={handleContinuousEvent}
+          onDirtyChange={setVoiceDirty}
           onActivityChange={onActivityChange}
         />
         <div className={styles.submitBar}><span>{state?.answerMode === 'voice' ? '语音必须先核对文字，再进入同一个提交流程。' : '提交后回答会冻结，系统自动准备下一题。'}</span><Button type="primary" size="large" icon={<SendOutlined />} disabled={!canSubmit} onClick={() => void submitAnswer()}>确认并提交回答</Button></div>

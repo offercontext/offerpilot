@@ -10,6 +10,15 @@
 }
 
 .interviewStudio { z-index: 1300; pointer-events: auto; }
+.normalLayout .bubble {
+  top: 4px;
+  right: 0;
+  width: 116px;
+  max-width: 116px;
+  padding: 6px 8px;
+}
+.normalLayout .bubble strong { font-size: 11px; }
+.normalLayout .bubble span { font-size: 10px; }
 .dragging .characterButton { cursor: grabbing; user-select: none; }
 
 .characterButton {

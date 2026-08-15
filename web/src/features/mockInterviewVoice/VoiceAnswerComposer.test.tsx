@@ -131,6 +131,7 @@ afterEach(async () => {
   host?.remove();
   root = undefined;
   host = undefined;
+  Object.defineProperty(document, 'hidden', { configurable: true, value: false });
   vi.useRealTimers();
 });
 
@@ -152,16 +153,17 @@ describe('VoiceAnswerComposer', () => {
       onContinuousEvent,
       continuousCommand: { id: 1, type: 'read_question' },
     });
+    await rendered.rerender({ continuousCommand: { id: 2, type: 'read_question' } });
 
     await act(async () => { rendered.utterances[rendered.utterances.length - 1]?.onend?.(); });
-    await rendered.rerender({ continuousCommand: { id: 2, type: 'start_recording' } });
+    await rendered.rerender({ continuousCommand: { id: 3, type: 'start_recording' } });
     expect(rendered.browser.getUserMedia).toHaveBeenCalledTimes(1);
 
-    await rendered.rerender({ continuousCommand: { id: 3, type: 'stop_recording' } });
+    await rendered.rerender({ continuousCommand: { id: 4, type: 'stop_recording' } });
     await act(async () => { await vi.runAllTimersAsync(); });
 
     expect(rendered.props.onConfirmTranscript).not.toHaveBeenCalled();
-    expect(onContinuousEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'review_available' }));
+    expect(onContinuousEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'review_available', commandId: 4 }));
   });
 
   it('fences a pending continuous preflight after cleanup', async () => {
@@ -184,6 +186,41 @@ describe('VoiceAnswerComposer', () => {
     });
 
     expect(onContinuousEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'preflight_succeeded' }));
+  });
+
+  it('moves a cancelled pending continuous capture to manual transcript review', async () => {
+    const fixture = browserFixture();
+    let release!: (stream: MediaStream) => void;
+    fixture.browser.getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => { release = resolve; }));
+    const onContinuousEvent = vi.fn();
+    const rendered = await renderComposer({
+      browser: fixture.browser,
+      continuous: true,
+      onContinuousEvent,
+      continuousCommand: { id: 1, type: 'start_recording' },
+    });
+
+    await rendered.rerender({ continuousCommand: { id: 2, type: 'stop_recording' } });
+    expect(onContinuousEvent).toHaveBeenCalledWith({ type: 'review_available', commandId: 2 });
+    release({ getTracks: () => [fixture.track] } as unknown as MediaStream);
+  });
+
+  it('pauses continuous narration when the page becomes hidden', async () => {
+    const onContinuousEvent = vi.fn();
+    const rendered = await renderComposer({
+      continuous: true,
+      onContinuousEvent,
+      continuousCommand: { id: 1, type: 'read_question' },
+    });
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    rendered.utterances[rendered.utterances.length - 1]?.onend?.();
+
+    expect(rendered.browser.speechSynthesis.cancel).toHaveBeenCalled();
+    expect(onContinuousEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'page_hidden', commandId: 1 }));
+    expect(onContinuousEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'question_read_finished', commandId: 1 }));
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
   });
 
   it('reports page hiding in continuous mode and does not auto-resume capture', async () => {

@@ -14,7 +14,7 @@ interface PilotMascotFrame { width: number; height: number }
 
 export const DEFAULT_PILOT_MASCOT_POSITIONS: PilotMascotPositions = {
   version: 1,
-  normal: { xRatio: 0.92, yRatio: 0.82 },
+  normal: { xRatio: 0.96, yRatio: 0.9 },
   interview_studio: { xRatio: 0.72, yRatio: 0.46 },
 };
 

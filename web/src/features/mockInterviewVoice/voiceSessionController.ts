@@ -192,6 +192,7 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
       acceptActivity(levelFrame.atMs, levelFrame.durationMs, levelFrame.rms, levelFrame.peak);
     },
     async finish() {
+      if (disposed) return;
       finalizing = true;
       dependencies.onState({ status: 'finalizing' });
       while (!disposed && mode === 'segment') {
@@ -205,6 +206,7 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
         }
         break;
       }
+      if (disposed) return;
       dependencies.onState({ status: 'reviewing', transcript: mergeTranscriptSegments(segments, generation), temporarySegments: [...segments] });
     },
     pause() { paused = true; },

@@ -170,7 +170,7 @@ export default function PilotMascot({
       ? '聚焦 Pilot 输入框'
       : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
 
-  const frame = panelOpen || (studioPlacement && viewport.height < 740) ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
+  const frame = panelOpen || placement === 'contextual' || placement === 'pilot-page' || (studioPlacement && viewport.height < 740) ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
   const frameWidth = Math.round(frame.width * normalizedZoom * 10) / 10;
   const frameHeight = Math.round(frame.height * normalizedZoom * 10) / 10;
   const activePosition = position ?? localPosition;
@@ -279,7 +279,7 @@ export default function PilotMascot({
     <aside
       className={`${styles.mascot} ${panelOpen ? styles.compact : ''} ${
         placement === 'pilot-page' ? styles.pilotPage : ''
-      } ${studioPlacement ? styles.interviewStudio : ''} ${dragRef.current?.moved ? styles.dragging : ''}`}
+      } ${studioPlacement ? styles.interviewStudio : styles.normalLayout} ${dragRef.current?.moved ? styles.dragging : ''}`}
       data-activity={activity}
       data-notification={notification?.status}
       data-interview-studio-companion={studioPlacement ? 'true' : undefined}

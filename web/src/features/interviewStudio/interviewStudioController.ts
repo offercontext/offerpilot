@@ -66,7 +66,7 @@ export function reduceStudioState(state: StudioState, action: StudioAction): Stu
     case 'transcript_confirmed':
       return { ...state, phase: 'answering', error: null };
     case 'answer_submitting':
-      return { ...state, turnKey: action.turnKey, phase: 'answer_submitting', pendingOperation: 'answer', error: null };
+      return { ...state, turnKey: action.turnKey, phase: 'answer_submitting', pendingOperation: 'answer', resultUnknown: false, error: null };
     case 'answer_succeeded':
       return shouldGenerateNextQuestion({ ...state, phase: 'answer_confirmed' })
         ? { ...state, phase: 'next_question_generating', pendingOperation: 'question', error: null }

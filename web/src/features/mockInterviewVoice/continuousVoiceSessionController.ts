@@ -62,13 +62,16 @@ export type ContinuousVoiceSessionController = {
   manualStop(generation?: number): void;
   recordingLimitReached(generation?: number): void;
   recordingStopped(generation?: number): void;
+  recordingReset(generation?: number): void;
   transcriptReady(text: string, generation?: number): void;
   transcriptionFailed(message: string, generation?: number): void;
   confirmTranscript(text: string, generation?: number): void;
   answerSubmissionSucceeded(hasNextQuestion?: boolean, generation?: number): void;
   answerSubmissionUnknown(message: string, generation?: number): void;
+  retryAnswerSubmission(generation?: number): void;
   nextQuestionReady(question: string, generation?: number): void;
   nextQuestionUnknown(message: string, generation?: number): void;
+  retryNextQuestion(generation?: number): void;
   pause(generation?: number): void;
   resume(generation?: number): void;
   fallback(message: string, generation?: number): void;
@@ -108,6 +111,7 @@ export function createContinuousVoiceSessionController(
   const endCandidateMs = dependencies.endCandidateMs ?? DEFAULT_END_CANDIDATE_MS;
   let state = initialState();
   let countdown: TimerHandle | undefined;
+  let resumeNeedsPreflight = false;
 
   const emit = () => {
     const next = { ...state };
@@ -148,6 +152,7 @@ export function createContinuousVoiceSessionController(
     enable(question) {
       if (state.status === 'closed') return;
       invalidate();
+      resumeNeedsPreflight = false;
       setState({ status: 'preflight', question, transcript: '', error: null });
       command({ type: 'preflight', generation: state.generation });
     },
@@ -223,8 +228,21 @@ export function createContinuousVoiceSessionController(
     manualStop(generation) { stopForReview(generation); },
     recordingLimitReached(generation) { stopForReview(generation); },
     recordingStopped(generation) {
-      if (!isCurrent(generation) || state.status !== 'transcribing') return;
+      if (!isCurrent(generation)) return;
+      if (['waiting_for_speech', 'listening', 'end_candidate'].includes(state.status)) {
+        clearCountdown();
+        setState({ status: 'transcribing', countdownSeconds: null, error: null });
+        command({ type: 'start_transcription', generation: state.generation });
+        return;
+      }
+      if (state.status !== 'transcribing') return;
       command({ type: 'start_transcription', generation: state.generation });
+    },
+    recordingReset(generation) {
+      if (!isCurrent(generation) || !['transcribing', 'reviewing_transcript'].includes(state.status)) return;
+      clearCountdown();
+      setState({ status: 'waiting_for_speech', transcript: '', countdownSeconds: null, error: null });
+      command({ type: 'start_recording', generation: state.generation });
     },
     transcriptReady(text, generation) {
       if (!isCurrent(generation) || state.status !== 'transcribing') return;
@@ -253,6 +271,10 @@ export function createContinuousVoiceSessionController(
       if (!isCurrent(generation) || state.status !== 'submitting_confirmed_answer') return;
       setState({ status: 'result_unknown', error: message });
     },
+    retryAnswerSubmission(generation) {
+      if (!isCurrent(generation) || state.status !== 'result_unknown') return;
+      setState({ status: 'submitting_confirmed_answer', error: null });
+    },
     nextQuestionReady(question, generation) {
       if (!isCurrent(generation) || state.status !== 'generating_next_question') return;
       setState({ status: 'reading_question', question, transcript: '', error: null });
@@ -262,8 +284,13 @@ export function createContinuousVoiceSessionController(
       if (!isCurrent(generation) || state.status !== 'generating_next_question') return;
       setState({ status: 'result_unknown', error: message });
     },
+    retryNextQuestion(generation) {
+      if (!isCurrent(generation) || state.status !== 'result_unknown') return;
+      setState({ status: 'generating_next_question', error: null });
+    },
     pause(generation) {
-      if (!isCurrent(generation) || !['reading_question', 'waiting_for_speech', 'listening', 'end_candidate'].includes(state.status)) return;
+      if (!isCurrent(generation) || !['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate'].includes(state.status)) return;
+      resumeNeedsPreflight = state.status === 'preflight';
       invalidate();
       setState({ status: 'paused', countdownSeconds: null });
       command({ type: 'pause_capture', generation: state.generation });
@@ -271,12 +298,22 @@ export function createContinuousVoiceSessionController(
     resume(generation) {
       if (!isCurrent(generation) || state.status !== 'paused') return;
       invalidate();
+      if (resumeNeedsPreflight) {
+        resumeNeedsPreflight = false;
+        setState({ status: 'preflight', error: null });
+        command({ type: 'preflight', generation: state.generation });
+        return;
+      }
       setState({ status: 'reading_question', error: null });
       command({ type: 'resume_capture', generation: state.generation });
       command({ type: 'read_question', generation: state.generation, question: state.question });
     },
     fallback(message, generation) {
       if (!isCurrent(generation)) return;
+      if (state.status === 'fallback_standard') {
+        controller.disable(generation);
+        return;
+      }
       invalidate();
       setState({ status: 'fallback_standard', error: message, countdownSeconds: null });
       command({ type: 'cleanup', generation: state.generation });
