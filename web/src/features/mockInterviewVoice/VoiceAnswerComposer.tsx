@@ -71,6 +71,20 @@ export interface VoiceAnswerBrowser {
   now: () => number;
 }
 
+export type VoiceAnswerComposerCommand = {
+  id: number;
+  type: 'preflight' | 'read_question' | 'start_recording' | 'stop_recording' | 'pause_capture' | 'resume_capture' | 'cleanup';
+};
+
+export type VoiceAnswerComposerEvent =
+  | { type: 'preflight_succeeded'; commandId: number }
+  | { type: 'preflight_failed'; commandId: number; message: string }
+  | { type: 'question_read_finished'; commandId: number }
+  | { type: 'recording_started'; commandId: number }
+  | { type: 'recording_stopped'; commandId: number }
+  | { type: 'review_available'; commandId: number }
+  | { type: 'error'; commandId: number; message: string };
+
 interface Props {
   question: string;
   disabled: boolean;
@@ -86,6 +100,9 @@ interface Props {
   decodeAudio?: (blob: Blob) => Promise<Float32Array>;
   createCaptureRuntime?: typeof createVoiceCaptureRuntime;
   cleanupRef?: MutableRefObject<(() => void) | null>;
+  continuous?: boolean;
+  continuousCommand?: VoiceAnswerComposerCommand;
+  onContinuousEvent?: (event: VoiceAnswerComposerEvent) => void;
 }
 
 function defaultBrowser(): VoiceAnswerBrowser {
@@ -143,6 +160,9 @@ export default function VoiceAnswerComposer({
   decodeAudio = decodeAudioBlob,
   createCaptureRuntime = createVoiceCaptureRuntime,
   cleanupRef,
+  continuous = false,
+  continuousCommand,
+  onContinuousEvent,
 }: Props) {
   const browser = useMemo(() => suppliedBrowser ?? defaultBrowser(), [suppliedBrowser]);
   const capabilities = useMemo(() => detectVoiceInterviewCapabilities({
@@ -197,11 +217,21 @@ export default function VoiceAnswerComposer({
   const voicedRangesRef = useRef<ReadonlyArray<readonly [number, number]>>([]);
   const audioElementRef = useRef<HTMLAudioElement>(null);
   const transcriptPanelRef = useRef<HTMLDivElement>(null);
+  const continuousRef = useRef(continuous);
+  const lastContinuousCommandRef = useRef(0);
+  const activeContinuousCommandRef = useRef<number>();
+  const latestContinuousStopRef = useRef<number>();
   const transcriptTextAreaRef = useMemo(() => ({
     get current() { return transcriptPanelRef.current?.querySelector('textarea') ?? null; },
   }), []);
 
   const emitActivity = (activity: VoiceAnswerActivity) => onActivityChange?.(activity);
+
+  continuousRef.current = continuous;
+
+  const emitContinuousEvent = (event: VoiceAnswerComposerEvent) => {
+    if (continuousRef.current && !disposedRef.current) onContinuousEvent?.(event);
+  };
 
   const clearTimer = () => {
     if (intervalRef.current !== undefined) window.clearInterval(intervalRef.current);
@@ -243,6 +273,8 @@ export default function VoiceAnswerComposer({
 
   const resetVoiceDraft = () => {
     recordingGenerationRef.current += 1;
+    activeContinuousCommandRef.current = undefined;
+    latestContinuousStopRef.current = undefined;
     recordingStartPendingRef.current = false;
     clearTimer();
     clearRecordingSafetyTimeout();
@@ -327,8 +359,12 @@ export default function VoiceAnswerComposer({
     onDirtyChange?.(Boolean(audioUrl || transcript.trim() || recordingState !== 'idle'));
   }, [audioUrl, onDirtyChange, recordingState, transcript]);
 
-  const readQuestion = () => {
-    if (!capabilities.speechSynthesis || disabled || recordingState === 'recording' || recordingState === 'paused') return;
+  const readQuestion = (commandId?: number) => {
+    if (disabled || recordingState === 'recording' || recordingState === 'paused') return;
+    if (!capabilities.speechSynthesis) {
+      if (commandId !== undefined) emitContinuousEvent({ type: 'question_read_finished', commandId });
+      return;
+    }
     browser.speechSynthesis.cancel();
     const utterance = browser.createUtterance(question);
     utterance.lang = 'zh-CN';
@@ -336,10 +372,12 @@ export default function VoiceAnswerComposer({
     utterance.onend = () => {
       setNarrationState('idle');
       emitActivity('idle');
+      if (commandId !== undefined) emitContinuousEvent({ type: 'question_read_finished', commandId });
     };
     utterance.onerror = () => {
       setNarrationState('idle');
       setError('当前浏览器无法朗读题目，你仍可阅读题目并继续回答。');
+      if (commandId !== undefined) emitContinuousEvent({ type: 'question_read_finished', commandId });
       emitActivity('error');
     };
     setNarrationState('speaking');
@@ -501,8 +539,8 @@ export default function VoiceAnswerComposer({
     if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
   };
 
-  const startRecording = async () => {
-    if (!capabilities.recorder || disabled || recordingStartPendingRef.current) return;
+  const startRecording = async (): Promise<boolean> => {
+    if (!capabilities.recorder || disabled || recordingStartPendingRef.current) return false;
     recordingStartPendingRef.current = true;
     browser.speechSynthesis.cancel();
     setNarrationState('idle');
@@ -521,7 +559,7 @@ export default function VoiceAnswerComposer({
       const stream = await browser.getUserMedia({ audio: true });
       if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current) {
         stream.getTracks().forEach((track) => track.stop());
-        return;
+        return false;
       }
       recordingStartPendingRef.current = false;
       streamRef.current = stream;
@@ -558,6 +596,10 @@ export default function VoiceAnswerComposer({
           voicedRangesRef.current = session.getVoicedRanges();
         }
         stopStream();
+        const continuousCommandId = activeContinuousCommandRef.current;
+        if (continuousCommandId !== undefined) {
+          emitContinuousEvent({ type: 'recording_stopped', commandId: continuousCommandId });
+        }
         const recognition = recognitionRef.current;
         if (recognition) {
           let settled = false;
@@ -575,6 +617,9 @@ export default function VoiceAnswerComposer({
               if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
               setReviewReady(true);
               if (result === 'ready') emitActivity('reviewing_voice');
+              if (continuousCommandId !== undefined) {
+                emitContinuousEvent({ type: 'review_available', commandId: continuousCommandId });
+              }
             });
           };
           recognitionSettleRef.current = continueAfterRecognition;
@@ -587,6 +632,9 @@ export default function VoiceAnswerComposer({
             if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
             setReviewReady(true);
             if (result === 'ready') emitActivity('reviewing_voice');
+            if (continuousCommandId !== undefined) {
+              emitContinuousEvent({ type: 'review_available', commandId: continuousCommandId });
+            }
           });
         }
       };
@@ -608,9 +656,12 @@ export default function VoiceAnswerComposer({
       setElapsed(0);
       setRecordingState('recording');
       emitActivity('listening');
+      if (activeContinuousCommandRef.current !== undefined) {
+        emitContinuousEvent({ type: 'recording_started', commandId: activeContinuousCommandRef.current });
+      }
       intervalRef.current = window.setInterval(() => setElapsed((value) => value + 1), 1000);
     } catch {
-      if (recordingGeneration !== recordingGenerationRef.current || disposedRef.current) return;
+      if (recordingGeneration !== recordingGenerationRef.current || disposedRef.current) return false;
       stopStream();
       setRecordingState('idle');
       setError('未获得麦克风权限。文字回答仍可使用，也可以在浏览器设置中稍后允许。');
@@ -618,6 +669,7 @@ export default function VoiceAnswerComposer({
     } finally {
       if (recordingGeneration === recordingGenerationRef.current) recordingStartPendingRef.current = false;
     }
+    return recordingGeneration === recordingGenerationRef.current && recorderRef.current?.state !== 'inactive';
   };
 
   const pauseRecording = () => {
@@ -654,6 +706,53 @@ export default function VoiceAnswerComposer({
     document.addEventListener('visibilitychange', pauseWhenHidden);
     return () => document.removeEventListener('visibilitychange', pauseWhenHidden);
   }, [recordingState]);
+
+  useEffect(() => {
+    const command = continuousCommand;
+    if (!continuous || !command || command.id <= lastContinuousCommandRef.current) return;
+    lastContinuousCommandRef.current = command.id;
+    if (command.type === 'preflight') {
+      if (!capabilities.recorder) {
+        emitContinuousEvent({ type: 'preflight_failed', commandId: command.id, message: '当前浏览器不支持本地录音。' });
+        return;
+      }
+      void browser.getUserMedia({ audio: true }).then((stream) => {
+        if (disposedRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+        emitContinuousEvent({ type: 'preflight_succeeded', commandId: command.id });
+      }).catch(() => {
+        emitContinuousEvent({ type: 'preflight_failed', commandId: command.id, message: '未获得麦克风权限，已保留标准模式。' });
+      });
+      return;
+    }
+    if (command.type === 'read_question') {
+      readQuestion(command.id);
+      return;
+    }
+    if (command.type === 'start_recording') {
+      activeContinuousCommandRef.current = command.id;
+      void startRecording().then((started) => {
+        if (!started) emitContinuousEvent({ type: 'error', commandId: command.id, message: '连续录音未能启动，已保留手动回答。' });
+      });
+      return;
+    }
+    if (command.type === 'stop_recording') {
+      latestContinuousStopRef.current = command.id;
+      activeContinuousCommandRef.current = command.id;
+      requestRecorderStop();
+      return;
+    }
+    if (command.type === 'pause_capture') {
+      resetVoiceDraft();
+      return;
+    }
+    if (command.type === 'cleanup') {
+      resetVoiceDraft();
+    }
+  }, [browser, capabilities.recorder, continuous, continuousCommand]);
 
   const installLanguage = async () => {
     if (!browser.SpeechRecognition) return;
@@ -754,7 +853,7 @@ export default function VoiceAnswerComposer({
         </div>
         <div className={styles.readingActions}>
           {narrationState === 'idle' ? (
-            <Button icon={<PlayCircleOutlined />} onClick={readQuestion} disabled={disabled || !capabilities.speechSynthesis || recordingState === 'recording' || recordingState === 'paused'}>
+            <Button icon={<PlayCircleOutlined />} onClick={() => readQuestion()} disabled={disabled || !capabilities.speechSynthesis || recordingState === 'recording' || recordingState === 'paused'}>
               朗读题目
             </Button>
           ) : null}
@@ -765,7 +864,7 @@ export default function VoiceAnswerComposer({
             <Button icon={<PlayCircleOutlined />} onClick={resumeQuestion} disabled={disabled}>继续朗读</Button>
           ) : null}
           {narrationState !== 'idle' ? (
-            <Button onClick={readQuestion} disabled={disabled}>重新朗读</Button>
+            <Button onClick={() => readQuestion()} disabled={disabled}>重新朗读</Button>
           ) : null}
         </div>
       </div>

@@ -145,6 +145,25 @@ describe('VoiceAnswerComposer', () => {
     expect(browser.speechSynthesis.cancel).toHaveBeenCalled();
   });
 
+  it('runs controlled read/start/stop without auto-confirming the transcript', async () => {
+    const onContinuousEvent = vi.fn();
+    const rendered = await renderComposer({
+      continuous: true,
+      onContinuousEvent,
+      continuousCommand: { id: 1, type: 'read_question' },
+    });
+
+    await act(async () => { rendered.utterances[rendered.utterances.length - 1]?.onend?.(); });
+    await rendered.rerender({ continuousCommand: { id: 2, type: 'start_recording' } });
+    expect(rendered.browser.getUserMedia).toHaveBeenCalledTimes(1);
+
+    await rendered.rerender({ continuousCommand: { id: 3, type: 'stop_recording' } });
+    await act(async () => { await vi.runAllTimersAsync(); });
+
+    expect(rendered.props.onConfirmTranscript).not.toHaveBeenCalled();
+    expect(onContinuousEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'review_available' }));
+  });
+
   it('pauses, resumes and restarts question narration', async () => {
     const { browser } = await renderComposer();
     click('朗读题目');
