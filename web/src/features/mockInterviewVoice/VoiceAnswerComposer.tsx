@@ -82,6 +82,8 @@ export type VoiceAnswerComposerEvent =
   | { type: 'question_read_finished'; commandId: number }
   | { type: 'recording_started'; commandId: number }
   | { type: 'recording_stopped'; commandId: number }
+  | { type: 'speech_detected'; commandId: number }
+  | { type: 'silence_detected'; commandId: number }
   | { type: 'review_available'; commandId: number }
   | { type: 'error'; commandId: number; message: string };
 
@@ -230,7 +232,9 @@ export default function VoiceAnswerComposer({
   continuousRef.current = continuous;
 
   const emitContinuousEvent = (event: VoiceAnswerComposerEvent) => {
-    if (continuousRef.current && !disposedRef.current) onContinuousEvent?.(event);
+    if (continuousRef.current && !disposedRef.current && event.commandId === lastContinuousCommandRef.current) {
+      onContinuousEvent?.(event);
+    }
   };
 
   const clearTimer = () => {
@@ -466,6 +470,13 @@ export default function VoiceAnswerComposer({
 
   const applySessionState = (state: VoiceSessionState) => {
     setSessionState(state);
+    const commandId = activeContinuousCommandRef.current;
+    if (commandId !== undefined && state.status === 'recording' && state.voicedMs > 0) {
+      emitContinuousEvent({ type: 'speech_detected', commandId });
+    }
+    if (commandId !== undefined && state.status === 'speech_paused') {
+      emitContinuousEvent({ type: 'silence_detected', commandId });
+    }
     if (state.status === 'waiting_for_speech') emitActivity('waiting_for_speech');
     else if (state.status === 'speech_paused') emitActivity('speech_paused');
     else if (state.status === 'recording') emitActivity('listening');
@@ -717,7 +728,7 @@ export default function VoiceAnswerComposer({
         return;
       }
       void browser.getUserMedia({ audio: true }).then((stream) => {
-        if (disposedRef.current) {
+        if (disposedRef.current || lastContinuousCommandRef.current !== command.id) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }

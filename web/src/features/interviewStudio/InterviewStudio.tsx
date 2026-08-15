@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Tag } from 'antd';
 import { ArrowLeftOutlined, CheckCircleOutlined, FileTextOutlined, MenuOutlined, SendOutlined } from '@ant-design/icons';
-import VoiceAnswerComposer, { type VoiceAnswerActivity } from '@/features/mockInterviewVoice/VoiceAnswerComposer';
+import VoiceAnswerComposer, { type VoiceAnswerActivity, type VoiceAnswerComposerCommand, type VoiceAnswerComposerEvent } from '@/features/mockInterviewVoice/VoiceAnswerComposer';
+import {
+  createContinuousVoiceSessionController,
+  type ContinuousVoiceCommand,
+  type ContinuousVoiceSessionController,
+  type ContinuousVoiceState,
+} from '@/features/mockInterviewVoice/continuousVoiceSessionController';
 import type { VoiceDeliverySummary } from '@/features/mockInterviewVoice/voiceDeliverySummary';
 import {
   finishInterviewStudio,
@@ -20,6 +26,7 @@ import {
 } from './interviewStudioController';
 import { buildEvidenceEntries, evidenceKey, type StudioEvidenceEntry } from './evidenceLocator';
 import styles from './InterviewStudio.module.css';
+import ContinuousVoiceModePanel from './ContinuousVoiceModePanel';
 
 export interface InterviewStudioContext {
   kind: 'application_event';
@@ -56,6 +63,20 @@ type VoiceReview = {
   idempotencyKey: string;
 };
 type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voiceReview: VoiceReview };
+
+const CONTINUOUS_VOICE_PREFERENCE_KEY = 'offerpilot:interview-studio:continuous-voice-preference';
+
+function continuousActivity(status: ContinuousVoiceState['status']): VoiceAnswerActivity | undefined {
+  if (status === 'reading_question') return 'speaking';
+  if (status === 'waiting_for_speech') return 'waiting_for_speech';
+  if (status === 'listening') return 'listening';
+  if (status === 'end_candidate') return 'speech_paused';
+  if (status === 'transcribing') return 'transcribing';
+  if (status === 'reviewing_transcript') return 'reviewing_voice';
+  if (status === 'fallback_standard') return 'idle';
+  if (status === 'submitting_confirmed_answer' || status === 'generating_next_question') return 'preparing_voice';
+  return undefined;
+}
 
 function key(prefix: string): string {
   return `${prefix}-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Date.now()}`;
@@ -130,6 +151,15 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const startRequestRef = useRef(0);
   const initialQuestionFocusedRef = useRef(false);
   const [state, setState] = useState<StudioState | null>(null);
+  const [continuousState, setContinuousState] = useState<ContinuousVoiceState>({
+    status: 'disabled',
+    generation: 0,
+    question: '',
+    transcript: '',
+    countdownSeconds: null,
+    error: null,
+  });
+  const [continuousCommand, setContinuousCommand] = useState<VoiceAnswerComposerCommand>();
   const [attemptId, setAttemptId] = useState<number | null>(() => recovery?.attemptId ?? null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [proposal, setProposal] = useState<MockInterviewProposalResponse | null>(null);
@@ -140,6 +170,61 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [working, setWorking] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
+  const voiceReviewRef = useRef<VoiceReview | null>(voiceReview);
+  const continuousSubmitRef = useRef<(text: string) => void>();
+  const continuousGenerateRef = useRef<() => void>();
+  const continuousCommandIdRef = useRef(0);
+  const continuousCleanupTimerRef = useRef<number | null>(null);
+  const studioDisposedRef = useRef(false);
+  const onActivityChangeRef = useRef(onActivityChange);
+  onActivityChangeRef.current = onActivityChange;
+  voiceReviewRef.current = voiceReview;
+
+  const continuousControllerRef = useRef<ContinuousVoiceSessionController>();
+  if (!continuousControllerRef.current) {
+    continuousControllerRef.current = createContinuousVoiceSessionController({
+      onState: (next) => {
+        if (studioDisposedRef.current) return;
+        setContinuousState(next);
+        const activity = continuousActivity(next.status);
+        if (activity) onActivityChangeRef.current?.(activity);
+      },
+      onCommand: (command: ContinuousVoiceCommand) => {
+        if (studioDisposedRef.current) return;
+        if (command.type === 'submit_answer') {
+          continuousSubmitRef.current?.(command.text);
+          return;
+        }
+        if (command.type === 'generate_next_question') {
+          continuousGenerateRef.current?.();
+          return;
+        }
+        if (command.type === 'preflight' || command.type === 'read_question' || command.type === 'start_recording'
+          || command.type === 'stop_recording' || command.type === 'pause_capture' || command.type === 'resume_capture'
+          || command.type === 'cleanup') {
+          setContinuousCommand({ id: ++continuousCommandIdRef.current, type: command.type });
+        }
+      },
+    });
+  }
+  const continuousController = continuousControllerRef.current;
+
+  useEffect(() => {
+    studioDisposedRef.current = false;
+    if (continuousCleanupTimerRef.current !== null) {
+      window.clearTimeout(continuousCleanupTimerRef.current);
+      continuousCleanupTimerRef.current = null;
+    }
+    return () => {
+      continuousCleanupTimerRef.current = window.setTimeout(() => {
+        studioDisposedRef.current = true;
+        continuousController.close();
+        continuousCleanupTimerRef.current = null;
+      }, 0);
+    };
+    // The deferred cleanup survives React StrictMode's effect probe without creating a second controller.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     try {
@@ -219,6 +304,37 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
 
   const update = (action: Parameters<typeof reduceStudioState>[1]) => {
     setState((current) => current ? reduceStudioState(current, action) : current);
+  };
+
+  const handleContinuousEvent = (event: VoiceAnswerComposerEvent) => {
+    switch (event.type) {
+      case 'preflight_succeeded':
+        continuousController.preflightSucceeded();
+        break;
+      case 'preflight_failed':
+        continuousController.preflightFailed(event.message);
+        break;
+      case 'question_read_finished':
+        continuousController.questionReadFinished();
+        break;
+      case 'speech_detected':
+        continuousController.speechDetected();
+        break;
+      case 'silence_detected':
+        continuousController.silenceDetected();
+        break;
+      case 'recording_stopped':
+        continuousController.recordingStopped();
+        break;
+      case 'review_available':
+        continuousController.transcriptReady('');
+        break;
+      case 'error':
+        continuousController.fallback(event.message);
+        break;
+      case 'recording_started':
+        break;
+    }
   };
 
   const cancelStartRetry = () => {
@@ -323,6 +439,8 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       && !timeline.some((turn) => turn.turn_no === state?.turnNo && turn.confirmed);
     const hasPendingVoiceSave = voiceReview?.saveState === 'unknown' || voiceReview?.saveState === 'saving';
     if ((hasUnconfirmedDraft || hasPendingVoiceSave) && !window.confirm('当前还有未确认的回答或待恢复的语音复盘，确定退出工作台吗？')) return;
+    studioDisposedRef.current = true;
+    continuousController.close();
     onCloseRef.current();
   };
   closeRequestRef.current = requestClose;
@@ -339,41 +457,56 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         questionKey,
       });
       if (!isTurnResponse(result)) {
+        continuousController.nextQuestionUnknown('下一题结果待确认，已保留原 question key。');
         update({ type: 'result_unknown', operation: 'question', message: '下一题结果待确认，已保留原 question key。' });
         return;
       }
       setTimeline((current) => [...current, { ...result.turn, confirmed: false }]);
       update({ type: 'question_succeeded', turnNo: result.turn.turn_no, question: result.turn.question });
+      continuousController.nextQuestionReady(result.turn.question);
     } catch (error) {
       update({ type: 'result_unknown', operation: 'question', message: errorCopy(error) });
+      continuousController.nextQuestionUnknown(errorCopy(error));
     } finally {
       setWorking(false);
     }
   };
 
-  const submitAnswer = async () => {
-    if (!state || !attemptId || !state.answer.trim() || working || state.resultUnknown) return;
+  continuousGenerateRef.current = () => {
+    if (state && attemptId) void generateNextQuestion(state, attemptId);
+  };
+
+  const submitAnswer = async (answerOverride?: string) => {
+    const answer = (answerOverride ?? state?.answer ?? '').trim();
+    if (!state || !attemptId || !answer || working || state.resultUnknown) return;
     const turnKey = state.turnKey ?? key('turn');
     update({ type: 'answer_submitting', turnKey });
     setWorking(true);
     try {
-      await submitInterviewStudioAnswer({ context: serviceContext, attemptId, turnNo: state.turnNo, answerText: state.answer, turnKey });
-      appendConfirmedAnswer(state.answer);
-      const reviewForTurn = voiceReview?.turnNo === state.turnNo ? voiceReview : null;
+      await submitInterviewStudioAnswer({ context: serviceContext, attemptId, turnNo: state.turnNo, answerText: answer, turnKey });
+      appendConfirmedAnswer(answer);
+      const reviewForTurn = voiceReviewRef.current?.turnNo === state.turnNo ? voiceReviewRef.current : null;
       if (reviewForTurn) {
         await saveVoiceReview(reviewForTurn, attemptId);
       }
       update({ type: 'answer_succeeded' });
       setVoiceSubmitRevision((revision) => revision + 1);
       const confirmedState = { ...state, phase: 'answer_confirmed' as const };
-      if (shouldGenerateNextQuestion(confirmedState)) await generateNextQuestion(confirmedState, attemptId);
+      const hasNextQuestion = shouldGenerateNextQuestion(confirmedState);
+      if (continuousState.status !== 'disabled' && continuousState.status !== 'fallback_standard') {
+        continuousController.answerSubmissionSucceeded(hasNextQuestion);
+        if (!hasNextQuestion) setState((current) => current ? reduceStudioState(current, { type: 'answer_succeeded' }) : current);
+      } else if (hasNextQuestion) await generateNextQuestion(confirmedState, attemptId);
       else setState((current) => current ? reduceStudioState(current, { type: 'answer_succeeded' }) : current);
     } catch (error) {
       update({ type: 'result_unknown', operation: 'answer', message: errorCopy(error) });
+      continuousController.answerSubmissionUnknown(errorCopy(error));
     } finally {
       setWorking(false);
     }
   };
+
+  continuousSubmitRef.current = (answer) => { void submitAnswer(answer); };
 
   const finish = async () => {
     if (!state || !attemptId || working || state.phase === 'answer_submitting' || state.phase === 'next_question_generating') return;
@@ -411,6 +544,17 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     ? `${context.positionName} · 快速练习`
     : `${context.companyName ?? '真实投递'} · ${context.positionName ?? '模拟面试'}`;
   const currentQuestion = state?.question ?? '正在准备第一题…';
+  const enableContinuous = () => {
+    try { window.localStorage.setItem(CONTINUOUS_VOICE_PREFERENCE_KEY, 'true'); } catch { /* preference is best effort */ }
+    continuousController.enable(currentQuestion);
+  };
+  const disableContinuous = () => {
+    try { window.localStorage.setItem(CONTINUOUS_VOICE_PREFERENCE_KEY, 'false'); } catch { /* preference is best effort */ }
+    continuousController.disable();
+  };
+  const fallbackContinuous = () => {
+    continuousController.fallback('连续语音不可用，已保留标准回答。');
+  };
   const canSubmit = Boolean(state?.answer.trim()) && !working && !state?.resultUnknown && state?.phase !== 'completed';
   const hasConfirmedAnswer = Boolean(state && timeline.some((turn) => turn.turn_no === state.turnNo && turn.confirmed));
   const currentTimelineTurn = timeline.find((turn) => turn.turn_no === state?.turnNo) ?? timeline[timeline.length - 1];
@@ -545,6 +689,19 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       </main>
 
       <footer className={styles.composer} aria-label="回答区">
+        <ContinuousVoiceModePanel
+          status={continuousState.status}
+          countdownSeconds={continuousState.countdownSeconds}
+          error={continuousState.error}
+          onEnable={enableContinuous}
+          onDisable={disableContinuous}
+          onSkipReading={() => continuousController.skipReading()}
+          onCancelCountdown={() => continuousController.cancelEndCandidate()}
+          onPause={() => continuousController.pause()}
+          onResume={() => continuousController.resume()}
+          onStop={() => continuousController.manualStop()}
+          onFallback={fallbackContinuous}
+        />
         <VoiceAnswerComposer
           question={currentQuestion}
           disabled={!state || Boolean(startError) || working || state?.phase === 'result_unknown' || state?.phase === 'completed' || state?.phase === 'next_question_generating'}
@@ -558,8 +715,14 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           onVoiceReviewConfirmed={(answer, summary) => {
             update({ type: 'transcript_ready', answer });
             update({ type: 'transcript_confirmed' });
-            setVoiceReview({ turnNo: state?.turnNo ?? 1, summary, saveState: 'idle', idempotencyKey: key('voice') });
+            const review = { turnNo: state?.turnNo ?? 1, summary, saveState: 'idle' as const, idempotencyKey: key('voice') };
+            voiceReviewRef.current = review;
+            setVoiceReview(review);
+            if (continuousState.status === 'reviewing_transcript') continuousController.confirmTranscript(answer);
           }}
+          continuous
+          continuousCommand={continuousCommand}
+          onContinuousEvent={handleContinuousEvent}
           onActivityChange={onActivityChange}
         />
         <div className={styles.submitBar}><span>{state?.answerMode === 'voice' ? '语音必须先核对文字，再进入同一个提交流程。' : '提交后回答会冻结，系统自动准备下一题。'}</span><Button type="primary" size="large" icon={<SendOutlined />} disabled={!canSubmit} onClick={() => void submitAnswer()}>确认并提交回答</Button></div>

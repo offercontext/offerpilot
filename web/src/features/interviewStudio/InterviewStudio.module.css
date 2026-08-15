@@ -115,6 +115,7 @@
 .openEvidence { position: absolute; top: 26px; right: 30px; }
 
 .composer { position: relative; z-index: 3; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 440px); align-items: end; gap: 18px; padding: 12px 32px 16px; border-top: 1px solid var(--op-border); background: var(--op-surface); box-shadow: 0 -12px 30px color-mix(in srgb, var(--op-ink) 6%, transparent); }
+.composer > :global([data-testid='continuous-voice-panel']) { grid-column: 1 / -1; }
 .composer > section { min-width: 0; }
 .composer :global(.ant-input), .composer :global(textarea) { background: var(--op-surface); }
 .submitBar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; }
@@ -147,6 +148,7 @@
   .turn h3 { font-size: 19px; }
   .completeCard, .feedbackCard { margin-left: 0; }
   .submitBar { grid-template-columns: 1fr; }
+  .composer > :global([data-testid='continuous-voice-panel']) { grid-column: 1; }
   .submitBar :global(.ant-btn) { width: 100%; }
   .openEvidence { top: 18px; right: 18px; }
 }

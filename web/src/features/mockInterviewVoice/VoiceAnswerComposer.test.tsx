@@ -164,6 +164,28 @@ describe('VoiceAnswerComposer', () => {
     expect(onContinuousEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'review_available' }));
   });
 
+  it('fences a pending continuous preflight after cleanup', async () => {
+    const fixture = browserFixture();
+    const stream = { getTracks: () => [fixture.track] } as unknown as MediaStream;
+    let release!: (stream: MediaStream) => void;
+    fixture.browser.getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => { release = resolve; }));
+    const onContinuousEvent = vi.fn();
+    const rendered = await renderComposer({
+      browser: fixture.browser,
+      continuous: true,
+      onContinuousEvent,
+      continuousCommand: { id: 1, type: 'preflight' },
+    });
+
+    await rendered.rerender({ continuousCommand: { id: 2, type: 'cleanup' } });
+    await act(async () => {
+      release(stream);
+      await Promise.resolve();
+    });
+
+    expect(onContinuousEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'preflight_succeeded' }));
+  });
+
   it('pauses, resumes and restarts question narration', async () => {
     const { browser } = await renderComposer();
     click('朗读题目');
