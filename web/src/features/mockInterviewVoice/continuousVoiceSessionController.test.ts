@@ -80,6 +80,20 @@ describe('continuous voice session controller', () => {
     expect(events.commands.some((item) => item.type === 'stop_recording')).toBe(false);
   });
 
+  it('shows a cancellable three-second countdown before stopping locally', () => {
+    const events = createHarness();
+    const controller = createContinuousVoiceSessionController(events.dependencies);
+
+    startListening(controller);
+    controller.silenceDetected();
+    events.flushCountdown();
+    expect(events.states[events.states.length - 1]?.countdownSeconds).toBe(2);
+    events.flushCountdown();
+    expect(events.states[events.states.length - 1]?.countdownSeconds).toBe(1);
+    events.flushCountdown();
+    expect(events.commands[events.commands.length - 1]?.type).toBe('stop_recording');
+  });
+
   it('requires review and explicit confirmation before submitting once', () => {
     const events = createHarness();
     const controller = createContinuousVoiceSessionController(events.dependencies);

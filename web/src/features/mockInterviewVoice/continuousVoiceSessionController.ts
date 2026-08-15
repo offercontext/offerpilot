@@ -195,7 +195,18 @@ export function createContinuousVoiceSessionController(
       setState({ status: 'end_candidate', countdownSeconds: Math.ceil(endCandidateMs / 1_000) });
       command({ type: 'start_end_countdown', generation: state.generation, durationMs: endCandidateMs });
       const scheduledGeneration = state.generation;
-      countdown = schedule(endCandidateMs, () => controller.countdownElapsed(scheduledGeneration));
+      let remainingSeconds = Math.ceil(endCandidateMs / 1_000);
+      const tick = () => {
+        if (!isCurrent(scheduledGeneration) || state.status !== 'end_candidate') return;
+        remainingSeconds -= 1;
+        if (remainingSeconds <= 0) {
+          controller.countdownElapsed(scheduledGeneration);
+          return;
+        }
+        setState({ countdownSeconds: remainingSeconds });
+        countdown = schedule(1_000, tick);
+      };
+      countdown = schedule(Math.min(1_000, endCandidateMs), tick);
     },
     cancelEndCandidate(generation) {
       if (!isCurrent(generation) || state.status !== 'end_candidate') return;

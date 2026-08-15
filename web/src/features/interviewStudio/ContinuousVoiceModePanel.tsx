@@ -6,6 +6,7 @@ type Props = {
   status: ContinuousVoiceStatus;
   countdownSeconds?: number | null;
   error?: string | null;
+  disabled?: boolean;
   onEnable: () => void;
   onDisable?: () => void;
   onSkipReading?: () => void;
@@ -42,6 +43,7 @@ export default function ContinuousVoiceModePanel({
   status,
   countdownSeconds,
   error,
+  disabled = false,
   onEnable,
   onDisable,
   onSkipReading,
@@ -67,7 +69,7 @@ export default function ContinuousVoiceModePanel({
       </p>
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
       <div className={styles.actions}>
-        {status === 'disabled' ? <Button type="primary" onClick={onEnable}>开启连续语音模式</Button> : null}
+        {status === 'disabled' ? <Button type="primary" disabled={disabled} onClick={onEnable}>开启连续语音模式</Button> : null}
         {status === 'preflight' ? <Button disabled>正在准备麦克风…</Button> : null}
         {status === 'reading_question' ? <Button onClick={onSkipReading}>跳过朗读，开始回答</Button> : null}
         {status === 'waiting_for_speech' || status === 'listening' ? (

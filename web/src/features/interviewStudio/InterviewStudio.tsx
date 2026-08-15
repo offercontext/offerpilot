@@ -323,6 +323,9 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       case 'silence_detected':
         continuousController.silenceDetected();
         break;
+      case 'page_hidden':
+        continuousController.pause();
+        break;
       case 'recording_stopped':
         continuousController.recordingStopped();
         break;
@@ -693,6 +696,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
           status={continuousState.status}
           countdownSeconds={continuousState.countdownSeconds}
           error={continuousState.error}
+          disabled={!state || working || Boolean(startError)}
           onEnable={enableContinuous}
           onDisable={disableContinuous}
           onSkipReading={() => continuousController.skipReading()}

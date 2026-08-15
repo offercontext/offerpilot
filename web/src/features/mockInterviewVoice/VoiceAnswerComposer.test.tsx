@@ -186,6 +186,21 @@ describe('VoiceAnswerComposer', () => {
     expect(onContinuousEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'preflight_succeeded' }));
   });
 
+  it('reports page hiding in continuous mode and does not auto-resume capture', async () => {
+    const onContinuousEvent = vi.fn();
+    const rendered = await renderComposer({
+      continuous: true,
+      onContinuousEvent,
+      continuousCommand: { id: 1, type: 'start_recording' },
+    });
+    await act(async () => { await Promise.resolve(); });
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+
+    expect(rendered.recorder.pause).toHaveBeenCalled();
+    expect(onContinuousEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'page_hidden' }));
+  });
+
   it('pauses, resumes and restarts question narration', async () => {
     const { browser } = await renderComposer();
     click('朗读题目');

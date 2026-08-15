@@ -84,6 +84,7 @@ export type VoiceAnswerComposerEvent =
   | { type: 'recording_stopped'; commandId: number }
   | { type: 'speech_detected'; commandId: number }
   | { type: 'silence_detected'; commandId: number }
+  | { type: 'page_hidden'; commandId: number }
   | { type: 'review_available'; commandId: number }
   | { type: 'error'; commandId: number; message: string };
 
@@ -712,7 +713,12 @@ export default function VoiceAnswerComposer({
 
   useEffect(() => {
     const pauseWhenHidden = () => {
-      if (document.hidden && recordingState === 'recording') pauseRecording();
+      if (document.hidden && recordingState === 'recording') {
+        pauseRecording();
+        if (activeContinuousCommandRef.current !== undefined) {
+          emitContinuousEvent({ type: 'page_hidden', commandId: activeContinuousCommandRef.current });
+        }
+      }
     };
     document.addEventListener('visibilitychange', pauseWhenHidden);
     return () => document.removeEventListener('visibilitychange', pauseWhenHidden);
@@ -758,10 +764,12 @@ export default function VoiceAnswerComposer({
     }
     if (command.type === 'pause_capture') {
       resetVoiceDraft();
+      setMode('text');
       return;
     }
     if (command.type === 'cleanup') {
       resetVoiceDraft();
+      setMode('text');
     }
   }, [browser, capabilities.recorder, continuous, continuousCommand]);
 
