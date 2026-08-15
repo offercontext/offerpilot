@@ -46,7 +46,7 @@
 - `uv run ruff check .` 通过；`uv run mypy src` 通过（73 files）；`git diff --check` 通过。
 - 完整仓库没有再使用单次全量命令；采用分组门禁避免超时。
 
-已知前置条件：`tests/test_application_jd_browser_harness.py::test_application_jd_implementation_scope_is_machine_checked` 需要外部提供 `OFFERPILOT_APPLICATION_JD_BASELINE_FILE` 与 `OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE`；README cutover 检查仍是基线文案不一致，按仓库规则未修改 README。这两项不属于本轮面试改动。
+已知前置条件：`tests/test_application_jd_browser_harness.py::test_application_jd_implementation_scope_is_machine_checked` 在 main 与本分支均需要外部提供 `OFFERPILOT_APPLICATION_JD_BASELINE_FILE` 与 `OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE`。README cutover 检查已在本分支及合入后的 main 通过；此前的文案差异已恢复为契约要求并保留语音说明。
 
 ## 破坏性变化与剩余风险
 
@@ -57,4 +57,4 @@
 
 ## 合并评估
 
-独立代码复审发现并已修复语音恢复缺少 `attemptId` 及退出前缺少确认提示两个问题，复审后的结论未发现新的 P0/P1 阻塞项；建议合并当前分支。两次既有提交及本轮提交均保持不推送、不合并，待审核确认后再进行集成。
+独立代码复审发现并已修复语音恢复缺少 `attemptId` 及退出前缺少确认提示两个问题，复审后的结论未发现新的 P0/P1 阻塞项。分支已 fast-forward 合入本地 main，未推送。
