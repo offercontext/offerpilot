@@ -167,6 +167,92 @@ describe('InterviewStudio continuous voice integration', () => {
     expect(serviceSpies.nextQuestion).toHaveBeenCalledTimes(1);
   });
 
+  it('switches between answer and evidence without calling business services', async () => {
+    serviceSpies.start.mockResolvedValueOnce({
+      attempt_id: 41,
+      turn: {
+        turn_no: 1,
+        question: '请介绍一次排障经历。',
+        answer: '',
+        question_kind: 'new_topic',
+        basis_refs: [{ source: 'jd', path: '/jd/text', excerpt: '需要排障与回滚能力。' }],
+      },
+    });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。', companyName: '示例公司', positionName: '平台工程师' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const tabs = Array.from(host!.querySelectorAll<HTMLElement>('[role="tab"]'));
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['回答', '依据']);
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(host!.querySelector('[aria-label="回答工作台"]')).not.toBeNull();
+    const startCalls = serviceSpies.start.mock.calls.length;
+
+    await act(async () => { button('冻结 JD').click(); });
+    expect(tabs[1]?.getAttribute('aria-selected')).toBe('true');
+    expect(host!.querySelector('[aria-label="本轮依据"]')).not.toBeNull();
+    await act(async () => { button('回答').click(); });
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(serviceSpies.start).toHaveBeenCalledTimes(startCalls);
+    expect(serviceSpies.answer).not.toHaveBeenCalled();
+    expect(serviceSpies.nextQuestion).not.toHaveBeenCalled();
+  });
+
+  it('renders a confirmed answer as a candidate chat message', async () => {
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+    await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+    await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    const candidateMessage = host!.querySelector('[data-interview-speaker="candidate"]');
+    expect(candidateMessage?.textContent).toContain('你');
+    expect(candidateMessage?.textContent).toContain('我先定位日志，再完成回滚。');
+  });
+
+  it('exposes a mobile answer-workspace trigger', async () => {
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const trigger = button('打开回答工作台');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.getAttribute('aria-controls')).toBe('interview-answer-workspace');
+    await act(async () => { trigger.click(); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { button('关闭回答工作台').click(); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('restores a business result-unknown with the original attempt and turn key', async () => {
     window.sessionStorage.setItem('offerpilot:interview-studio:business-recovery:real:7:8', JSON.stringify({
       attemptKey: 'attempt-original',
