@@ -198,10 +198,10 @@ describe('InterviewStudio continuous voice integration', () => {
     const startCalls = serviceSpies.start.mock.calls.length;
 
     await act(async () => { button('冻结 JD').click(); });
-    expect(tabs[1]?.getAttribute('aria-selected')).toBe('true');
+    expect(host!.querySelectorAll<HTMLElement>('[role="tab"]')[1]?.getAttribute('aria-selected')).toBe('true');
     expect(host!.querySelector('[aria-label="本轮依据"]')).not.toBeNull();
-    await act(async () => { button('回答').click(); });
-    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    await act(async () => { host!.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0]?.click(); });
+    expect(host!.querySelectorAll<HTMLElement>('[role="tab"]')[0]?.getAttribute('aria-selected')).toBe('true');
     expect(serviceSpies.start).toHaveBeenCalledTimes(startCalls);
     expect(serviceSpies.answer).not.toHaveBeenCalled();
     expect(serviceSpies.nextQuestion).not.toHaveBeenCalled();
@@ -231,13 +231,14 @@ describe('InterviewStudio continuous voice integration', () => {
   });
 
   it('exposes a mobile answer-workspace trigger', async () => {
+    const onClose = vi.fn();
     await act(async () => {
       root = createRoot(host = document.createElement('div'));
       document.body.appendChild(host);
       root.render(
         <InterviewStudio
           context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
-          onClose={vi.fn()}
+          onClose={onClose}
         />,
       );
       await Promise.resolve();
@@ -247,10 +248,19 @@ describe('InterviewStudio continuous voice integration', () => {
     const trigger = button('打开回答工作台');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(trigger.getAttribute('aria-controls')).toBe('interview-answer-workspace');
-    await act(async () => { trigger.click(); });
+    await act(async () => {
+      trigger.click();
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    await act(async () => { button('关闭回答工作台').click(); });
+    expect(document.activeElement).toBe(host!.querySelectorAll<HTMLButtonElement>('[role="tab"]')[0]);
+    await act(async () => {
+      host!.querySelector('[data-interview-studio]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('restores a business result-unknown with the original attempt and turn key', async () => {
