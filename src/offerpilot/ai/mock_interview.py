@@ -304,6 +304,52 @@ def build_mock_interview_evidence_catalog(
     return catalog
 
 
+def _question_provider_evidence_catalog(
+    snapshot: dict[str, Any], turns: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Expose opaque, deterministic references so the model never copies citations.
+
+    The persisted/public contract remains ``source + path + excerpt``.  The model
+    only selects an ID from this request-scoped catalog; the server expands that
+    ID back to an exact frozen excerpt after the response is parsed.
+    """
+    return [
+        {"id": f"ev_{index:03d}", **entry}
+        for index, entry in enumerate(
+            build_mock_interview_evidence_catalog(snapshot, turns), start=1
+        )
+    ]
+
+
+def _expand_question_evidence_ids(
+    evidence_ids: Any, catalog: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    if not isinstance(evidence_ids, list):
+        raise MockInterviewContractError("evidence_refs_not_array")
+    if not evidence_ids:
+        raise MockInterviewContractError("missing_evidence_ref")
+    if len(evidence_ids) > 4:
+        raise MockInterviewContractError("limit_exceeded")
+    if any(not isinstance(evidence_id, str) for evidence_id in evidence_ids):
+        raise MockInterviewContractError("evidence_ref_field_type")
+    if len(set(evidence_ids)) != len(evidence_ids):
+        raise MockInterviewContractError("duplicate_evidence_ref")
+    by_id = {entry["id"]: entry for entry in catalog}
+    refs: list[dict[str, str]] = []
+    for evidence_id in evidence_ids:
+        entry = by_id.get(evidence_id)
+        if entry is None:
+            raise MockInterviewContractError("unknown_evidence_ref")
+        refs.append(
+            {
+                "source": entry["source"],
+                "path": entry["path"],
+                "excerpt": entry["value"],
+            }
+        )
+    return refs
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -458,30 +504,37 @@ def generate_question(
     last_category = "invalid_json"
     failure_categories: list[str] = []
     provider_request_id = ""
+    evidence_catalog = _question_provider_evidence_catalog(snapshot, turns)
+    allowed_evidence_ids = [entry["id"] for entry in evidence_catalog]
     for attempt in range(2):
-        repair_instruction = _format_repair_instruction(last_category) if attempt else ""
+        repair_instruction = (
+            " Format repair: the previous response failed the structural check "
+            f"{last_category!r}. Return only one raw JSON object with exactly "
+            "question and evidence_ids. evidence_ids must be a non-empty array "
+            "containing one to four IDs copied exactly from evidence_catalog."
+            if attempt
+            else ""
+        )
         messages = [
             Message(
                 role="system",
                 content=(
-                    "只返回原始 JSON，字段必须严格为 question 和 evidence_refs。"
-                    "question 必须是非空字符串；evidence_refs 必须引用当前冻结 JD、简历或已回答轮次。"
-                    "source/path/excerpt 必须使用允许的规范路径，excerpt 必须从对应输入逐字连续复制，不得改写、拼接或猜测。"
+                    "只返回原始 JSON，字段必须严格为 question 和 evidence_ids。"
+                    "question 必须是非空字符串；evidence_ids 必须是 1 至 4 个字符串组成的数组。"
+                    "每个 ID 必须从 evidence_catalog 的 id 字段逐字选择，不得输出 source、path、value 或自行构造 ID。"
                     "不得评分、预测录用或添加额外字段。"
-                    "evidence_catalog is the only allowed evidence directory; source/path must exactly "
-                    "select one catalog entry, and excerpt must be a non-empty contiguous substring "
-                    "of that entry's value."
+                    "The server expands selected IDs to exact frozen citations; never copy or rewrite citation text."
                     + repair_instruction
                 ),
             ),
             Message(
                 role="user",
                 content=json.dumps(
-                    {
-                        "snapshot": snapshot,
-                        "evidence_catalog": build_mock_interview_evidence_catalog(snapshot, turns),
-                        "turns": turns,
-                        "repair_failure_category": last_category if attempt else None,
+                        {
+                            "snapshot": snapshot,
+                            "evidence_catalog": evidence_catalog,
+                            "turns": turns,
+                            "repair_failure_category": last_category if attempt else None,
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -497,22 +550,12 @@ def generate_question(
                     "schema": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["question", "evidence_refs"],
+                        "required": ["question", "evidence_ids"],
                         "properties": {
                             "question": {"type": "string", "minLength": 1, "maxLength": 1000},
-                            "evidence_refs": {
+                            "evidence_ids": {
                                 "type": "array",
-                                "maxItems": 4,
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": False,
-                                    "required": ["source", "path", "excerpt"],
-                                    "properties": {
-                                        "source": {"type": "string"},
-                                        "path": {"type": "string"},
-                                        "excerpt": {"type": "string", "minLength": 1},
-                                    },
-                                },
+                                "items": {"type": "string", "enum": allowed_evidence_ids},
                             },
                         },
                     },
@@ -524,23 +567,15 @@ def generate_question(
                 assistant = cast(Assistant, model.complete(messages, []))
             provider_request_id = _assistant_provider_request_id(assistant)
             parsed = parse_mock_interview_json(assistant.content)
-            if set(parsed) != {"question", "evidence_refs"}:
+            if set(parsed) != {"question", "evidence_ids"}:
                 raise MockInterviewContractError("unexpected_field")
             question = parsed["question"]
-            refs = parsed["evidence_refs"]
             if not isinstance(question, str) or not question.strip() or len(question) > 1000:
                 raise MockInterviewContractError("blank_value")
-            if not isinstance(refs, list):
-                raise MockInterviewContractError("evidence_refs_not_array")
-            if not refs:
-                raise MockInterviewContractError("missing_evidence_ref")
-            if len(refs) > 4:
-                raise MockInterviewContractError("limit_exceeded")
-            for ref in refs:
-                _validate_reference(ref, snapshot, turns)
+            refs = _expand_question_evidence_ids(parsed["evidence_ids"], evidence_catalog)
             return {
                 "question": question,
-                "evidence_refs": [dict(ref) for ref in refs],
+                "evidence_refs": refs,
             }
         except MockInterviewProviderError:
             raise

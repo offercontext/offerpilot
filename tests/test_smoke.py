@@ -86,7 +86,7 @@ class _MockInterviewAcceptanceModel:
             }, ensure_ascii=False))
         return Assistant(content=json.dumps({
             "question": "请继续说明这段经历。",
-            "evidence_refs": [{"source": "jd", "path": "/jd/text", "excerpt": "Python"}],
+            "evidence_ids": ["ev_001"],
         }, ensure_ascii=False))
 
 

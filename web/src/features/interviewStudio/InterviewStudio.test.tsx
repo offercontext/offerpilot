@@ -10,6 +10,7 @@ const serviceSpies = vi.hoisted(() => ({
   answer: vi.fn(),
   nextQuestion: vi.fn(),
   finish: vi.fn(),
+  discard: vi.fn(),
   saveVoiceReview: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ vi.mock('@/services/mockInterviews', () => ({
   submitInterviewStudioAnswer: serviceSpies.answer,
   generateInterviewStudioQuestion: serviceSpies.nextQuestion,
   finishInterviewStudio: serviceSpies.finish,
+  discardInterviewStudioAttempt: serviceSpies.discard,
 }));
 
 vi.mock('@/services/voiceCoaching', () => ({
@@ -127,11 +129,47 @@ describe('InterviewStudio continuous voice integration', () => {
       attempt_id: 41,
       turn: { turn_no: 2, question: '你如何验证修复？', answer: '', question_kind: 'follow_up', parent_turn_no: 1, basis_refs: [] },
     });
+    serviceSpies.discard.mockResolvedValue(undefined);
     serviceSpies.saveVoiceReview.mockResolvedValue({ ok: true });
     serviceSpies.start.mockClear();
     serviceSpies.answer.mockClear();
     serviceSpies.nextQuestion.mockClear();
+    serviceSpies.discard.mockClear();
     serviceSpies.saveVoiceReview.mockClear();
+  });
+
+  it('restarts a terminally unverifiable question with fresh keys instead of retrying the failed key', async () => {
+    serviceSpies.nextQuestion.mockRejectedValueOnce({
+      response: {
+        status: 502,
+        data: { error_code: 'mock_interview_unverifiable', attempt_id: 41 },
+      },
+    });
+    const context = { kind: 'application_event' as const, applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' };
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(<InterviewStudio context={context} onClose={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    const firstStart = serviceSpies.start.mock.calls[0]?.[0] as { attemptKey: string; questionKey: string };
+
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+    await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+    await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(host!.textContent).toContain('AI 输出未通过证据验证');
+    expect(host!.textContent).not.toContain('使用原 key 重试');
+    await act(async () => { button('重新开始练习').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(serviceSpies.discard).toHaveBeenCalledWith({ context: { kind: 'application_event', applicationId: 7, eventId: 8 }, attemptId: 41 });
+    expect(serviceSpies.start).toHaveBeenCalledTimes(2);
+    const restarted = serviceSpies.start.mock.calls[1]?.[0] as { attemptKey: string; questionKey: string };
+    expect(restarted.attemptKey).not.toBe(firstStart.attemptKey);
+    expect(restarted.questionKey).not.toBe(firstStart.questionKey);
   });
 
   it('does not call business services during media stages and submits confirmed text once', async () => {

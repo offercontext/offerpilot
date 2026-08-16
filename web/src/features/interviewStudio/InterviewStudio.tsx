@@ -12,6 +12,7 @@ import type { VoiceDeliverySummary } from '@/features/mockInterviewVoice/voiceDe
 import {
   finishInterviewStudio,
   generateInterviewStudioQuestion,
+  discardInterviewStudioAttempt,
   startInterviewStudioAttempt,
   submitInterviewStudioAnswer,
   type InterviewStudioContext as InterviewApiContext,
@@ -66,6 +67,7 @@ type VoiceReview = {
 type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voiceReview: VoiceReview };
 type StudioBusinessRecovery = { attemptKey: string; attemptId: number; state: StudioState; timeline: TimelineEntry[] };
 type StudioStartRecovery = { attemptKey: string; questionKey: string; message: string };
+type StudioTerminalFailure = { message: string; attemptId: number | null };
 type WorkspaceTab = 'answer' | 'evidence';
 
 const CONTINUOUS_VOICE_PREFERENCE_KEY = 'offerpilot:interview-studio:continuous-voice-preference';
@@ -96,16 +98,22 @@ function isTurnResponse(value: Awaited<ReturnType<typeof startInterviewStudioAtt
   return 'turn' in value;
 }
 
-function errorCopy(error: unknown): string {
-  const response = (error as { response?: { status?: number; data?: { error_code?: string } } })?.response;
+function errorDetails(error: unknown): { message: string; terminal: boolean; attemptId: number | null } {
+  const response = (error as { response?: { status?: number; data?: { error_code?: string; attempt_id?: unknown; details?: { attempt_id?: unknown } } } })?.response;
   const code = response?.data?.error_code;
-  if (code === 'mock_interview_source_conflict') return '冻结来源暂时无法验证，请回到准备中心重新确认。';
-  if (code === 'mock_interview_unverifiable') return 'AI 输出未通过验证，保留原 key，可安全重试。';
-  if (code === 'mock_interview_question_result_unknown') return '下一题结果待确认，已保留原 question key。';
-  if (code === 'mock_interview_feedback_result_unknown') return '复盘结果待确认，已保留原 feedback key。';
-  if (response?.status === 422) return '当前回答或来源无法用于本次练习，请检查后重试。';
-  if (response?.status === 409) return '本次操作与已有结果冲突，请使用原 key 对账。';
-  return '网络或服务结果待确认，输入和原 key 已冻结。';
+  const rawAttemptId = response?.data?.attempt_id ?? response?.data?.details?.attempt_id;
+  const failedAttemptId = typeof rawAttemptId === 'number' && Number.isInteger(rawAttemptId) ? rawAttemptId : null;
+  if (code === 'mock_interview_source_conflict') return { message: '冻结来源暂时无法验证，请回到准备中心重新确认。', terminal: false, attemptId: failedAttemptId };
+  if (code === 'mock_interview_unverifiable') return { message: 'AI 输出未通过证据验证。本次生成已终止，请重新开始练习。', terminal: true, attemptId: failedAttemptId };
+  if (code === 'mock_interview_question_result_unknown') return { message: '下一题结果待确认，已保留原 question key。', terminal: false, attemptId: failedAttemptId };
+  if (code === 'mock_interview_feedback_result_unknown') return { message: '复盘结果待确认，已保留原 feedback key。', terminal: false, attemptId: failedAttemptId };
+  if (response?.status === 422) return { message: '当前回答或来源无法用于本次练习，请检查后重试。', terminal: false, attemptId: failedAttemptId };
+  if (response?.status === 409) return { message: '本次操作与已有结果冲突，请使用原 key 对账。', terminal: false, attemptId: failedAttemptId };
+  return { message: '网络或服务结果待确认，输入和原 key 已冻结。', terminal: false, attemptId: failedAttemptId };
+}
+
+function errorCopy(error: unknown): string {
+  return errorDetails(error).message;
 }
 
 function questionLabel(turn: TimelineEntry): string {
@@ -229,6 +237,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [jdExpanded, setJdExpanded] = useState(false);
   const [working, setWorking] = useState(false);
   const [startError, setStartError] = useState<string | null>(() => startRecovery?.message ?? null);
+  const [terminalFailure, setTerminalFailure] = useState<StudioTerminalFailure | null>(null);
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
   const [voiceDirty, setVoiceDirty] = useState(false);
   const mobileWorkspaceOpenRef = useRef(mobileWorkspaceOpen);
@@ -502,12 +511,20 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       }
       clearStudioStartRecovery();
       setStartError(null);
+      setTerminalFailure(null);
       setAttemptId(result.attempt_id);
       setTimeline([{ ...result.turn, confirmed: false }]);
       setState(createStudioState({ turnNo: result.turn.turn_no, question: result.turn.question }));
     } catch (error) {
       if (requestId !== startRequestRef.current || !isBusinessRequestCurrent(businessGeneration)) return;
-      const message = errorCopy(error);
+      const failure = errorDetails(error);
+      if (failure.terminal) {
+        clearStudioStartRecovery();
+        setStartError(null);
+        setTerminalFailure({ message: failure.message, attemptId: failure.attemptId });
+        return;
+      }
+      const message = failure.message;
       persistStudioStartRecovery(message);
       setStartError(message);
     } finally {
@@ -644,8 +661,16 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       continuousController.nextQuestionReady(result.turn.question);
     } catch (error) {
       if (!isBusinessRequestCurrent(businessGeneration)) return;
-      update({ type: 'result_unknown', operation: 'question', message: errorCopy(error) });
-      continuousController.nextQuestionUnknown(errorCopy(error));
+      const failure = errorDetails(error);
+      if (failure.terminal) {
+        clearStudioBusinessRecovery();
+        setTerminalFailure({ message: failure.message, attemptId: failure.attemptId ?? currentAttemptId });
+        update({ type: 'contract_failed', message: failure.message });
+        continuousController.fallback(failure.message);
+      } else {
+        update({ type: 'result_unknown', operation: 'question', message: failure.message });
+        continuousController.nextQuestionUnknown(failure.message);
+      }
     } finally {
       if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
@@ -710,7 +735,14 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       setState((current) => current ? { ...current, pendingOperation: null, resultUnknown: false, phase: 'completed' } : current);
     } catch (error) {
       if (!isBusinessRequestCurrent(businessGeneration)) return;
-      update({ type: 'result_unknown', operation: 'feedback', message: errorCopy(error) });
+      const failure = errorDetails(error);
+      if (failure.terminal) {
+        clearStudioBusinessRecovery();
+        setTerminalFailure({ message: failure.message, attemptId: failure.attemptId ?? attemptId });
+        update({ type: 'contract_failed', message: failure.message });
+      } else {
+        update({ type: 'result_unknown', operation: 'feedback', message: failure.message });
+      }
     } finally {
       if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
@@ -735,6 +767,47 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const enableContinuous = () => {
     try { window.localStorage.setItem(CONTINUOUS_VOICE_PREFERENCE_KEY, 'true'); } catch { /* preference is best effort */ }
     continuousController.enable(currentQuestion);
+  };
+
+  const restartAfterTerminalFailure = async () => {
+    if (!terminalFailure || working) return;
+    const failed = terminalFailure;
+    const generation = ++businessGenerationRef.current;
+    startRequestRef.current += 1;
+    cancelStartRetry();
+    setWorking(true);
+    try {
+      if (failed.attemptId !== null) {
+        try {
+          await discardInterviewStudioAttempt({ context: serviceContext, attemptId: failed.attemptId });
+        } catch (error) {
+          const status = (error as { response?: { status?: number } } | null)?.response?.status;
+          if (status !== 404) throw error;
+        }
+      }
+      if (!isBusinessRequestCurrent(generation)) return;
+      clearStudioBusinessRecovery();
+      clearStudioStartRecovery();
+      try { window.sessionStorage.removeItem(recoveryStorageKey); } catch { /* best effort */ }
+      attemptKeyRef.current = key('attempt');
+      initialQuestionKeyRef.current = key('question');
+      initialQuestionFocusedRef.current = false;
+      setAttemptId(null);
+      setTimeline([]);
+      setState(null);
+      setProposal(null);
+      setVoiceReview(null);
+      setVoiceDirty(false);
+      setTerminalFailure(null);
+      setStartError(null);
+      continuousController.disable();
+      await start();
+    } catch {
+      if (!isBusinessRequestCurrent(generation)) return;
+      setTerminalFailure({ ...failed, message: '旧练习清理结果待确认，暂未创建新的练习。请稍后重试。' });
+    } finally {
+      if (isBusinessRequestCurrent(generation)) setWorking(false);
+    }
   };
   const disableContinuous = () => {
     if (working) return;
@@ -790,17 +863,18 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         </div>
         <div className={styles.topActions}>
           <span className={styles.round}>{state ? `第 ${state.turnNo} / ${state.maxTurns} 轮` : '准备中'}</span>
-          <Tag color={startError ? 'orange' : 'green'}>{startError ? '结果待确认' : '来源已冻结'}</Tag>
+          <Tag color={startError || terminalFailure ? 'orange' : 'green'}>{terminalFailure ? '需要重新开始' : startError ? '结果待确认' : '来源已冻结'}</Tag>
           {onToggleHaru ? <Button type="text" icon={<MenuOutlined />} onClick={onToggleHaru}>显示 Haru</Button> : null}
-          <Button onClick={() => void finish()} disabled={!attemptId || !state || working || Boolean(proposal) || state?.phase === 'result_unknown' || ['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate', 'transcribing', 'reviewing_transcript', 'submitting_confirmed_answer', 'generating_next_question', 'paused', 'result_unknown'].includes(continuousState.status)}>结束并生成复盘</Button>
+          <Button onClick={() => void finish()} disabled={!attemptId || !state || working || Boolean(proposal) || state?.phase === 'result_unknown' || state?.phase === 'contract_failed' || ['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate', 'transcribing', 'reviewing_transcript', 'submitting_confirmed_answer', 'generating_next_question', 'paused', 'result_unknown'].includes(continuousState.status)}>结束并生成复盘</Button>
         </div>
       </header>
 
       <main className={styles.main}>
         <section className={`${styles.timeline} ${styles.conversationPane}`} aria-label="面试对话时间线">
-          <div className={styles.timelineHeader}><div><span className={styles.kicker}>面试对话</span><h2>保持对话，答案由你确认</h2></div><span className={styles.livePill}><i /> {state?.phase === 'result_unknown' ? '需要对账' : '本轮进行中'}</span></div>
+          <div className={styles.timelineHeader}><div><span className={styles.kicker}>面试对话</span><h2>保持对话，答案由你确认</h2></div><span className={styles.livePill}><i /> {state?.phase === 'contract_failed' ? '需要重新开始' : state?.phase === 'result_unknown' ? '需要对账' : '本轮进行中'}</span></div>
           <div className={styles.conversationScroll}>
             {startError ? <Alert className={styles.alert} type="warning" showIcon message={startError} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} /> : null}
+            {terminalFailure ? <Alert className={styles.alert} type="warning" showIcon message={terminalFailure.message} action={<Button size="small" onClick={() => void restartAfterTerminalFailure()} disabled={working}>重新开始练习</Button>} /> : null}
             {state?.phase === 'result_unknown' && state.error ? <div tabIndex={-1}><Alert className={styles.alert} type="warning" showIcon message={state.error} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} /></div> : null}
             <div className={styles.turnList} aria-live="polite">
               {timeline.map((turn) => (
@@ -872,7 +946,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
                   status={continuousState.status}
                   countdownSeconds={continuousState.countdownSeconds}
                   error={continuousState.error}
-                  disabled={!state || working || Boolean(startError) || ['result_unknown', 'completed', 'next_question_generating', 'answer_submitting', 'feedback_submitting'].includes(state?.phase ?? '')}
+                  disabled={!state || working || Boolean(startError) || Boolean(terminalFailure) || ['result_unknown', 'contract_failed', 'completed', 'next_question_generating', 'answer_submitting', 'feedback_submitting'].includes(state?.phase ?? '')}
                   onEnable={enableContinuous}
                   onDisable={disableContinuous}
                   onSkipReading={() => continuousController.skipReading()}
@@ -884,7 +958,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
                 />
                 <VoiceAnswerComposer
                   question={currentQuestion}
-                  disabled={!state || Boolean(startError) || working || state?.phase === 'result_unknown' || state?.phase === 'completed' || state?.phase === 'next_question_generating'}
+                  disabled={!state || Boolean(startError) || Boolean(terminalFailure) || working || state?.phase === 'result_unknown' || state?.phase === 'contract_failed' || state?.phase === 'completed' || state?.phase === 'next_question_generating'}
                   textValue={state?.answer ?? ''}
                   onTextChange={(answer) => update({ type: 'draft_changed', answer })}
                   submitRevision={voiceSubmitRevision}

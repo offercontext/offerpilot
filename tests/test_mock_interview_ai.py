@@ -72,14 +72,13 @@ class _ProviderBlockModel:
 def _valid_question():
     return (
         '{"question":"请分享一次经历？",'
-        '"evidence_refs":[{"source":"turn","path":"/turns/001/answer",'
-        '"excerpt":"我做过 Python 服务"}]}'
+        '"evidence_ids":["ev_003"]}'
     )
 
 
 def test_structural_evidence_error_is_repaired_once():
     model = _QuestionRepairModel([
-        '{"question":"请分享一次经历？","evidence_refs":[null]}',
+        '{"question":"请分享一次经历？","evidence_ids":[null]}',
         _valid_question(),
     ])
 
@@ -95,23 +94,23 @@ def test_structural_evidence_error_is_repaired_once():
     }
     assert model.calls == 2
     repair_prompt = model.messages[1][0].content
-    assert "evidence_ref_not_object" in repair_prompt
-    assert "/jd/text" in repair_prompt
+    assert "evidence_ref_field_type" in repair_prompt
+    assert "evidence_ids" in repair_prompt
     assert "raw model output" not in repair_prompt
 
 
 def test_repeated_structural_evidence_error_is_terminal():
     model = _QuestionRepairModel([
-        '{"question":"Q","evidence_refs":[null]}',
-        '{"question":"Q2","evidence_refs":[null]}',
+        '{"question":"Q","evidence_ids":[null]}',
+        '{"question":"Q2","evidence_ids":[null]}',
     ])
 
     with pytest.raises(MockInterviewUnverifiableError) as error:
         generate_question(model, _snapshot(), _turns())
 
-    assert error.value.category == "evidence_ref_not_object"
+    assert error.value.category == "evidence_ref_field_type"
     assert error.value.diagnostic["failure_categories"] == [
-        "evidence_ref_not_object", "evidence_ref_not_object"
+        "evidence_ref_field_type", "evidence_ref_field_type"
     ]
     assert model.calls == 2
 
@@ -125,8 +124,8 @@ def test_semantic_evidence_failures_never_enter_format_repair():
 
 def test_repaired_shape_is_revalidated_for_forged_reference():
     model = _QuestionRepairModel([
-        '{"question":"Q","evidence_refs":[null]}',
-        '{"question":"Q2","evidence_refs":[{"source":"attacker","path":"/x","excerpt":"伪造"}]}',
+        '{"question":"Q","evidence_ids":[null]}',
+        '{"question":"Q2","evidence_ids":["ev_999"]}',
     ])
 
     with pytest.raises(MockInterviewUnverifiableError) as error:
@@ -341,23 +340,17 @@ def test_invalid_feedback_reference_without_turn_is_not_repaired(reference, cate
     assert model.calls == 1
 
 
-@pytest.mark.parametrize(
-    ("reference", "category"),
-    [
-        ({"source": "turn", "path": "/turns/001/answer"}, "evidence_ref_missing_field"),
-        ({"source": "turn", "path": 1, "excerpt": "回答"}, "evidence_ref_field_type"),
-    ],
-)
-def test_evidence_reference_shape_failures_have_stable_categories(reference, category):
+@pytest.mark.parametrize("evidence_id", [None, 1, {"id": "ev_001"}])
+def test_question_evidence_id_shape_failures_have_stable_category(evidence_id):
     model = _QuestionRepairModel([
-        '{"question":"Q","evidence_refs":[' + str(reference).replace("'", '"') + ']}',
-        '{"question":"Q2","evidence_refs":[' + str(reference).replace("'", '"') + ']}',
+        json.dumps({"question": "Q", "evidence_ids": [evidence_id]}),
+        json.dumps({"question": "Q2", "evidence_ids": [evidence_id]}),
     ])
 
     with pytest.raises(MockInterviewUnverifiableError) as error:
         generate_question(model, _snapshot(), _turns())
 
-    assert error.value.category == category
+    assert error.value.category == "evidence_ref_field_type"
     assert model.calls == 2
 
 
@@ -390,7 +383,57 @@ def test_evidence_catalog_uses_stable_escaped_paths_and_completed_turns_only():
     ]
 
 
-def test_provider_payload_contains_catalog_without_internal_ids_or_unfinished_turn():
+def test_question_provider_uses_opaque_evidence_ids_and_server_expands_exact_reference():
+    model = _SchemaCaptureModel([
+        '{"question":"请说明你如何验证 Python 服务？","evidence_ids":["ev_003"]}'
+    ])
+
+    question = generate_question(model, _snapshot(), _turns())
+
+    assert question == {
+        "question": "请说明你如何验证 Python 服务？",
+        "evidence_refs": [{
+            "source": "turn",
+            "path": "/turns/001/answer",
+            "excerpt": "我做过 Python 服务",
+        }],
+    }
+    schema = model.response_formats[0]["json_schema"]["schema"]
+    assert set(schema["required"]) == {"question", "evidence_ids"}
+    assert schema["properties"]["evidence_ids"]["items"]["enum"] == [
+        "ev_001", "ev_002", "ev_003"
+    ]
+
+
+def test_question_provider_payload_exposes_stable_ids_without_requiring_excerpt_copying():
+    model = _QuestionRepairModel([
+        '{"question":"请说明 Python 项目？","evidence_ids":["ev_001"]}'
+    ])
+
+    generate_question(model, _snapshot(), _turns())
+
+    payload = json.loads(model.messages[0][1].content)
+    assert payload["evidence_catalog"] == [
+        {"id": "ev_001", "source": "jd", "path": "/jd/text", "value": "需要 Python"},
+        {"id": "ev_002", "source": "resume", "path": "/resume/content_json/skills/0", "value": "Python"},
+        {"id": "ev_003", "source": "turn", "path": "/turns/001/answer", "value": "我做过 Python 服务"},
+    ]
+    assert "excerpt" not in model.messages[0][0].content
+
+
+def test_question_provider_unknown_evidence_id_is_terminal_without_format_repair():
+    model = _QuestionRepairModel([
+        '{"question":"请说明项目？","evidence_ids":["ev_999"]}'
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.category == "unknown_evidence_ref"
+    assert model.calls == 1
+
+
+def test_provider_payload_contains_request_scoped_catalog_without_domain_ids_or_unfinished_turn():
     model = _QuestionRepairModel([_valid_question()])
     snapshot = {
         **_snapshot(),
@@ -405,9 +448,9 @@ def test_provider_payload_contains_catalog_without_internal_ids_or_unfinished_tu
 
     payload = json.loads(model.messages[0][1].content)
     assert payload["evidence_catalog"][-1] == {
-        "source": "turn", "path": "/turns/001/answer", "value": "我做过 Python 服务"
+        "id": "ev_003", "source": "turn", "path": "/turns/001/answer", "value": "我做过 Python 服务"
     }
-    assert all("id" not in entry for entry in payload["evidence_catalog"])
+    assert [entry["id"] for entry in payload["evidence_catalog"]] == ["ev_001", "ev_002", "ev_003"]
     assert "secret" not in json.dumps(payload["evidence_catalog"], ensure_ascii=False)
     assert "Q2" not in json.dumps(payload["evidence_catalog"], ensure_ascii=False)
 

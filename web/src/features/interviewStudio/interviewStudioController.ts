@@ -6,6 +6,7 @@ export type StudioPhase =
   | 'answer_confirmed'
   | 'next_question_generating'
   | 'completed'
+  | 'contract_failed'
   | 'result_unknown';
 
 export type StudioOperation = 'start' | 'answer' | 'question' | 'feedback';
@@ -35,6 +36,7 @@ export type StudioAction =
   | { type: 'question_submitting'; questionKey: string }
   | { type: 'question_succeeded'; turnNo: number; question: string }
   | { type: 'feedback_submitting'; feedbackKey: string }
+  | { type: 'contract_failed'; message: string }
   | { type: 'result_unknown'; operation: StudioOperation; message: string }
   | { type: 'error'; message: string };
 
@@ -77,6 +79,8 @@ export function reduceStudioState(state: StudioState, action: StudioAction): Stu
       return { ...state, turnNo: action.turnNo, question: action.question, answer: '', turnKey: null, phase: 'question_ready', pendingOperation: null, error: null };
     case 'feedback_submitting':
       return { ...state, feedbackKey: action.feedbackKey, pendingOperation: 'feedback', error: null };
+    case 'contract_failed':
+      return { ...state, phase: 'contract_failed', pendingOperation: null, resultUnknown: false, error: action.message };
     case 'result_unknown':
       return { ...state, phase: 'result_unknown', pendingOperation: action.operation, resultUnknown: true, error: action.message };
     case 'error':

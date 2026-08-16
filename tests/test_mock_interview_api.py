@@ -16,7 +16,7 @@ class _MockInterviewModel:
                 content='{"schema_version":"mock-interview-feedback-v1","proposal_status":"safe_empty","strengths":[],"practice_points":[],"follow_up_questions":[],"next_practice_steps":[]}'
             )
         return Assistant(
-            content='{"question":"请结合 JD 说明你会如何准备。","evidence_refs":[{"source":"jd","path":"/jd/text","excerpt":"Python"}]}'
+            content='{"question":"请结合 JD 说明你会如何准备。","evidence_ids":["ev_001"]}'
         )
 
 
@@ -39,7 +39,7 @@ class _StructuralRepairQuestionModel:
     def complete(self, messages, tools, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            return Assistant(content='{"question":"Q","evidence_refs":[null]}')
+            return Assistant(content='{"question":"Q","evidence_ids":[null]}')
         if isinstance(self.second_response, Exception):
             raise self.second_response
         return Assistant(content=self.second_response)
@@ -53,10 +53,9 @@ class _OverLimitQuestionModel:
 
     def complete(self, messages, tools, **kwargs):
         self.calls += 1
-        ref = {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
         return Assistant(content=json.dumps({
             "question": "Q",
-            "evidence_refs": [ref] * 5,
+            "evidence_ids": ["ev_001"] * 5,
         }, ensure_ascii=False))
 
 
@@ -194,7 +193,7 @@ def test_contract_failure_logs_only_safe_category(tmp_path):
 
 def test_structural_question_failure_is_repaired_once(tmp_path):
     model = _StructuralRepairQuestionModel(
-        '{"question":"请结合 Python 经验回答。","evidence_refs":[{"source":"jd","path":"/jd/text","excerpt":"Python"}]}'
+        '{"question":"请结合 Python 经验回答。","evidence_ids":["ev_001"]}'
     )
     client, app_id, event_id, resume_id = _client(tmp_path, model)
 
@@ -240,7 +239,7 @@ def test_repair_provider_failure_preserves_original_key(tmp_path):
 
 def test_repeated_structural_failure_is_terminal_and_replay_skips_provider(tmp_path):
     model = _StructuralRepairQuestionModel(
-        '{"question":"Q2","evidence_refs":[null]}'
+        '{"question":"Q2","evidence_ids":[null]}'
     )
     client, app_id, event_id, resume_id = _client(tmp_path, model)
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"

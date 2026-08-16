@@ -30,9 +30,7 @@ class _QuickPracticeModel:
             content=json.dumps(
                 {
                     "question": "请结合 Python 经验说明你的推进方式。",
-                    "evidence_refs": [
-                        {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
-                    ],
+                    "evidence_ids": ["ev_001"],
                 }
             )
         )
@@ -71,9 +69,7 @@ class _NormalFeedbackPracticeModel:
             content=json.dumps(
                 {
                     "question": "请结合 Python 服务经验说明你的推进方式。",
-                    "evidence_refs": [
-                        {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
-                    ],
+                    "evidence_ids": ["ev_001"],
                 },
                 ensure_ascii=False,
             )
@@ -247,7 +243,7 @@ def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_pa
         ).json()
         attempt_id = started["attempt_id"]
         assert started["turn"]["basis_refs"] == [
-            {"source": "jd", "path": "/jd/text", "excerpt": "Python"},
+            {"source": "jd", "path": "/jd/text", "excerpt": "负责 Python 服务稳定性"},
         ]
         client.post(
             f"{base}/attempts/{attempt_id}/turns",
@@ -272,5 +268,5 @@ def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_pa
             "path": "/turns/001/answer",
             "excerpt": "我会先拆分接口边界。",
         },
-        {"source": "jd", "path": "/jd/text", "excerpt": "Python"},
+        {"source": "jd", "path": "/jd/text", "excerpt": "负责 Python 服务稳定性"},
     ]
