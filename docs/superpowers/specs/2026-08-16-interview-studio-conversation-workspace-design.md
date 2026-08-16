@@ -1,6 +1,6 @@
 # Interview Studio 对话式双栏工作台设计
 
-- 状态：待复审
+- 状态：已复审通过
 - 日期：2026-08-16
 - 设计基线：`6015a16468fc38eb07446f2eded8e596759249c3`
 - 分支：`feat/20260815-continuous-voice-interview`
