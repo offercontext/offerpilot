@@ -165,6 +165,109 @@ describe('InterviewStudio continuous voice integration', () => {
     expect(serviceSpies.finish).toHaveBeenCalledTimes(1);
   });
 
+  it('announces completed feedback and moves focus to the result', async () => {
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    try {
+      serviceSpies.finish.mockResolvedValueOnce({
+        proposal_id: 91,
+        proposal_status: 'normal',
+        proposal_hash: 'feedback-hash',
+        proposal: {
+          schema_version: 'mock-interview-feedback-v1',
+          proposal_status: 'normal',
+          strengths: [{ id: 'strength-1', text: '定位过程清晰。', evidence_refs: [] }],
+          practice_points: [],
+          follow_up_questions: [],
+          next_practice_steps: [],
+        },
+      });
+      serviceSpies.nextQuestion.mockImplementation(async (input: { turnNo: number }) => ({
+        attempt_id: 41,
+        turn: { turn_no: input.turnNo, question: `第 ${input.turnNo} 轮追问`, answer: '', question_kind: 'follow_up', parent_turn_no: input.turnNo - 1, basis_refs: [] },
+      }));
+      await act(async () => {
+        root = createRoot(host = document.createElement('div'));
+        document.body.appendChild(host);
+        root.render(
+          <InterviewStudio
+            context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+            onClose={vi.fn()}
+          />,
+        );
+        await Promise.resolve();
+      });
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+      for (let round = 0; round < 5; round += 1) {
+        await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+        await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+        await act(async () => { await Promise.resolve(); });
+      }
+
+      await act(async () => { button('结束并生成复盘').click(); await Promise.resolve(); });
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => { await new Promise((resolve) => window.requestAnimationFrame(resolve)); });
+
+      const status = host!.querySelector<HTMLElement>('[data-interview-studio-status]');
+      const result = host!.querySelector<HTMLElement>('[data-interview-feedback-result]');
+      expect(host!.querySelectorAll('[data-interview-speaker="candidate"]')).toHaveLength(5);
+      expect(status?.textContent).toContain('复盘已生成');
+      expect(status?.closest('[data-interview-conversation-scroll]')).toBeNull();
+      expect(result?.textContent).toContain('定位过程清晰');
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+      expect(document.activeElement).toBe(result);
+      scrollIntoView.mockClear();
+      await act(async () => { button('查看复盘').click(); });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+      expect(document.activeElement).toBe(result);
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+      } else {
+        delete (HTMLElement.prototype as { scrollIntoView?: typeof HTMLElement.prototype.scrollIntoView }).scrollIntoView;
+      }
+    }
+  });
+
+  it('explains when completed feedback contains no verifiable suggestions', async () => {
+    serviceSpies.finish.mockResolvedValueOnce({
+      proposal_id: 92,
+      proposal_status: 'safe_empty',
+      proposal_hash: 'safe-empty-hash',
+      proposal: {
+        schema_version: 'mock-interview-feedback-v1',
+        proposal_status: 'safe_empty',
+        strengths: [],
+        practice_points: [],
+        follow_up_questions: [],
+        next_practice_steps: [],
+      },
+    });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => { button('结束并生成复盘').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(host!.querySelector('[data-interview-studio-status]')?.textContent).toContain('复盘已完成，暂无可验证建议');
+    expect(host!.querySelector('[data-interview-feedback-result]')?.textContent).toContain('本轮没有生成可验证的复盘建议');
+  });
+
   it('surfaces terminal feedback failures above the scroller and focuses recovery', async () => {
     serviceSpies.finish.mockRejectedValueOnce({
       response: { status: 502, data: { error_code: 'mock_interview_unverifiable', attempt_id: 41 } },

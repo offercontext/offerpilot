@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Tag } from 'antd';
 import { ArrowLeftOutlined, CheckCircleOutlined, FileTextOutlined, MenuOutlined, SendOutlined } from '@ant-design/icons';
 import VoiceAnswerComposer, { type VoiceAnswerActivity, type VoiceAnswerComposerCommand, type VoiceAnswerComposerEvent } from '@/features/mockInterviewVoice/VoiceAnswerComposer';
@@ -241,6 +241,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
   const [voiceDirty, setVoiceDirty] = useState(false);
   const studioStatusRef = useRef<HTMLDivElement>(null);
+  const feedbackResultRef = useRef<HTMLElement>(null);
   const mobileWorkspaceOpenRef = useRef(mobileWorkspaceOpen);
   const voiceReviewRef = useRef<VoiceReview | null>(voiceReview);
   const continuousSubmitRef = useRef<(text: string) => void>();
@@ -435,6 +436,19 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     const frame = window.requestAnimationFrame(() => studioStatusRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [state?.error, state?.phase, terminalFailure]);
+
+  const revealFeedbackResult = useCallback(() => {
+    const result = feedbackResultRef.current;
+    if (!result) return;
+    if (typeof result.scrollIntoView === 'function') result.scrollIntoView({ block: 'start' });
+    result.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    if (!proposal) return;
+    const frame = window.requestAnimationFrame(revealFeedbackResult);
+    return () => window.cancelAnimationFrame(frame);
+  }, [proposal, revealFeedbackResult]);
 
   const update = (action: Parameters<typeof reduceStudioState>[1]) => {
     setState((current) => current ? reduceStudioState(current, action) : current);
@@ -829,6 +843,10 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   };
   const continuousInProgress = !['disabled', 'fallback_standard', 'closed'].includes(continuousState.status);
   const feedbackGenerating = working && state?.pendingOperation === 'feedback';
+  const feedbackIsSafeEmpty = proposal?.proposal_status === 'safe_empty';
+  const feedbackItems = proposal
+    ? [...proposal.proposal.strengths, ...proposal.proposal.practice_points, ...proposal.proposal.next_practice_steps].slice(0, 4)
+    : [];
   const canSubmit = Boolean(state?.answer.trim()) && !working && !state?.resultUnknown && state?.phase !== 'completed' && !continuousInProgress;
   const hasConfirmedAnswer = Boolean(state && timeline.some((turn) => turn.turn_no === state.turnNo && turn.confirmed));
   const currentTimelineTurn = timeline.find((turn) => turn.turn_no === state?.turnNo) ?? timeline[timeline.length - 1];
@@ -906,6 +924,10 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
             <div ref={studioStatusRef} className={styles.studioStatus} data-interview-studio-status tabIndex={-1}>
               <Alert className={styles.alert} type="warning" showIcon message={state.error} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} />
             </div>
+          ) : proposal ? (
+            <div className={styles.studioStatus} data-interview-studio-status role="status" aria-live="polite">
+              <Alert className={styles.alert} type="success" showIcon message={feedbackIsSafeEmpty ? '复盘已完成，暂无可验证建议' : '复盘已生成'} action={<Button size="small" onClick={revealFeedbackResult}>查看复盘</Button>} />
+            </div>
           ) : null}
           <div className={styles.conversationScroll} data-interview-conversation-scroll>
             <div className={styles.turnList} aria-live="polite">
@@ -945,7 +967,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
             {voiceReview?.saveState === 'unknown' ? <Alert className={styles.alert} type="warning" showIcon message="表达复盘保存结果待确认，原保存 key 已保留。" action={<Button size="small" onClick={() => void retryVoiceReview()} disabled={working}>使用原 key 重试</Button>} /> : null}
             {voiceReview?.saveError ? <Alert className={styles.alert} type="warning" showIcon message={voiceReview.saveError} /> : null}
             {state?.phase === 'completed' && !proposal ? <div className={styles.completeCard}><CheckCircleOutlined /><div><strong>本轮已完成</strong><span>你可以结束并生成复盘，或退出保留已确认的回答。</span></div></div> : null}
-            {proposal ? <section className={styles.feedbackCard} aria-label="复盘建议"><span className={styles.kicker}>复盘建议</span><h2>复盘建议已准备好</h2><p>建议只来自本次已确认回答与冻结来源。正式投递和快速练习会保持各自的来源边界。</p><ul>{[...proposal.proposal.strengths, ...proposal.proposal.practice_points, ...proposal.proposal.next_practice_steps].slice(0, 4).map((item) => <li key={item.id}>{item.text}</li>)}</ul></section> : null}
+            {proposal ? <section ref={feedbackResultRef} tabIndex={-1} data-interview-feedback-result className={styles.feedbackCard} aria-label="复盘建议"><span className={styles.kicker}>复盘建议</span><h2>{feedbackIsSafeEmpty ? '复盘已完成' : '复盘建议已准备好'}</h2><p>{feedbackIsSafeEmpty ? '本轮没有生成可验证的复盘建议；已确认回答仍然保留。' : '建议只来自本次已确认回答与冻结来源。正式投递和快速练习会保持各自的来源边界。'}</p>{feedbackItems.length ? <ul>{feedbackItems.map((item) => <li key={item.id}>{item.text}</li>)}</ul> : null}</section> : null}
           </div>
           <Button
             ref={mobileWorkspaceTriggerRef}
