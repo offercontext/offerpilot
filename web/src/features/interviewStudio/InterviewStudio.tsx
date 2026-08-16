@@ -240,6 +240,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
   const [terminalFailure, setTerminalFailure] = useState<StudioTerminalFailure | null>(null);
   const [voiceReview, setVoiceReview] = useState<VoiceReview | null>(() => recovery?.voiceReview ?? null);
   const [voiceDirty, setVoiceDirty] = useState(false);
+  const studioStatusRef = useRef<HTMLDivElement>(null);
   const mobileWorkspaceOpenRef = useRef(mobileWorkspaceOpen);
   const voiceReviewRef = useRef<VoiceReview | null>(voiceReview);
   const continuousSubmitRef = useRef<(text: string) => void>();
@@ -426,6 +427,14 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     });
     return () => window.cancelAnimationFrame(frame);
   }, [state, timeline.length]);
+
+  useEffect(() => {
+    const needsRecoveryFocus = Boolean(terminalFailure)
+      || (state?.phase === 'result_unknown' && Boolean(state.error));
+    if (!needsRecoveryFocus) return;
+    const frame = window.requestAnimationFrame(() => studioStatusRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [state?.error, state?.phase, terminalFailure]);
 
   const update = (action: Parameters<typeof reduceStudioState>[1]) => {
     setState((current) => current ? reduceStudioState(current, action) : current);
@@ -819,6 +828,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     continuousController.fallback('连续语音不可用，已保留标准回答。');
   };
   const continuousInProgress = !['disabled', 'fallback_standard', 'closed'].includes(continuousState.status);
+  const feedbackGenerating = working && state?.pendingOperation === 'feedback';
   const canSubmit = Boolean(state?.answer.trim()) && !working && !state?.resultUnknown && state?.phase !== 'completed' && !continuousInProgress;
   const hasConfirmedAnswer = Boolean(state && timeline.some((turn) => turn.turn_no === state.turnNo && turn.confirmed));
   const currentTimelineTurn = timeline.find((turn) => turn.turn_no === state?.turnNo) ?? timeline[timeline.length - 1];
@@ -863,19 +873,41 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         </div>
         <div className={styles.topActions}>
           <span className={styles.round}>{state ? `第 ${state.turnNo} / ${state.maxTurns} 轮` : '准备中'}</span>
-          <Tag color={startError || terminalFailure ? 'orange' : 'green'}>{terminalFailure ? '需要重新开始' : startError ? '结果待确认' : '来源已冻结'}</Tag>
+          <Tag color={startError || terminalFailure || state?.phase === 'result_unknown' ? 'orange' : 'green'}>{terminalFailure ? '需要重新开始' : startError || state?.phase === 'result_unknown' ? '结果待确认' : '来源已冻结'}</Tag>
           {onToggleHaru ? <Button type="text" icon={<MenuOutlined />} onClick={onToggleHaru}>显示 Haru</Button> : null}
-          <Button onClick={() => void finish()} disabled={!attemptId || !state || working || Boolean(proposal) || state?.phase === 'result_unknown' || state?.phase === 'contract_failed' || ['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate', 'transcribing', 'reviewing_transcript', 'submitting_confirmed_answer', 'generating_next_question', 'paused', 'result_unknown'].includes(continuousState.status)}>结束并生成复盘</Button>
+          <Button
+            onClick={() => void finish()}
+            loading={feedbackGenerating}
+            aria-busy={feedbackGenerating}
+            disabled={!attemptId || !state || working || Boolean(proposal) || state?.phase === 'result_unknown' || state?.phase === 'contract_failed' || ['preflight', 'reading_question', 'waiting_for_speech', 'listening', 'end_candidate', 'transcribing', 'reviewing_transcript', 'submitting_confirmed_answer', 'generating_next_question', 'paused', 'result_unknown'].includes(continuousState.status)}
+          >
+            {feedbackGenerating ? '正在生成复盘…' : '结束并生成复盘'}
+          </Button>
         </div>
       </header>
 
       <main className={styles.main}>
         <section className={`${styles.timeline} ${styles.conversationPane}`} aria-label="面试对话时间线">
           <div className={styles.timelineHeader}><div><span className={styles.kicker}>面试对话</span><h2>保持对话，答案由你确认</h2></div><span className={styles.livePill}><i /> {state?.phase === 'contract_failed' ? '需要重新开始' : state?.phase === 'result_unknown' ? '需要对账' : '本轮进行中'}</span></div>
-          <div className={styles.conversationScroll}>
-            {startError ? <Alert className={styles.alert} type="warning" showIcon message={startError} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} /> : null}
-            {terminalFailure ? <Alert className={styles.alert} type="warning" showIcon message={terminalFailure.message} action={<Button size="small" onClick={() => void restartAfterTerminalFailure()} disabled={working}>重新开始练习</Button>} /> : null}
-            {state?.phase === 'result_unknown' && state.error ? <div tabIndex={-1}><Alert className={styles.alert} type="warning" showIcon message={state.error} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} /></div> : null}
+          {feedbackGenerating ? (
+            <div className={`${styles.studioStatus} ${styles.feedbackProgress}`} data-interview-studio-status role="status" aria-live="polite">
+              <span className={styles.loader} />
+              <div><strong>正在生成复盘，通常需要几十秒</strong><span>请保持当前页面打开；系统只会提交一次，完成后会在这里显示结果。</span></div>
+            </div>
+          ) : startError ? (
+            <div className={styles.studioStatus} data-interview-studio-status>
+              <Alert className={styles.alert} type="warning" showIcon message={startError} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} />
+            </div>
+          ) : terminalFailure ? (
+            <div ref={studioStatusRef} className={styles.studioStatus} data-interview-studio-status tabIndex={-1}>
+              <Alert className={styles.alert} type="warning" showIcon message={terminalFailure.message} action={<Button size="small" onClick={() => void restartAfterTerminalFailure()} disabled={working}>重新开始练习</Button>} />
+            </div>
+          ) : state?.phase === 'result_unknown' && state.error ? (
+            <div ref={studioStatusRef} className={styles.studioStatus} data-interview-studio-status tabIndex={-1}>
+              <Alert className={styles.alert} type="warning" showIcon message={state.error} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} />
+            </div>
+          ) : null}
+          <div className={styles.conversationScroll} data-interview-conversation-scroll>
             <div className={styles.turnList} aria-live="polite">
               {timeline.map((turn) => (
                 <article key={turn.turn_no} className={`${styles.turn} ${turn.turn_no === state?.turnNo ? styles.activeTurn : ''}`}>

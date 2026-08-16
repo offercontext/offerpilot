@@ -150,6 +150,58 @@ def test_feedback_structural_evidence_error_is_repaired_once():
     assert model.calls == 2
 
 
+def test_feedback_blank_value_is_repaired_once():
+    blank = _feedback(strengths=[{
+        "id": "strength-1",
+        "text": "",
+        "evidence_refs": [{
+            "source": "turn",
+            "path": "/turns/001/answer",
+            "excerpt": "我做过 Python 服务",
+        }],
+    }])
+    model = _QuestionRepairModel([
+        json.dumps(blank, ensure_ascii=False),
+        json.dumps(_feedback(), ensure_ascii=False),
+    ])
+
+    proposal, diagnostic = generate_feedback(model, _snapshot(), _turns())
+
+    assert proposal == _feedback()
+    assert diagnostic["repair_attempted"] is True
+    assert diagnostic["repair_count"] == 1
+    assert model.calls == 2
+    assert "blank_value" in "\n".join(
+        message.content for message in model.messages[1]
+    )
+
+
+def test_feedback_repeated_blank_value_is_terminal_after_one_repair():
+    blank = _feedback(strengths=[{
+        "id": "strength-1",
+        "text": "",
+        "evidence_refs": [{
+            "source": "turn",
+            "path": "/turns/001/answer",
+            "excerpt": "我做过 Python 服务",
+        }],
+    }])
+    model = _QuestionRepairModel([
+        json.dumps(blank, ensure_ascii=False),
+        json.dumps(blank, ensure_ascii=False),
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_feedback(model, _snapshot(), _turns())
+
+    assert error.value.category == "blank_value"
+    assert error.value.diagnostic["failure_categories"] == [
+        "blank_value",
+        "blank_value",
+    ]
+    assert model.calls == 2
+
+
 def test_feedback_text_prompt_declares_complete_contract():
     model = _QuestionRepairModel([json.dumps(_feedback(), ensure_ascii=False)])
 

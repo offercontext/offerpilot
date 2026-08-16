@@ -74,6 +74,47 @@ class _DuplicateFollowUpModel:
         }, ensure_ascii=False))
 
 
+class _BlankFeedbackRepairModel:
+    supports_json_schema = False
+
+    def __init__(self, *, repair_succeeds: bool = True):
+        self.feedback_calls = 0
+        self.repair_succeeds = repair_succeeds
+
+    def complete(self, messages, tools, **kwargs):
+        if any("mock-interview-feedback-v1" in message.content for message in messages):
+            self.feedback_calls += 1
+            if self.feedback_calls == 1 or not self.repair_succeeds:
+                return Assistant(content=json.dumps({
+                    "schema_version": "mock-interview-feedback-v1",
+                    "proposal_status": "normal",
+                    "strengths": [{
+                        "id": "strength-1",
+                        "text": "",
+                        "evidence_refs": [{
+                            "source": "turn",
+                            "path": "/turns/001/answer",
+                            "excerpt": "我做过 Python 服务",
+                        }],
+                    }],
+                    "practice_points": [],
+                    "follow_up_questions": [],
+                    "next_practice_steps": [],
+                }, ensure_ascii=False))
+            return Assistant(content=json.dumps({
+                "schema_version": "mock-interview-feedback-v1",
+                "proposal_status": "safe_empty",
+                "strengths": [],
+                "practice_points": [],
+                "follow_up_questions": [],
+                "next_practice_steps": [],
+            }, ensure_ascii=False))
+        return Assistant(content=json.dumps({
+            "question": "请结合 JD 说明你会如何准备。",
+            "evidence_ids": ["ev_001"],
+        }, ensure_ascii=False))
+
+
 def _client(tmp_path, model=None):
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model or _MockInterviewModel()))
     application = client.post(
@@ -376,6 +417,74 @@ def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
     assert answered.status_code == 200
     assert finished.status_code == 201
     assert finished.json()["proposal_status"] == "safe_empty"
+
+
+def test_finish_repairs_blank_feedback_once_and_returns_verified_result(tmp_path):
+    model = _BlankFeedbackRepairModel()
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(
+        base,
+        json={
+            "resume_id": resume_id,
+            "jd_version_id": 1,
+            "attempt_idempotency_key": "attempt-blank-feedback",
+            "initial_question_idempotency_key": "question-blank-feedback",
+        },
+    ).json()
+    attempt_id = started["attempt_id"]
+    answered = client.post(
+        f"{base}/{attempt_id}/turns",
+        json={
+            "turn_no": 1,
+            "answer_text": "我做过 Python 服务",
+            "turn_idempotency_key": "answer-blank-feedback",
+        },
+    )
+
+    finished = client.post(
+        f"{base}/{attempt_id}/finish",
+        json={"feedback_idempotency_key": "feedback-blank-feedback"},
+    )
+
+    assert answered.status_code == 200
+    assert finished.status_code == 201
+    assert finished.json()["proposal_status"] == "safe_empty"
+    assert model.feedback_calls == 2
+
+
+def test_finish_rejects_repeated_blank_feedback_after_one_repair(tmp_path):
+    model = _BlankFeedbackRepairModel(repair_succeeds=False)
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(
+        base,
+        json={
+            "resume_id": resume_id,
+            "jd_version_id": 1,
+            "attempt_idempotency_key": "attempt-repeated-blank-feedback",
+            "initial_question_idempotency_key": "question-repeated-blank-feedback",
+        },
+    ).json()
+    attempt_id = started["attempt_id"]
+    answered = client.post(
+        f"{base}/{attempt_id}/turns",
+        json={
+            "turn_no": 1,
+            "answer_text": "我做过 Python 服务",
+            "turn_idempotency_key": "answer-repeated-blank-feedback",
+        },
+    )
+
+    finished = client.post(
+        f"{base}/{attempt_id}/finish",
+        json={"feedback_idempotency_key": "feedback-repeated-blank-feedback"},
+    )
+
+    assert answered.status_code == 200
+    assert finished.status_code == 502
+    assert finished.json()["error_code"] == "mock_interview_unverifiable"
+    assert model.feedback_calls == 2
 
 
 def test_contract_failure_is_terminal_for_same_attempt_key(tmp_path):

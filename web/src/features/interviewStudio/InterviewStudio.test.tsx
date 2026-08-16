@@ -129,6 +129,7 @@ describe('InterviewStudio continuous voice integration', () => {
       attempt_id: 41,
       turn: { turn_no: 2, question: '你如何验证修复？', answer: '', question_kind: 'follow_up', parent_turn_no: 1, basis_refs: [] },
     });
+    serviceSpies.finish.mockReset();
     serviceSpies.discard.mockResolvedValue(undefined);
     serviceSpies.saveVoiceReview.mockResolvedValue({ ok: true });
     serviceSpies.start.mockClear();
@@ -136,6 +137,89 @@ describe('InterviewStudio continuous voice integration', () => {
     serviceSpies.nextQuestion.mockClear();
     serviceSpies.discard.mockClear();
     serviceSpies.saveVoiceReview.mockClear();
+  });
+
+  it('shows a persistent top-level progress state while feedback is being generated', async () => {
+    serviceSpies.finish.mockImplementationOnce(() => new Promise(() => undefined));
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => { button('结束并生成复盘').click(); await Promise.resolve(); });
+
+    const status = host!.querySelector<HTMLElement>('[data-interview-studio-status]');
+    expect(status?.textContent).toContain('正在生成复盘，通常需要几十秒');
+    expect(status?.closest('[data-interview-conversation-scroll]')).toBeNull();
+    const generatingButton = button('正在生成复盘…');
+    expect(generatingButton.getAttribute('aria-busy')).toBe('true');
+    generatingButton.click();
+    expect(serviceSpies.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces terminal feedback failures above the scroller and focuses recovery', async () => {
+    serviceSpies.finish.mockRejectedValueOnce({
+      response: { status: 502, data: { error_code: 'mock_interview_unverifiable', attempt_id: 41 } },
+    });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => { button('结束并生成复盘').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => window.requestAnimationFrame(resolve)); });
+
+    const status = host!.querySelector<HTMLElement>('[data-interview-studio-status]');
+    expect(status?.textContent).toContain('AI 输出未通过证据验证');
+    expect(status?.closest('[data-interview-conversation-scroll]')).toBeNull();
+    expect(document.activeElement).toBe(status);
+    expect(host!.textContent).toContain('重新开始练习');
+  });
+
+  it('surfaces unknown feedback results above the scroller with the original-key recovery', async () => {
+    serviceSpies.finish.mockRejectedValueOnce({
+      response: { status: 502, data: { error_code: 'mock_interview_feedback_result_unknown', attempt_id: 41 } },
+    });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => { button('结束并生成复盘').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => window.requestAnimationFrame(resolve)); });
+
+    const status = host!.querySelector<HTMLElement>('[data-interview-studio-status]');
+    expect(status?.textContent).toContain('复盘结果待确认，已保留原 feedback key');
+    expect(status?.closest('[data-interview-conversation-scroll]')).toBeNull();
+    expect(document.activeElement).toBe(status);
+    expect(host!.textContent).toContain('使用原 key 重试');
+    expect(serviceSpies.finish).toHaveBeenCalledTimes(1);
   });
 
   it('restarts a terminally unverifiable question with fresh keys instead of retrying the failed key', async () => {

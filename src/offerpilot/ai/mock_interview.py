@@ -99,6 +99,7 @@ _FORMAT_REPAIR_CATEGORIES = {
     "evidence_ref_unexpected_field",
     "evidence_ref_field_type",
     "missing_turn_evidence",
+    "blank_value",
 }
 
 _FEEDBACK_TURN_EVIDENCE_RULE = (
