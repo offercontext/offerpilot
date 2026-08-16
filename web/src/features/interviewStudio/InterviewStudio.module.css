@@ -57,12 +57,12 @@
   box-sizing: border-box;
   overflow: hidden;
 }
-.timeline { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.timeline { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .timelineHeader, .evidenceHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .timelineHeader h2, .evidenceHeader h2 { margin: 6px 0 0; font-size: 25px; letter-spacing: -.03em; }
 .livePill { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--op-success) 28%, var(--op-border)); border-radius: 999px; color: var(--op-success); font-size: 11px; font-weight: 800; }
 .livePill i { width: 7px; height: 7px; border-radius: 50%; background: var(--op-success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--op-success) 12%, transparent); }
-.turnList { min-height: 0; margin-top: 26px; padding: 0 10px 24px 0; overflow: auto; overscroll-behavior: contain; }
+.turnList { min-height: 0; flex: 1 1 auto; margin-top: 26px; padding: 0 10px 24px 0; overflow: auto; overscroll-behavior: contain; }
 .turn { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 16px; position: relative; padding: 0 0 26px; }
 .turn:not(:last-child)::after { position: absolute; top: 40px; bottom: 0; left: 18px; width: 1px; background: var(--op-border); content: ''; }
 .turnMarker { z-index: 1; display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--op-border-strong); border-radius: 50%; background: var(--op-layout-bg); color: var(--op-muted-strong); font-size: 11px; font-weight: 800; }
@@ -71,7 +71,7 @@
 .turnMeta { display: flex; align-items: center; gap: 8px; min-height: 22px; color: var(--op-muted-strong); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .turnMeta :global(.ant-tag) { margin-inline-end: 0; color: var(--op-primary-strong); border-color: color-mix(in srgb, var(--op-primary) 24%, var(--op-border)); background: color-mix(in srgb, var(--op-primary) 8%, var(--op-surface)); font-size: 10px; }
 .turnState { margin-left: auto; color: var(--op-muted); font-size: 11px; letter-spacing: 0; text-transform: none; }
-.turn h3 { max-width: 760px; margin: 7px 0 0; font-size: clamp(19px, 2vw, 27px); font-weight: 650; line-height: 1.35; letter-spacing: -.025em; }
+.turn h3 { max-width: 760px; margin: 7px 0 0; overflow-wrap: anywhere; font-size: clamp(19px, 2vw, 27px); font-weight: 650; line-height: 1.45; letter-spacing: -.025em; text-wrap: pretty; }
 .answerBubble { max-width: 720px; margin: 14px 0 0; padding: 14px 16px; border-left: 3px solid var(--op-primary); background: color-mix(in srgb, var(--op-primary) 7%, var(--op-surface)); color: var(--op-ink); font-size: 15px; line-height: 1.75; white-space: pre-wrap; }
 .turnEvidence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 12px; }
 .evidenceLabel { color: var(--op-muted-strong); font-size: 12px; font-weight: 700; }
@@ -114,7 +114,7 @@
 .sourceNote { margin-top: 18px; padding: 13px; border-left: 2px solid var(--op-primary); color: var(--op-muted-strong); font-size: 12px; line-height: 1.7; }
 .openEvidence { position: absolute; top: 26px; right: 30px; }
 
-.composer { position: relative; z-index: 3; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 440px); align-items: end; gap: 18px; padding: 12px 32px 16px; border-top: 1px solid var(--op-border); background: var(--op-surface); box-shadow: 0 -12px 30px color-mix(in srgb, var(--op-ink) 6%, transparent); }
+.composer { position: relative; z-index: 3; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 440px); align-items: end; gap: 18px; max-height: min(58dvh, 680px); padding: 12px 32px 16px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; box-sizing: border-box; border-top: 1px solid var(--op-border); background: var(--op-surface); box-shadow: 0 -12px 30px color-mix(in srgb, var(--op-ink) 6%, transparent); }
 .composer > :global([data-testid='continuous-voice-panel']) { grid-column: 1 / -1; }
 .composer > section { min-width: 0; }
 .composer :global(.ant-input), .composer :global(textarea) { background: var(--op-surface); }

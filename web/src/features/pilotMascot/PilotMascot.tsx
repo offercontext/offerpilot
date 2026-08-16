@@ -170,7 +170,7 @@ export default function PilotMascot({
       ? '聚焦 Pilot 输入框'
       : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
 
-  const frame = panelOpen || placement === 'contextual' || placement === 'pilot-page' || (studioPlacement && viewport.height < 740) ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
+  const frame = panelOpen || placement === 'pilot-page' || (studioPlacement && viewport.height < 740) ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
   const frameWidth = Math.round(frame.width * normalizedZoom * 10) / 10;
   const frameHeight = Math.round(frame.height * normalizedZoom * 10) / 10;
   const activePosition = position ?? localPosition;
@@ -286,7 +286,7 @@ export default function PilotMascot({
       aria-label="Haru Pilot 看板娘"
       style={{ width: frameWidth, height: frameHeight, left: `${frameLeft}px`, top: `${frameTop}px`, right: 'auto', bottom: 'auto' }}
     >
-      {!panelOpen || notification ? (
+      {notification || (!panelOpen && activity !== 'idle') ? (
         <div className={styles.bubble} role="status" aria-live="polite">
           <strong>{copy.label}</strong>
           <span>{copy.detail}</span>
