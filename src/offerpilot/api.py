@@ -5584,7 +5584,7 @@ def create_app(
         except MockInterviewTurnIdempotencyConflict:
             return error_response(409, "快速练习请求 key 已对应其他题目。", code="mock_interview_turn_idempotency_conflict")
         except MockInterviewContractFailed as exc:
-            return error_response(502, "AI 输出未通过验证，请使用原尝试恢复。", code="mock_interview_unverifiable", details={"attempt_id": exc.attempt_id} if exc.attempt_id else None)
+            return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": exc.attempt_id} if exc.attempt_id else None)
         except ValueError as exc:
             return error_response(409 if "archived" in str(exc) else 422, str(exc), code="mock_interview_context_mismatch" if "archived" not in str(exc) else "interview_practice_case_not_found")
 
@@ -6319,7 +6319,7 @@ def create_app(
         except MockInterviewSourceChanged:
             return error_response(409, "本次练习使用的冻结资料不可验证。", code="mock_interview_source_conflict")
         except MockInterviewContractFailed:
-            return error_response(502, "AI 输出未通过验证，请使用原尝试恢复。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
+            return error_response(502, "AI 输出未通过验证，请重新开始本次练习。", code="mock_interview_unverifiable", details={"attempt_id": attempt_id})
         if claim is None:
             current = mock_interviews.quick_feedback_context(attempt_id, case_id)[0]
             return JSONResponse({

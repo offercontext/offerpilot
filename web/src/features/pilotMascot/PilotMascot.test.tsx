@@ -52,6 +52,15 @@ async function renderMascot(overrides: Partial<React.ComponentProps<typeof Pilot
 }
 
 describe('PilotMascot', () => {
+  it('keeps the idle prompt out of the way and gives the contextual mascot a full-body frame', async () => {
+    await renderMascot({ activity: 'idle', placement: 'contextual' });
+
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    const mascot = container.querySelector<HTMLElement>('aside');
+    expect(mascot?.style.width).toBe('238px');
+    expect(mascot?.style.height).toBe('370px');
+  });
+
   it('toggles Pilot with an accessible button and exposes activity text', async () => {
     const props = await renderMascot({ activity: 'thinking' });
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="打开 OfferPilot 领航员"]');
@@ -170,7 +179,7 @@ describe('PilotMascot', () => {
   it('enlarges the mascot frame so zoom never crops the model inside a fixed canvas', async () => {
     const controller = runtimeController();
     const mounted: PilotMascotRuntime = { mount: vi.fn().mockResolvedValue(controller) };
-    await renderMascot({ runtime: mounted, zoom: 1.3 });
+    await renderMascot({ runtime: mounted, zoom: 1.3, placement: 'interview-studio' });
 
     const mascot = container.querySelector<HTMLElement>('aside');
     expect(mascot?.style.width).toBe('309.4px');

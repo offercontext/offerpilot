@@ -13,6 +13,14 @@
   box-shadow: var(--op-shadow-sm);
 }
 
+.compact { gap: 8px; padding: 10px 12px; }
+.compact .readingBar { min-height: 40px; padding-block: 5px; }
+.compact .voiceStage { gap: 8px; }
+.compact .voiceStatus { min-height: 62px; padding: 10px; }
+.compact .micOrb { inline-size: 40px; block-size: 40px; font-size: 17px; }
+.compact .textPanel { gap: 6px; }
+.compact .textHint { padding: 8px 10px; }
+
 .modeHeader,
 .readingBar,
 .voiceStatus,

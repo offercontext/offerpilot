@@ -26,13 +26,26 @@ class _QuickPracticeModel:
                     }
                 )
             )
+        payload = json.loads(messages[-1].content)
+        turn_evidence = [
+            entry
+            for entry in payload["evidence_catalog"]
+            if entry.get("source") == "turn"
+        ]
+        is_follow_up = bool(turn_evidence)
         return Assistant(
             content=json.dumps(
                 {
-                    "question": "请结合 Python 经验说明你的推进方式。",
-                    "evidence_refs": [
-                        {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
-                    ],
+                    "question": (
+                        "你如何用指标验证刚才这套推进方式？"
+                        if is_follow_up
+                        else "请结合 Python 经验说明你的推进方式。"
+                    ),
+                    "evidence_ids": (
+                        [turn_evidence[-1]["id"], "ev_001"]
+                        if is_follow_up
+                        else ["ev_001"]
+                    ),
                 }
             )
         )
@@ -71,9 +84,7 @@ class _NormalFeedbackPracticeModel:
             content=json.dumps(
                 {
                     "question": "请结合 Python 服务经验说明你的推进方式。",
-                    "evidence_refs": [
-                        {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
-                    ],
+                    "evidence_ids": ["ev_001"],
                 },
                 ensure_ascii=False,
             )
@@ -247,7 +258,7 @@ def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_pa
         ).json()
         attempt_id = started["attempt_id"]
         assert started["turn"]["basis_refs"] == [
-            {"source": "jd", "path": "/jd/text", "excerpt": "Python"},
+            {"source": "jd", "path": "/jd/text", "excerpt": "负责 Python 服务稳定性"},
         ]
         client.post(
             f"{base}/attempts/{attempt_id}/turns",
@@ -272,5 +283,5 @@ def test_quick_practice_turns_expose_frozen_source_and_follow_up_evidence(tmp_pa
             "path": "/turns/001/answer",
             "excerpt": "我会先拆分接口边界。",
         },
-        {"source": "jd", "path": "/jd/text", "excerpt": "Python"},
+        {"source": "jd", "path": "/jd/text", "excerpt": "负责 Python 服务稳定性"},
     ]

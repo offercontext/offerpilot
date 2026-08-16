@@ -854,7 +854,8 @@ def test_story_browser_harness_allows_transport_reconnects_but_rejects_uncontain
     audit.write_text("\n".join(json.dumps(record) for record in outside_request_window) + "\n", encoding="utf-8")
     uncontained = validate()
     assert uncontained.returncode != 0
-    assert "correlated to exactly one UI or Pilot Story request" in (uncontained.stdout + uncontained.stderr)
+    output = "".join((uncontained.stdout + uncontained.stderr).split())
+    assert "correlatedtoexactlyoneUIorPilotStoryrequest" in output
 
 
 def test_story_browser_harness_records_a_single_viewport_screenshot_matrix(tmp_path: Path) -> None:

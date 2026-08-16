@@ -13,7 +13,7 @@ class _MockInterviewModel:
     supports_json_schema = False
 
     def complete(self, messages, tools, **kwargs):
-        return Assistant(content='{"question":"Describe the Python service tradeoff.","evidence_refs":[{"source":"jd","path":"/jd/text","excerpt":"Python"}]}')
+        return Assistant(content='{"question":"Describe the Python service tradeoff.","evidence_ids":["ev_001"]}')
 
 
 def _setup(tmp_path):
