@@ -67,4 +67,3 @@ The built product was exercised through the in-app browser against an isolated c
 - Browser acceptance used a deterministic localhost Provider, so it validates UI behavior rather than remote Provider stability.
 - An independent sub-agent code review was not run because this execution did not have delegation authorization; review was performed locally against the approved design and test matrix.
 - The temporary QA data directory could not be recursively removed because the execution environment rejected the deletion command. It is outside the repository at `%TEMP%\offerpilot-interview-ui-codex`, contains only the isolated local QA copy, and the processes and ports using it have been stopped.
-
