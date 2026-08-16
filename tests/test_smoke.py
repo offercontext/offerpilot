@@ -84,9 +84,20 @@ class _MockInterviewAcceptanceModel:
                 "follow_up_questions": [],
                 "next_practice_steps": [],
             }, ensure_ascii=False))
+        payload = json.loads(messages[-1].content)
+        turn_evidence = [
+            entry
+            for entry in payload["evidence_catalog"]
+            if entry.get("source") == "turn"
+        ]
+        is_follow_up = bool(turn_evidence)
         return Assistant(content=json.dumps({
-            "question": "请继续说明这段经历。",
-            "evidence_ids": ["ev_001"],
+            "question": (
+                "你刚才提到回滚指标，具体如何验证它们一致？"
+                if is_follow_up
+                else "请继续说明这段经历。"
+            ),
+            "evidence_ids": [turn_evidence[-1]["id"] if is_follow_up else "ev_001"],
         }, ensure_ascii=False))
 
 

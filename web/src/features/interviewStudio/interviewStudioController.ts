@@ -76,7 +76,7 @@ export function reduceStudioState(state: StudioState, action: StudioAction): Stu
     case 'question_submitting':
       return { ...state, questionKey: action.questionKey, phase: 'next_question_generating', pendingOperation: 'question', error: null };
     case 'question_succeeded':
-      return { ...state, turnNo: action.turnNo, question: action.question, answer: '', turnKey: null, phase: 'question_ready', pendingOperation: null, error: null };
+      return { ...state, turnNo: action.turnNo, question: action.question, answer: '', turnKey: null, questionKey: null, phase: 'question_ready', pendingOperation: null, error: null };
     case 'feedback_submitting':
       return { ...state, feedbackKey: action.feedbackKey, pendingOperation: 'feedback', error: null };
     case 'contract_failed':

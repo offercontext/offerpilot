@@ -26,11 +26,26 @@ class _QuickPracticeModel:
                     }
                 )
             )
+        payload = json.loads(messages[-1].content)
+        turn_evidence = [
+            entry
+            for entry in payload["evidence_catalog"]
+            if entry.get("source") == "turn"
+        ]
+        is_follow_up = bool(turn_evidence)
         return Assistant(
             content=json.dumps(
                 {
-                    "question": "请结合 Python 经验说明你的推进方式。",
-                    "evidence_ids": ["ev_001"],
+                    "question": (
+                        "你如何用指标验证刚才这套推进方式？"
+                        if is_follow_up
+                        else "请结合 Python 经验说明你的推进方式。"
+                    ),
+                    "evidence_ids": (
+                        [turn_evidence[-1]["id"], "ev_001"]
+                        if is_follow_up
+                        else ["ev_001"]
+                    ),
                 }
             )
         )

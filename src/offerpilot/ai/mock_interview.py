@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import unicodedata
 from time import perf_counter
 from typing import Any, cast
 
@@ -321,6 +322,10 @@ def _question_provider_evidence_catalog(
     ]
 
 
+def _normalize_question_text(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
 def _expand_question_evidence_ids(
     evidence_ids: Any, catalog: list[dict[str, str]]
 ) -> list[dict[str, str]]:
@@ -506,6 +511,36 @@ def generate_question(
     provider_request_id = ""
     evidence_catalog = _question_provider_evidence_catalog(snapshot, turns)
     allowed_evidence_ids = [entry["id"] for entry in evidence_catalog]
+    answered_turns = [
+        turn
+        for turn in turns
+        if isinstance(turn.get("answer"), str) and str(turn["answer"]).strip()
+    ]
+    latest_turn = max(answered_turns, key=lambda turn: int(turn["turn_no"]), default=None)
+    latest_turn_no = int(latest_turn["turn_no"]) if latest_turn is not None else None
+    latest_turn_path = f"/turns/{latest_turn_no:03d}/answer" if latest_turn_no is not None else ""
+    latest_turn_evidence_ids = [
+        entry["id"]
+        for entry in evidence_catalog
+        if entry["source"] == "turn" and entry["path"] == latest_turn_path
+    ]
+    previous_questions = {
+        _normalize_question_text(str(turn.get("question", "")))
+        for turn in answered_turns
+        if str(turn.get("question", "")).strip()
+    }
+    round_instruction = (
+        " This is the opening question. Ask one relevant interview question grounded in the frozen JD, "
+        "resume, or confirmed preparation evidence."
+        if latest_turn_no is None
+        else (
+            f" This is a follow-up round; latest answered turn is {latest_turn_no}. "
+            f"The latest answer evidence ID is {','.join(latest_turn_evidence_ids)}. "
+            "Ask one new follow-up about a concrete implementation detail, difficulty, trade-off, result, "
+            "or validation method from that latest answer. The question must not repeat or paraphrase any "
+            "previous question, and evidence_ids must include the latest answer evidence ID."
+        )
+    )
     for attempt in range(2):
         repair_instruction = (
             " Format repair: the previous response failed the structural check "
@@ -524,6 +559,7 @@ def generate_question(
                     "每个 ID 必须从 evidence_catalog 的 id 字段逐字选择，不得输出 source、path、value 或自行构造 ID。"
                     "不得评分、预测录用或添加额外字段。"
                     "The server expands selected IDs to exact frozen citations; never copy or rewrite citation text."
+                    + round_instruction
                     + repair_instruction
                 ),
             ),
@@ -573,6 +609,10 @@ def generate_question(
             if not isinstance(question, str) or not question.strip() or len(question) > 1000:
                 raise MockInterviewContractError("blank_value")
             refs = _expand_question_evidence_ids(parsed["evidence_ids"], evidence_catalog)
+            if _normalize_question_text(question) in previous_questions:
+                raise MockInterviewContractError("duplicate_question")
+            if latest_turn_evidence_ids and not set(latest_turn_evidence_ids).intersection(parsed["evidence_ids"]):
+                raise MockInterviewContractError("missing_latest_turn_evidence")
             return {
                 "question": question,
                 "evidence_refs": refs,

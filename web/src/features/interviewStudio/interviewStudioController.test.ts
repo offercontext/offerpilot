@@ -47,6 +47,17 @@ describe('interview studio controller', () => {
     expect(retrying.pendingOperation).toBe('answer');
   });
 
+  it('uses a fresh question key after a successful question while retaining unknown keys', () => {
+    const state = createStudioState({ turnNo: 1, question: '请介绍一次排障经历。' });
+    const generating = reduceStudioState(state, { type: 'question_submitting', questionKey: 'question-a' });
+    const unknown = reduceStudioState(generating, { type: 'result_unknown', operation: 'question', message: '结果待确认' });
+    expect(unknown.questionKey).toBe('question-a');
+
+    const retrying = reduceStudioState(unknown, { type: 'question_submitting', questionKey: unknown.questionKey ?? 'unexpected' });
+    const ready = reduceStudioState(retrying, { type: 'question_succeeded', turnNo: 2, question: '你如何验证修复？' });
+    expect(ready.questionKey).toBeNull();
+  });
+
   it('stops automatic question generation after the fifth confirmed turn', () => {
     const state: StudioState = { ...createStudioState({ turnNo: 5, question: '最后一个问题？' }), phase: 'answer_confirmed' };
     expect(shouldGenerateNextQuestion(state)).toBe(false);

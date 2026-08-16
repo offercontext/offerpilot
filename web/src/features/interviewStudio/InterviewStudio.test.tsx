@@ -205,6 +205,38 @@ describe('InterviewStudio continuous voice integration', () => {
     expect(serviceSpies.nextQuestion).toHaveBeenCalledTimes(1);
   });
 
+  it('uses a new question key for each successful round', async () => {
+    serviceSpies.nextQuestion.mockImplementation(async (input: { turnNo: number }) => ({
+      attempt_id: 41,
+      turn: { turn_no: input.turnNo, question: `第 ${input.turnNo} 轮追问`, answer: '', question_kind: 'follow_up', parent_turn_no: input.turnNo - 1, basis_refs: [] },
+    }));
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+
+    for (let round = 0; round < 2; round += 1) {
+      await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+      await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+      await act(async () => { await Promise.resolve(); });
+    }
+
+    const firstKey = (serviceSpies.nextQuestion.mock.calls[0]?.[0] as { questionKey: string }).questionKey;
+    const secondKey = (serviceSpies.nextQuestion.mock.calls[1]?.[0] as { questionKey: string }).questionKey;
+    expect(firstKey).toMatch(/^question-/);
+    expect(secondKey).toMatch(/^question-/);
+    expect(secondKey).not.toBe(firstKey);
+  });
+
   it('switches between answer and evidence without calling business services', async () => {
     serviceSpies.start.mockResolvedValueOnce({
       attempt_id: 41,

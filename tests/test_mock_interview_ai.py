@@ -407,7 +407,7 @@ def test_question_provider_uses_opaque_evidence_ids_and_server_expands_exact_ref
 
 def test_question_provider_payload_exposes_stable_ids_without_requiring_excerpt_copying():
     model = _QuestionRepairModel([
-        '{"question":"请说明 Python 项目？","evidence_ids":["ev_001"]}'
+        '{"question":"请说明 Python 项目的验证方式？","evidence_ids":["ev_003"]}'
     ])
 
     generate_question(model, _snapshot(), _turns())
@@ -431,6 +431,58 @@ def test_question_provider_unknown_evidence_id_is_terminal_without_format_repair
 
     assert error.value.category == "unknown_evidence_ref"
     assert model.calls == 1
+
+
+def test_follow_up_rejects_a_normalized_duplicate_question_without_repair():
+    model = _QuestionRepairModel([
+        '{"question":"  介绍项目  ","evidence_ids":["ev_003"]}'
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.category == "duplicate_question"
+    assert model.calls == 1
+
+
+def test_follow_up_requires_evidence_from_the_latest_answer_without_repair():
+    model = _QuestionRepairModel([
+        '{"question":"你如何验证 Python 服务？","evidence_ids":["ev_001"]}'
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.category == "missing_latest_turn_evidence"
+    assert model.calls == 1
+
+
+def test_follow_up_prompt_and_result_are_grounded_in_the_latest_answer():
+    model = _QuestionRepairModel([
+        '{"question":"你刚才提到 Python 服务，如何处理超时与部分失败？","evidence_ids":["ev_003"]}'
+    ])
+
+    result = generate_question(model, _snapshot(), _turns())
+
+    assert result["question"] == "你刚才提到 Python 服务，如何处理超时与部分失败？"
+    prompt = model.messages[0][0].content
+    assert "latest answered turn is 1" in prompt
+    assert "ev_003" in prompt
+    assert "must not repeat or paraphrase any previous question" in prompt
+
+
+def test_opening_question_does_not_require_turn_evidence():
+    model = _QuestionRepairModel([
+        '{"question":"请介绍最相关的 Python 项目。","evidence_ids":["ev_001"]}'
+    ])
+
+    result = generate_question(model, _snapshot(), [])
+
+    assert result["evidence_refs"] == [{
+        "source": "jd",
+        "path": "/jd/text",
+        "excerpt": "需要 Python",
+    }]
 
 
 def test_provider_payload_contains_request_scoped_catalog_without_domain_ids_or_unfinished_turn():

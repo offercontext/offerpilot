@@ -59,6 +59,21 @@ class _OverLimitQuestionModel:
         }, ensure_ascii=False))
 
 
+class _DuplicateFollowUpModel:
+    supports_json_schema = False
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, messages, tools, **kwargs):
+        self.calls += 1
+        evidence_id = "ev_001" if self.calls == 1 else "ev_003"
+        return Assistant(content=json.dumps({
+            "question": "请介绍一次 Python 项目。",
+            "evidence_ids": [evidence_id],
+        }, ensure_ascii=False))
+
+
 def _client(tmp_path, model=None):
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model or _MockInterviewModel()))
     application = client.post(
@@ -261,6 +276,35 @@ def test_repeated_structural_failure_is_terminal_and_replay_skips_provider(tmp_p
     assert first.json()["attempt_id"] == replay.json()["attempt_id"]
     assert calls_after_failure == 2
     assert model.calls == calls_after_failure
+
+
+def test_duplicate_follow_up_is_terminal_and_replay_skips_provider(tmp_path):
+    model = _DuplicateFollowUpModel()
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(base, json={
+        "resume_id": resume_id,
+        "jd_version_id": 1,
+        "attempt_idempotency_key": "duplicate-follow-up-attempt",
+        "initial_question_idempotency_key": "duplicate-follow-up-first-question",
+    }).json()
+    attempt_id = started["attempt_id"]
+    answered = client.post(
+        f"{base}/{attempt_id}/turns",
+        json={"turn_no": 1, "answer_text": "我使用 Python 开发过服务。", "turn_idempotency_key": "duplicate-follow-up-answer"},
+    )
+    question_path = f"{base}/{attempt_id}/turns/2/question"
+    payload = {"question_idempotency_key": "duplicate-follow-up-second-question"}
+
+    first = client.post(question_path, json=payload)
+    replay = client.post(question_path, json=payload)
+
+    assert answered.status_code == 200
+    assert first.status_code == 502
+    assert first.json()["error_code"] == "mock_interview_unverifiable"
+    assert replay.status_code == 502
+    assert replay.json()["error_code"] == "mock_interview_unverifiable"
+    assert model.calls == 2
 
 
 def test_over_limit_failure_is_terminal_without_retry_or_replay_provider_call(tmp_path):
