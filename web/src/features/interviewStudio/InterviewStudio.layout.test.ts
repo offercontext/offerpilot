@@ -10,6 +10,7 @@ describe('InterviewStudio viewport layout', () => {
     expect(styles).toMatch(/\.conversationPane\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s);
     expect(styles).toMatch(/\.conversationScroll\s*\{[^}]*overflow-y:\s*auto/s);
     expect(styles).toMatch(/\.turn h3\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+    expect(styles).toMatch(/\[data-interview-studio-question\]:focus\s*\{[^}]*outline:\s*none/s);
   });
 
   it('keeps a tall answer workspace scrollable with sticky confirmation actions', () => {
