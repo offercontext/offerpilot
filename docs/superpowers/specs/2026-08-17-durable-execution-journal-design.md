@@ -89,7 +89,19 @@ Conversation
 
 ### 4.1 AgentRun
 
-一次用户输入触发一个逻辑 Run。若该 Run 进入人工确认，后续确认、编辑确认或拒绝继续使用原 `agent_run_id`，不得创建第二个逻辑 Run。
+一次用户输入、显式 Pilot Action 或内部系统动作触发一个逻辑 Run。若该 Run 进入人工确认，后续确认、编辑确认、拒绝或既有待确认动作的重新展示继续使用原 `agent_run_id`，不得创建第二个逻辑 Run。
+
+Run 只保存初始身份：
+
+```text
+origin_kind = user_message | pilot_action | system
+initial_route_kind = model | deterministic | unknown
+initial_transport_mode = sync | stream
+```
+
+`confirmation` 是后续 Segment 的 request kind，`deterministic` 是执行路径，不是 Run 的 origin。
+
+Run 创建时 `initial_route_kind` 可以为 `unknown`；首个 `route.selected` 通过 CAS 只写入一次初始 route。后续 Segment 的执行路径仅记录在各自事件中，不覆盖初始值。
 
 ### 4.2 ExecutionSegment
 
@@ -103,9 +115,28 @@ Conversation
 
 第一期不建立 Segment 表。Segment ID 作为 AgentEvent 和 AgentContextSnapshot 的必填关联字段。
 
+`segment.started` payload 固定包含：
+
+```text
+request_kind = initial | confirmation | pending_replay
+transport_mode = sync | stream
+execution_path = model_turn | deterministic_action | agent_resume | deterministic_confirmation
+transport_run_id = 当前 SseRun.run_id；非流式请求为空
+```
+
+三个身份不可互换：
+
+```text
+agent_run_id           逻辑运行，可跨越多个请求
+execution_segment_id   一次物理执行段
+transport_run_id       当前流式请求的 SseRun 身份
+```
+
+硬约束：不得把 `agent_run_id` 写入现有 SSE 协议的 `run_id`，不得改变现有 `SseRun` 的创建、seq 或响应语义。
+
 ### 4.3 ModelStep
 
-同一 Segment 内每次真正发起模型请求时递增整数 `model_step`。确定性路由可以没有 ModelStep，并明确记录 Provider 调用为零。
+同一 Segment 内每次真正发起模型请求时递增整数 `model_step`，并为该次调用生成稳定 UUID `model_call_id`。每个 ModelStep 必须一一对应一个 `model_input` Context Snapshot。确定性路由可以没有 ModelStep，并明确记录 Provider 调用为零。
 
 ### 4.4 序号边界
 
@@ -129,14 +160,14 @@ Conversation
 |---|---|
 | `id` | UUID 字符串，逻辑 Run 身份 |
 | `conversation_id` | Conversation 外键，删除 Conversation 时级联清理 |
-| `input_message_id` | 初始用户消息 ID，可空，不保存正文 |
-| `trigger_kind` | `user_message / confirmation / deterministic` 等固定枚举 |
+| `input_message_id` | 初始用户消息 ID，可空，不保存正文，也不改变现有消息持久化顺序 |
+| `origin_kind` | `user_message / pilot_action / system` |
 | `context_type` / `context_ref` | 当次运行上下文身份 |
-| `interaction_mode` | `sync / stream` |
-| `route_kind` | `model / deterministic / unknown` |
-| `status` | 业务运行状态 |
+| `initial_transport_mode` | `sync / stream` |
+| `initial_route_kind` | `model / deterministic / unknown` |
+| `status` | Journal 观察到的运行状态投影，不是业务事实源 |
 | `waiting_tool_call_id` | 等待确认时的稳定关联 ID，可空 |
-| `next_seq` | 下一个事件序号，由数据库原子更新 |
+| `last_seq` | 已分配的最后事件序号，初始为 0，由数据库原子更新 |
 | `recording_status` | `healthy / degraded` |
 | `recording_error_count` | Journal 内部错误计数 |
 | `failure_code` | 脱敏的最终失败类别，可空 |
@@ -160,7 +191,36 @@ running -> waiting_confirmation | completed | failed | cancelled | timed_out
 waiting_confirmation -> running | failed | cancelled | timed_out
 ```
 
-所有终态不可再次转换。`status` 与 `recording_status` 相互独立；业务可以成功而记录降级。
+正常记录模式严格遵循上述转换，所有终态不可再次转换。已知降级模式允许任意非终态直接收敛到已经观察到的业务终态，并记录 `missing_intermediate_transition` anomaly：
+
+```text
+running              -> completed | failed | cancelled | timed_out
+waiting_confirmation -> completed | failed | cancelled | timed_out
+```
+
+`status` 与 `recording_status` 相互独立；业务可以成功而记录降级。`healthy` 只表示“尚未观察到记录错误”，不能证明现实中的所有 callback 都已被记录。
+
+`waiting_tool_call_id` 的更新规则固定为：
+
+- 进入 `waiting_confirmation` 时，在同一 Journal 事务内写入当前 Tool Call ID 并追加状态事件；
+- 恢复 `running` 时清除旧 ID 并追加 `run.resumed`；
+- 同一 Run 后续产生新待确认动作时写入新 Tool Call ID；
+- 进入任何终态时清除该字段。
+
+确认请求只允许通过以下唯一查询定位原 Run：
+
+```text
+conversation_id + waiting_tool_call_id -> AgentRun
+```
+
+数据库建立非空部分唯一索引：
+
+```sql
+UNIQUE (conversation_id, waiting_tool_call_id)
+WHERE waiting_tool_call_id IS NOT NULL
+```
+
+不建立“同一 Conversation 只能存在一个 waiting Run”的约束。业务 Pending Action 才是确认真相，过期或降级的 Journal 状态不能阻止新的业务操作。
 
 ### 5.2 AgentEvent
 
@@ -176,9 +236,11 @@ waiting_confirmation -> running | failed | cancelled | timed_out
 | `schema_version` | 事件 payload 版本，首期为 1 |
 | `execution_segment_id` | 物理请求身份 |
 | `model_step` | 模型调用序号，可空 |
+| `model_call_id` | 模型调用 UUID，可空 |
 | `source_ref_type / source_ref_id` | Message、Tool Call、Operation 等稳定关联，可空 |
 | `payload_json` | 白名单、脱敏、限长 canonical JSON |
 | `payload_digest` | canonical payload SHA-256 |
+| `fact_digest` | 仅由该事件稳定事实字段生成的 SHA-256，用于幂等冲突判断 |
 | `created_at` | UTC 时间 |
 
 数据库约束：
@@ -188,7 +250,7 @@ UNIQUE(run_id, seq)
 UNIQUE(run_id, dedupe_key)
 ```
 
-相同 dedupe key 和相同 payload digest 返回原事件；相同 key 但事实不同属于 Journal 冲突，SafeRunRecorder 将记录降级，不得静默接受。
+幂等写入必须先按 dedupe key 查询已有事件，再执行当前状态转换校验。相同 dedupe key 和相同 `fact_digest` 返回原事件；相同 key 但稳定事实不同属于 Journal 冲突，SafeRunRecorder 将记录降级，不得静默接受。`duration_ms` 等不稳定遥测可以保存在 payload，但不属于 `fact_digest`。
 
 ### 5.3 AgentContextSnapshot
 
@@ -199,14 +261,62 @@ Context Snapshot 仅保存“使用了哪些上下文”的 manifest，不保存
 | `id` | UUID 字符串 |
 | `run_id` | AgentRun 外键 |
 | `execution_segment_id` | 物理请求身份 |
+| `snapshot_key` | Run 内稳定去重身份 |
 | `snapshot_kind` | `initial / confirmation_resume / model_input` |
 | `model_step` | 关联模型调用，可空 |
+| `model_call_id` | 关联模型调用 UUID，可空 |
 | `manifest_json` | 来源 kind、稳定 ID、revision、路径类别与计数 |
-| `input_digest` | 实际模型输入的 canonical SHA-256，不保存输入 |
+| `manifest_digest` | canonical manifest SHA-256 |
+| `canonicalizer_version` | 逻辑输入规范化算法版本 |
+| `logical_input_fingerprint` | 逻辑 Provider 请求对象的 HMAC-SHA-256 |
 | `estimated_token_count` | 可空的确定性估算 |
+| `token_estimator_name / token_estimator_version` | Token 估算器身份，可空但必须成对出现 |
 | `created_at` | UTC 时间 |
 
 Context manifest canonical JSON 上限为 16 KiB；单个 Event payload canonical UTF-8 上限为 4 KiB。
+
+`snapshot_key` 在同一 Run 内唯一：
+
+```text
+initial:{segment_id}
+confirmation-resume:{segment_id}
+model-input:{segment_id}:{model_call_id}
+```
+
+每次调用 Agent 层 `model.complete` 或 `stream_complete` 前，都必须先生成一个 `model_input` Snapshot，再由 `model.requested` 引用其 ID。这里的“逻辑输入”严格指 OfferPilot Agent 层传给 Provider client 的规范化 messages + tools 对象，不承诺等于 Provider 最终网络字节。
+
+输入指纹使用独立的每安装 `journal_hmac_secret`，计算公式固定为：
+
+```text
+HMAC-SHA256(
+    journal_hmac_secret,
+    "offerpilot-agent-input-v1\0" || canonical_input_utf8
+)
+```
+
+该 Secret 首次加载配置时生成，只保存在权限为 `0600` 的本地配置中，设置更新必须保留原值，且绝不通过设置 API、备份、日志或报告返回。输入指纹属于敏感派生数据，也不得进入普通日志或发布报告。`payload_digest` 和 `manifest_digest` 的输入已经过白名单且不含正文，可以使用普通 SHA-256。
+
+### 5.4 数据约束与索引
+
+所有 UUID 使用 36 位带连字符的小写形式。数据库与应用层共同保证：
+
+```text
+seq > 0
+recording_error_count >= 0
+estimated_token_count >= 0（非空时）
+length(CAST(payload_json AS BLOB)) <= 4096
+length(CAST(manifest_json AS BLOB)) <= 16384
+UNIQUE(run_id, snapshot_key)
+```
+
+至少建立以下索引：
+
+```text
+AgentRun(conversation_id, waiting_tool_call_id)
+AgentEvent(run_id, event_type, seq)
+AgentEvent(run_id, execution_segment_id, seq)
+AgentContextSnapshot(run_id, execution_segment_id, model_step)
+```
 
 ## 6. Recorder 架构
 
@@ -227,10 +337,10 @@ Context manifest canonical JSON 上限为 16 KiB；单个 Event payload canonica
 3. `SafeRunRecorder`
    - 捕获所有 Journal 异常；
    - 输出不含用户原文的结构化诊断；
-   - best-effort 将 Run 标为 `degraded`；
+   - 在内存维护不可逆的 degraded latch，并 best-effort 将 Run 标为 `degraded`；
    - 绝不改变原 API、SSE、Provider、工具和业务写入结果。
 
-创建 Run 本身失败时使用 `NullRunRecorder` 完成请求，并记录 `journal_run_create_failed`。调用方不得直接操作 Journal 表或自行生成 seq。
+创建 Run 本身失败时使用 `NullRunRecorder` 完成请求，并记录 `journal_run_create_failed`。`mark_degraded()` 不得递归调用自身；落库失败只输出经过分类的安全诊断，不得记录 `str(exc)`、SQL 参数或 payload。后续成功写入时可再次尝试同步 degraded latch。调用方不得直接操作 Journal 表或自行生成 seq。
 
 ### 6.2 窄接口
 
@@ -255,12 +365,38 @@ OFFERPILOT_AGENT_JOURNAL_ENABLED=true
 
 seq 必须通过数据库原子 `UPDATE ... RETURNING` 或等价 CAS 循环取得，并与事件插入处于同一短事务。状态转换和对应状态事件也必须位于同一 Journal 事务。
 
+优先使用：
+
+```sql
+UPDATE agent_runs
+SET last_seq = last_seq + 1
+WHERE id = :run_id
+RETURNING last_seq
+```
+
+实现必须检测运行时 SQLite 是否支持 `RETURNING`；不支持时使用带 expected `last_seq` 的有限 CAS fallback。CAS 最多尝试 2 次。
+
 明确禁止：
 
 - `MAX(seq) + 1`；
 - 以进程内锁代替数据库并发控制；
 - 先提交状态、再 best-effort 追加对应状态事件；
 - 将 SSE 序号作为持久序号。
+
+### 6.4 有界延迟的 fail-open
+
+仅捕获异常不足以保证 fail-open，因为当前文件 SQLite 使用单连接池并可能发生连接池或文件锁等待。Journal 使用独立的低等待预算 Session/Engine，不复用持有主业务事务的 Session。
+
+固定边界：
+
+- 单次连接池 checkout 或 SQLite lock 等待预算最多 50 ms；
+- seq CAS 最多 2 次且不得无界退避；
+- 单个 Segment 的同步 Journal 累计等待预算最多 150 ms；
+- 超出预算立即设置内存 degraded latch，并跳过该 Segment 后续非终态记录；
+- Segment 结束时允许一次独立、最多 50 ms 的终态收敛尝试；
+- Journal 预算不得延长 Provider、工具、HTTP 或 SSE 的既有 timeout。
+
+实现计划必须用受控 SQLite 写锁和连接池占用测试证明等待有界；不能只测试最终抛出异常。
 
 ## 7. 事件契约
 
@@ -269,6 +405,7 @@ seq 必须通过数据库原子 `UPDATE ... RETURNING` 或等价 CAS 循环取�
 ```text
 run.started
 segment.started
+segment.finished
 route.selected
 context.captured
 
@@ -296,24 +433,36 @@ run.timed_out
 
 每个事件类型都有固定 `schema_version`、字段白名单与 payload 上限。未知字段、异常对象、非普通 JSON、超限内容和敏感字段拒绝写入并使记录降级，不做“尽量序列化”。
 
+`payload_json` 固定分为：
+
+```json
+{
+  "facts": {},
+  "telemetry": {}
+}
+```
+
+`facts` 的字段由下表逐事件冻结，并用于 `fact_digest`。`telemetry` 只允许 `duration_ms`、`item_count`、`byte_count`、`retry_count` 和固定枚举的诊断计数；它参与 `payload_digest`，但不参与幂等事实冲突判断。
+
 示例：
 
 ```json
 {
-  "event_type": "tool.completed",
+  "event_type": "tool.proposed",
   "schema_version": 1,
   "payload": {
-    "tool_name": "save_application_jd_version",
-    "tool_kind": "write",
-    "outcome": "confirmation_required",
-    "duration_ms": 824,
-    "operation_id_hash": "sha256:...",
-    "result_contract": "legacy_string_v1"
+    "facts": {
+      "tool_name": "save_application_jd_version",
+      "tool_kind": "write",
+      "proposal_outcome": "confirmation_required",
+      "args_shape_digest": "sha256:..."
+    },
+    "telemetry": {}
   }
 }
 ```
 
-现有工具仍返回字符串。本期将结果标记为 `legacy_string_v1`，不借机重构 `ai/tools.py`。
+需要确认时工具尚未开始，因此只能记录 `tool.proposed -> approval.requested`，不得记录 `tool.started` 或 `tool.completed`。确认通过后才记录实际执行。现有工具仍返回字符串；实际执行结果标记为 `legacy_string_v1`，不借机重构 `ai/tools.py`。
 
 ### 7.1 禁止持久化的内容
 
@@ -330,14 +479,71 @@ run.timed_out
 
 - `model.requested`：真正发起 Provider 请求前；
 - `model.completed`：完整响应收到且基础解析完成后；
-- `tool.started`：确定执行工具后；
+- `tool.started`：确认已通过或只读工具确定执行，并即将进入 handler 时；
 - `tool.completed`：工具结果已经确定后；
 - `approval.requested`：待确认动作成功持久化后；
-- `approval.decided`：确认决定及业务结果成功持久化后；
+- `approval.decided`：既有 confirmation token、Pending Action 身份与 confirmation claim 校验通过后、工具开始前；
 - `assistant.persisted`：Assistant Message 保存成功后；
 - `run.completed`：所有必要业务写入完成后。
 
 进程异常退出时不补造失败事件。
+
+`model.failed` 和 `tool.failed` 只表示一次调用失败，不决定 Run 终态。现有 Agent 可以把工具错误作为 Tool Result 交回模型并继续生成正常回复。只有现有 Orchestrator 最终无法生成并持久化有效结果，或现有业务契约明确将请求判定为失败时，才记录 `run.failed`。
+
+`segment.finished` payload 固定为：
+
+```text
+outcome = completed | suspended | failed | cancelled | timed_out | noop
+terminal_run_status = completed | failed | cancelled | timed_out | null
+```
+
+Segment 结束事件和对应的 Run 状态事件、Run 状态投影必须由一个 Repository 方法在同一 Journal 事务中追加和更新。
+
+### 7.3 事件去重与事实字段矩阵
+
+`confirmation_attempt_id` 关联一次批准、编辑确认或拒绝请求。若现有路径没有该 ID，则在合法确认 Segment 开始时生成 Journal-local UUID；只有身份与 confirmation claim 校验通过后才能用它记录 `approval.decided`，同一 Segment 内的 callback 必须复用它。
+
+`route.selected.route_reason_code` 仅允许：
+
+```text
+model_default
+deterministic_action_match
+pending_action_replay
+```
+
+模型事件不得保存 Provider URL 或模型输出。`model.requested` 的 capability 摘要只允许 `provider_kind`、`model_id_hash`、`supports_tools`、`supports_json_schema`、`stream`、`tools_count` 和 `response_format_kind`；`model.completed` 只允许 `assistant_kind`、`tool_call_count` 和固定 `finish_category`；`model.failed` 只允许已有脱敏 failure category 和 provider outcome。
+
+| 事件 | dedupe key | 参与 `fact_digest` 的字段 |
+|---|---|---|
+| `run.started` | `run.started:{agent_run_id}` | origin、conversation、context、初始 transport |
+| `segment.started` | `segment.started:{segment_id}` | request kind、transport、execution path、transport run ID |
+| `segment.finished` | `segment.finished:{segment_id}` | outcome、terminal Run status |
+| `route.selected` | `route.selected:{segment_id}` | route kind、route reason code |
+| `context.captured` | `context.captured:{snapshot_id}` | snapshot key、manifest digest、logical input fingerprint |
+| `model.requested` | `model.requested:{model_call_id}` | model step、snapshot ID、上述 Provider/Model capability 摘要 |
+| `model.completed` | `model.completed:{model_call_id}` | assistant kind、tool call count、finish category |
+| `model.failed` | `model.failed:{model_call_id}` | failure category、Provider outcome |
+| `tool.proposed` | `tool.proposed:{tool_call_id}` | tool name/kind、args shape digest、proposal outcome |
+| `tool.started` | `tool.started:{segment_id}:{tool_call_id}` | tool name、result contract |
+| `tool.completed` | `tool.completed:{segment_id}:{tool_call_id}` | tool name、outcome、result shape digest |
+| `tool.failed` | `tool.failed:{segment_id}:{tool_call_id}` | tool name、failure category |
+| `approval.requested` | `approval.requested:{tool_call_id}` | tool call、confirmation mode、pending identity digest |
+| `approval.decided` | `approval.decided:{confirmation_attempt_id}` | decision、tool call、新旧输入 HMAC fingerprint |
+| `run.waiting_confirmation` | `run.waiting_confirmation:{tool_call_id}` | tool call ID |
+| `run.resumed` | `run.resumed:{confirmation_attempt_id}` | confirmation attempt、tool call ID |
+| `assistant.persisted` | `assistant.persisted:{message_id}` | message ID、message kind；只在 ID 可直接取得时记录 |
+| Run 终态 | `{event_type}:{agent_run_id}` | status、failure code |
+
+事件 payload 可以包含 `duration_ms`、计数和时间等遥测，但这些字段不参与 `fact_digest`。重放先按 dedupe key 查询已有事件；稳定事实一致时返回原事件，再决定是否需要状态操作，不能先因当前 Run 已终态而拒绝幂等重放。
+
+事件组合还必须满足：
+
+- 同一 `model_call_id` 恰好一个 `model.requested`，并且最多出现一个 `model.completed` 或 `model.failed`；
+- 同一 Segment 内同一 Tool Call 最多一个 `tool.started`，并且最多出现一个 `tool.completed` 或 `tool.failed`；
+- 每个 Segment 恰好一个 `segment.started`，最多一个 `segment.finished`；
+- 同一 Run 最多一个终态事件；
+- `approval.decided` 必须能关联已持久化的 `approval.requested`，但 Pending Replay 不重复追加 requested；
+- 违反互斥或前置关系时不修改既有事件，记录 `semantic_anomaly` 并使 Recorder 降级。
 
 ## 8. 四条运行时序
 
@@ -345,27 +551,34 @@ run.timed_out
 
 ```text
 run.started
-segment.started
+segment.started(initial)
 route.selected(model)
-context.captured
-model.requested
-model.completed
+context.captured(step=1, call=M1, snapshot=S1)
+model.requested(call=M1, snapshot=S1)
+model.completed(call=M1)
 assistant.persisted
 run.completed
+segment.finished(completed)
 ```
+
+最后两个事件及 Run 状态投影在同一 Journal 事务完成。
 
 ### 8.2 工具循环
 
 ```text
-model.requested(step=1)
-model.completed(step=1)
+context.captured(step=1, call=M1, snapshot=S1)
+model.requested(call=M1, snapshot=S1)
+model.completed(call=M1)
 tool.proposed(call=A)
 tool.started(call=A)
 tool.completed(call=A)
-model.requested(step=2)
-model.completed(step=2)
+# 或 tool.failed(call=A)，Run 仍可继续
+context.captured(step=2, call=M2, snapshot=S2)
+model.requested(call=M2, snapshot=S2)
+model.completed(call=M2)
 assistant.persisted
 run.completed
+segment.finished(completed)
 ```
 
 一次响应包含多个工具时，每个工具使用独立 `tool_call_id`。事件仅保存工具名、读写分类、耗时、结果类别、错误类别和脱敏 Operation 关联。
@@ -374,26 +587,32 @@ run.completed
 
 ```text
 run.started
-segment.started
+segment.started(initial)
 route.selected(deterministic)
 context.captured
 tool.proposed
 approval.requested
 run.waiting_confirmation
+segment.finished(suspended)
 ```
 
 该序列明确证明 Provider 调用为零，不能与 Provider 失败混淆。
 
 ### 8.4 HITL 确认与恢复
 
-首次请求持久化 Pending Action 后记录 `approval.requested` 和 `run.waiting_confirmation`。确认、编辑确认或拒绝通过既有 Pending Action、`waiting_tool_call_id` 和稳定内部 ID 找回原 `agent_run_id`，创建新 Segment，并依次记录：
+首次请求持久化 Pending Action 后记录 `approval.requested`、`run.waiting_confirmation` 和 `segment.finished(suspended)`。确认、编辑确认或拒绝只通过 `conversation_id + waiting_tool_call_id` 找回原 `agent_run_id`。现有 token、Pending Action 身份和原 Run 绑定校验通过后创建确认 Segment；confirmation claim 真正通过时才记录 `approval.decided`，随后继续以下时序：
 
 ```text
-segment.started
+segment.started(confirmation)
+approval.decided(decision=approved | edited | rejected)
 run.resumed
-approval.decided
+tool.started（仅 approved / edited）
+tool.completed 或 tool.failed（仅实际执行时）
+context.captured（后续再次调用模型时）
+model.requested / model.completed 或 model.failed（如有）
 assistant.persisted（如有）
 run.completed 或 run.failed
+segment.finished(completed | failed)
 ```
 
 确认 token、幂等键、Conversation、Pending Action、Attempt、lease、CAS 和 fencing 继续是业务事实源。Journal 只记录相关 ID 或 hash。
@@ -402,14 +621,32 @@ run.completed 或 run.failed
 
 编辑确认只保存决定类型和新旧输入摘要指纹，不保存编辑原文。
 
+拒绝不会记录 `tool.started`。若确认后模型再次提出新的写操作，则在同一 AgentRun 中更新为新的 `waiting_tool_call_id`，记录新的 `approval.requested`、`run.waiting_confirmation` 和 `segment.finished(suspended)`。
+
+### 8.5 Pending Replay 与 Journal ingress
+
+已有 Pending Action 被再次展示时：
+
+- 找到对应 Journal Run：在原 Run 下创建 `pending_replay` Segment，返回既有动作，并以 `segment.finished(noop)` 结束；
+- 找不到对应 Journal Run：业务照常返回既有动作，只输出安全 `journal_run_missing` 诊断，不创建 orphan Run 或 Segment。
+
+Journal ingress 边界固定为：
+
+- HTTP Schema 校验失败：不创建 Run；
+- Conversation 不存在或不可见：不创建 Run；
+- 确认 token、Pending Action 身份或原 Run 尚未绑定：不创建确认 Segment；
+- 既有 Pending Action 重放按上述规则处理；
+- 只有合法 Conversation 与可记录的 Agent 执行入口才创建 Run 或 Segment。
+
 ## 9. 失败与不完整运行
 
-- 已知 Provider、工具或业务失败：记录对应失败事件，再进入 `failed`；
+- 已知模型或工具调用失败：记录调用级失败事件，Run 是否继续完全沿用现有 Orchestrator 行为；
+- 现有 Orchestrator 最终无法生成并持久化有效结果，或业务契约明确失败：进入 `failed`；
 - 客户端取消且服务端确认停止：进入 `cancelled`；
 - 服务端明确判定超时：进入 `timed_out`；
 - 进程崩溃、机器退出或强制终止：保留最后事件和 `running` 状态；
 - 本期不实现后台清扫器，也不自动把旧 `running` 改成失败；
-- 读取端将长期未结束且无终态事件的 Run 标记为“记录不完整”，而非业务失败；
+- 读取端在没有 stale threshold 时只把未结束 Run 标为 `open`，不能推断进程是否已经退出；
 - 业务成功但 Journal 部分失败时，Run 可以为 `completed + degraded`。
 
 ## 10. 内部读取模型
@@ -417,7 +654,12 @@ run.completed 或 run.failed
 提供 Python 内部接口：
 
 ```python
-reconstruct_agent_run(run_id: UUID) -> AgentRunTrace
+reconstruct_agent_run(
+    run_id: UUID,
+    *,
+    as_of: datetime,
+    stale_after: timedelta | None,
+) -> AgentRunTrace
 ```
 
 返回：
@@ -426,9 +668,34 @@ reconstruct_agent_run(run_id: UUID) -> AgentRunTrace
 - 按 Segment 分组的物理请求；
 - 每段中的 ModelStep、Tool Call 和 Approval；
 - Context manifest 与输入指纹；
-- Message、Pending Action、Operation 的稳定 ID 关联；
-- 是否完整结束；
-- 是否存在事件缺口、非法状态转换或记录降级。
+- 能够从现有调用链直接取得的 Message ID，以及 Pending Action、Tool Call、confirmation attempt、Operation 的稳定 ID 关联；
+- lifecycle、completion 与 integrity 三个独立判定；
+- 可证明的事件缺口、语义异常和已知记录降级。
+
+返回字段固定拆分为：
+
+```text
+lifecycle_status = running | waiting_confirmation | completed | failed | cancelled | timed_out
+completion_status = terminal | suspended | open | stale_open
+integrity_status = healthy | known_degraded | sequence_gap | semantic_anomaly
+anomalies[]
+```
+
+`waiting_confirmation` 对应 `suspended`；终态对应 `terminal`；`running` 在未提供 `stale_after` 时只能是 `open`，超过明确阈值后才能标为 `stale_open`。若同时存在多类 integrity 问题，`integrity_status` 按 `sequence_gap > semantic_anomaly > known_degraded > healthy` 取最高优先级，完整明细保留在 `anomalies[]`。
+
+Trace 可以检测：
+
+- 数据库中真实存在的 `1, 2, 4` seq gap；
+- `model.requested` 没有 completed/failed；
+- `tool.started` 没有 completed/failed；
+- Segment 缺少 finished；
+- 终态 Run 缺少对应终态事件；
+- 已知 `recording_status=degraded`；
+- 非法状态或事件组合。
+
+seq 连续只证明已持久化事件没有数字缺口，不能证明所有现实 callback 都成功写入。Trace 不承诺绝对完整性。
+
+`source_ref_id`、`input_message_id` 和 Message 关联是真正可空的。只有 `append_message()` 等现有调用直接返回 Message ID 时才记录；`persist_pending_action()`、`resolve_pending_confirmation()` 等没有返回 Message ID 的路径不得通过时间、正文或再次查询猜测。不得为了 Journal 修改现有 ChatRepository 返回值或消息持久化顺序。
 
 该接口只用于测试、诊断和后续内部 Harness。它不得驱动业务恢复、授权、重试或写入，也不新增公开路由。
 
@@ -467,6 +734,8 @@ tests/test_agent_run_journal.py
 tests/test_agent_run_trace.py
 tests/test_ai_agent.py
 tests/test_chat_api.py
+tests/test_config.py
+tests/test_settings_api.py
 tests/test_smoke.py
 
 docs/superpowers/specs/2026-08-17-durable-execution-journal-design.md
@@ -497,9 +766,15 @@ README.md
 - 重复迁移；
 - Conversation 与 Run 级联删除；
 - 双 SQLite 连接并发追加，seq 唯一且连续；
+- `UPDATE ... RETURNING` 与运行时不支持时的有限 CAS fallback；
 - 相同 dedupe key、相同事实幂等返回；
-- 相同 dedupe key、不同事实进入 degraded；
-- 状态转换矩阵和终态不可变；
+- 相同 dedupe key、遥测不同但稳定事实相同时幂等返回；
+- 相同 dedupe key、稳定事实不同时进入 degraded；
+- 幂等终态重放先返回原事件，不被终态转换校验误拒绝；
+- 严格状态转换、降级终态收敛和终态不可变；
+- `conversation_id + waiting_tool_call_id` 部分唯一索引；
+- Snapshot key 唯一、每个 Model Call 对应一个 Snapshot；
+- 36 位小写 UUID、数值 Check 约束与 UTF-8 BLOB 长度约束；
 - 4 KiB payload 与 16 KiB manifest 的边界；
 - 非法 JSON、异常对象和敏感字段拒绝。
 
@@ -510,20 +785,33 @@ README.md
 - 确定性路由且 Provider 调用为零；
 - 只读工具循环；
 - 写工具进入等待确认；
+- 已有 Pending Action 重新展示时复用原 Run 的 `pending_replay` Segment，找不到原 Run 时不创建 orphan；
+- 无效 HTTP Schema、Conversation、token 与 Pending Action 不创建 Run/Segment；
 - 确认、编辑确认、拒绝复用原 Run 并新增 Segment；
+- `approval.decided` 发生在合法 confirmation claim 之后、工具执行之前；
+- 等待确认和终态均产生正确的 `segment.finished`；
+- 工具失败后模型继续并正常完成 Run；
 - 多轮工具与多次确认；
 - Provider、工具和消息持久化失败；
 - 客户端取消与服务端超时；
-- 模拟进程中断后读取为不完整；
+- 模拟进程中断后，在无阈值时读取为 `open`，超过显式阈值后读取为 `stale_open`；
+- 读取模型分别检测 lifecycle、completion、integrity 和 anomalies；
+- Message ID 不可直接取得时保持空，不做内容或时间反查；
 - Journal 创建、追加和状态更新分别故障时业务结果不变。
+- 受控 SQLite 写锁与连接池占用下，单次与累计等待均在设计预算内；
+- `run.resumed` 写入失败后仍能以 degraded 模式收敛到业务终态；
+- degraded 落库失败不递归，内存 latch 保留且诊断不包含异常正文。
 
 ### 13.3 隐私与行为等价
 
 - Journal 不包含 Prompt、用户原文、附件、JD/简历全文、模型正文、确认 token 或幂等 key 原文；
-- Context 只保存 manifest、稳定 ID、revision、计数和 digest；
+- Context 只保存 manifest、稳定 ID、revision、计数、版本化估算器和 HMAC fingerprint；
+- `journal_hmac_secret` 自动生成、持久化但不通过设置 API、日志或报告暴露；
+- 输入 fingerprint 无法跨安装直接比对，并被视为敏感派生数据；
 - 开启与关闭 Journal 时，HTTP 状态、响应体、SSE 序列、消息、业务写入以及 Provider/工具调用次数逐项一致；
 - 读取模型可以确定性还原因果顺序；
-- SSE seq 与 Journal seq 保持独立。
+- SSE seq 与 Journal seq 保持独立；
+- 普通流式与确认流式请求继续使用各自的 `SseRun.run_id`，绝不替换成 `agent_run_id`。
 
 ### 13.4 发布门禁
 
