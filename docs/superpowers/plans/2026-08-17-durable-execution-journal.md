@@ -1093,7 +1093,7 @@ foreach($group in @('components-core','components-chat','components-interview','
 if($LASTEXITCODE -ne 0){ throw 'frontend aggregate failed' }
 ```
 
-Expected: ten completion markers, no skipped/todo tests, aggregate source fingerprint and coverage valid.
+Expected: ten completion markers, no skipped or pending test records, aggregate source fingerprint and coverage valid.
 
 - [ ] **Step 6: Run static, build, local, and bounded real-AI gates**
 
