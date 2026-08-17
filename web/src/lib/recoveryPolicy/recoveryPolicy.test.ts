@@ -23,7 +23,10 @@ describe('recoveryPolicy resolver (contract-driven, no status guessing)', () => 
       expect(decision.disposition, code).toBe(entry.disposition);
       expect(decision.preserveIdempotencyKey, code).toBe(entry.preserve_idempotency_key);
       expect(decision.providerRetryAllowed, code).toBe(entry.provider_retry_allowed);
-      expect(decision.terminal, code).toBe(entry.disposition === 'terminal_no_retry');
+      expect(
+        decision.terminal,
+        code,
+      ).toBe(entry.disposition === 'terminal_no_retry' || entry.disposition === 'restart_new_attempt');
     }
   });
 

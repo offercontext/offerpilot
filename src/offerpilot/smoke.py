@@ -71,6 +71,19 @@ from offerpilot.models import (
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 from offerpilot.repositories.interview_stories import InterviewStoriesRepository
+from offerpilot.reliability.policy import get_recovery_policy
+from offerpilot.reliability.trace import read_mock_interview_traces
+
+
+def _response_recovery_policy(response: Any) -> Any:
+    """Look up the recovery contract entry behind a JSON error response."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return get_recovery_policy(str(payload.get("error_code") or ""))
 
 
 @dataclass(frozen=True)
@@ -1800,9 +1813,7 @@ def _run_real_ai_mock_interview_smoke(
     base = f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
 
     for index in range(3):
-        def handle_unverifiable(response: Any, stage: str) -> bool:
-            if response.status_code != 502 or response.json().get("error_code") != "mock_interview_unverifiable":
-                return False
+        def _restart_failed_attempt(stage: str, error_code: str) -> None:
             attempt_id: int | None = None
             attempt_ids = _mock_interview_attempt_ids(data_dir, application_id, event_id)
             if len(attempt_ids) > 1:
@@ -1831,23 +1842,49 @@ def _run_real_ai_mock_interview_smoke(
                 or not diagnostic.get("category")
             ):
                 raise RuntimeError("mock interview failure diagnostic missing")
-            failure_category = diagnostic["category"]
             outcomes.append(
-                f"attempt_{index + 1}:{stage}:mock_interview_unverifiable:"
-                f"{failure_category or 'unknown'}"
+                f"attempt_{index + 1}:{stage}:{error_code}:"
+                f"{diagnostic['category'] or 'unknown'}"
             )
-            return True
 
-        start = client.post(
-            base,
-            json={
-                "resume_id": resume_id,
-                "jd_version_id": jd_version_id,
-                "attempt_idempotency_key": f"real-ai-mock-attempt-{index}",
-                "initial_question_idempotency_key": f"real-ai-mock-question-{index}",
-            },
+        def reconcile_step(
+            response: Any, stage: str, replay: Callable[[], Any] | None = None
+        ) -> tuple[Any, bool]:
+            """Apply the recovery contract once: bounded same-key replay, else restart."""
+            policy = _response_recovery_policy(response)
+            if policy is None:
+                return response, False
+            error_code = str(response.json().get("error_code"))
+            if (
+                policy.disposition == "retry_same_key"
+                and policy.provider_retry_allowed
+                and replay is not None
+            ):
+                reconciled = replay()
+                if reconciled.status_code in {200, 201}:
+                    outcomes.append(f"attempt_{index + 1}:{stage}:reconciled_same_key")
+                    return reconciled, False
+                response = reconciled
+            if policy.disposition in {"terminal_no_retry", "retry_same_key", "restart_new_attempt"}:
+                _restart_failed_attempt(stage, error_code)
+                return response, True
+            raise RuntimeError(
+                f"real-ai mock interview smoke cannot apply disposition "
+                f"{policy.disposition!r} for {error_code}"
+            )
+
+        start_payload = {
+            "resume_id": resume_id,
+            "jd_version_id": jd_version_id,
+            "attempt_idempotency_key": f"real-ai-mock-attempt-{index}",
+            "initial_question_idempotency_key": f"real-ai-mock-question-{index}",
+        }
+        start, restart = reconcile_step(
+            client.post(base, json=start_payload),
+            "start",
+            lambda: client.post(base, json=start_payload),
         )
-        if handle_unverifiable(start, "start"):
+        if restart:
             continue
         _assert_status(start.status_code, 201, f"http_mock_interview_start_{index}")
         started = start.json()
@@ -1861,11 +1898,13 @@ def _run_real_ai_mock_interview_smoke(
             },
         )
         _assert_status(answer.status_code, 200, f"http_mock_interview_answer_{index}")
-        question = client.post(
-            f"{base}/{attempt_id}/turns/2/question",
-            json={"question_idempotency_key": f"real-ai-mock-question-2-{index}"},
+        question_payload = {"question_idempotency_key": f"real-ai-mock-question-2-{index}"}
+        question, restart = reconcile_step(
+            client.post(f"{base}/{attempt_id}/turns/2/question", json=question_payload),
+            "question_2",
+            lambda: client.post(f"{base}/{attempt_id}/turns/2/question", json=question_payload),
         )
-        if handle_unverifiable(question, "question_2"):
+        if restart:
             continue
         _assert_status(question.status_code, 201, f"http_mock_interview_question_2_{index}")
         answer_two = client.post(
@@ -1877,16 +1916,20 @@ def _run_real_ai_mock_interview_smoke(
             },
         )
         _assert_status(answer_two.status_code, 200, f"http_mock_interview_answer_2_{index}")
-        finish = client.post(
-            f"{base}/{attempt_id}/finish",
-            json={"feedback_idempotency_key": f"real-ai-mock-feedback-{index}"},
+        finish_payload = {"feedback_idempotency_key": f"real-ai-mock-feedback-{index}"}
+        finish, restart = reconcile_step(
+            client.post(f"{base}/{attempt_id}/finish", json=finish_payload),
+            "feedback",
+            lambda: client.post(f"{base}/{attempt_id}/finish", json=finish_payload),
         )
-        if handle_unverifiable(finish, "feedback"):
+        if restart:
             continue
         _assert_status(finish.status_code, 201, f"http_mock_interview_finish_{index}")
         body = finish.json()
-        if set(body) != {"proposal_id", "proposal_status", "proposal_hash", "proposal"}:
+        if set(body) != {"proposal_id", "proposal_status", "proposal_hash", "proposal", "operation_id"}:
             raise RuntimeError("mock interview feedback response exposed non-public fields")
+        if not isinstance(body.get("operation_id"), str) or not body["operation_id"]:
+            raise RuntimeError("mock interview feedback response missed the trace operation_id")
         if body["proposal_status"] not in {"normal", "safe_empty"}:
             raise RuntimeError("mock interview feedback returned an invalid status")
         selected_block = _first_mock_interview_feedback_block(body["proposal"])
@@ -2737,13 +2780,30 @@ def _mock_interview_attempt_state(
 
 
 def _assert_mock_interview_attempt_restart_state(kind: str, category: str, state: str) -> None:
-    """Reject an invalid cleanup/retention result for a failed browser Attempt."""
+    """Reject a cleanup/retention result that contradicts the recovery contract.
+
+    The expected retention comes from contracts/recovery-policy.v1.json: a
+    provider failure maps to a retry_same_key error whose Attempt must stay
+    retained for same-key reconciliation; a contract failure is terminal and the
+    failed Attempt must be deleted before the browser restarts.
+    """
     if kind not in {"provider", "contract"}:
         raise RuntimeError("missing mock interview Attempt failure diagnostic")
-    if kind == "provider" and state != "retained:provider_unknown":
-        raise RuntimeError("A provider-unknown Attempt was not retained for the browser restart.")
-    if kind == "contract" and state.startswith("retained:"):
-        raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
+    error_code = "mock_interview_provider_error" if kind == "provider" else "mock_interview_unverifiable"
+    policy = get_recovery_policy(error_code)
+    if policy is None:
+        raise RuntimeError(f"recovery contract is missing {error_code}")
+    if policy.disposition == "retry_same_key":
+        if state != "retained:provider_unknown":
+            raise RuntimeError("A provider-unknown Attempt was not retained for the browser restart.")
+        return
+    if policy.disposition == "terminal_no_retry":
+        if state.startswith("retained:"):
+            raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
+        return
+    raise RuntimeError(
+        f"recovery contract defines unexpected disposition {policy.disposition!r} for {error_code}"
+    )
 
 
 def _select_mock_interview_browser_success(

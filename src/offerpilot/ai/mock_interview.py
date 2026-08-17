@@ -25,27 +25,18 @@ SAFE_EMPTY_FEEDBACK = {
 }
 
 _FIELDS = set(SAFE_EMPTY_FEEDBACK)
-_ITEM_FIELDS = {"id", "text", "evidence_refs"}
+_ITEM_FIELDS = {"id", "text", "evidence_ids"}
 _FEEDBACK_ITEM_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["id", "text", "evidence_refs"],
+    "required": ["id", "text", "evidence_ids"],
     "properties": {
         "id": {"type": "string", "minLength": 1, "maxLength": 120},
         "text": {"type": "string", "minLength": 1, "maxLength": 1000},
-        "evidence_refs": {
+        "evidence_ids": {
             "type": "array",
             "maxItems": 4,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["source", "path", "excerpt"],
-                "properties": {
-                    "source": {"type": "string", "minLength": 1},
-                    "path": {"type": "string", "minLength": 1},
-                    "excerpt": {"type": "string", "minLength": 1},
-                },
-            },
+            "items": {"type": "string", "minLength": 1},
         },
     },
 }
@@ -81,6 +72,34 @@ MOCK_INTERVIEW_FEEDBACK_SCHEMA = {
         {"properties": {"proposal_status": {"const": "normal"}}},
     ],
 }
+MOCK_INTERVIEW_QUESTION_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["question", "evidence_ids"],
+    "properties": {
+        "question": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "evidence_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+}
+MOCK_INTERVIEW_QUESTION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "mock_interview_question",
+        "strict": True,
+        "schema": MOCK_INTERVIEW_QUESTION_OUTPUT_SCHEMA,
+    },
+}
+MOCK_INTERVIEW_FEEDBACK_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "mock_interview_feedback",
+        "strict": True,
+        "schema": MOCK_INTERVIEW_FEEDBACK_SCHEMA,
+    },
+}
 _FIXED_QUESTIONS = {
     "clarify_answer": "您希望进一步澄清哪一部分？",
     "add_example": "您希望补充一个具体例子吗？",
@@ -93,11 +112,8 @@ _FORMAT_REPAIR_CATEGORIES = {
     "unexpected_field",
     "field_type",
     "item_shape",
-    "evidence_refs_not_array",
-    "evidence_ref_not_object",
-    "evidence_ref_missing_field",
-    "evidence_ref_unexpected_field",
-    "evidence_ref_field_type",
+    "evidence_ids_not_array",
+    "evidence_id_not_string",
     "missing_turn_evidence",
     "blank_value",
 }
@@ -105,10 +121,10 @@ _FORMAT_REPAIR_CATEGORIES = {
 _FEEDBACK_TURN_EVIDENCE_RULE = (
     ' For a normal result, every item in strengths, practice_points, and '
     'next_practice_steps must include at least one completed-turn evidence '
-    'reference with source="turn". JD and Resume references are supplementary '
-    'only and cannot replace the required Turn reference. If no completed-turn '
-    'evidence supports a normal item or suggestion, return the exact safe_empty '
-    'object instead of guessing.'
+    'reference: an evidence_ids entry whose catalog entry has source="turn". '
+    'JD and Resume references are supplementary only and cannot replace the '
+    'required Turn reference. If no completed-turn evidence supports a normal '
+    'item or suggestion, return the exact safe_empty object instead of guessing.'
 )
 
 
@@ -131,8 +147,14 @@ def parse_mock_interview_json(raw: str) -> dict[str, Any]:
 
 
 def validate_feedback(
-    proposal: dict[str, Any], snapshot: dict[str, Any], turns: list[dict[str, Any]]
+    proposal: dict[str, Any], evidence_catalog: list[dict[str, str]]
 ) -> dict[str, Any]:
+    """Validate a provider-shaped feedback proposal and expand evidence IDs.
+
+    The provider only selects ``evidence_ids``; this function expands them into
+    the frozen ``source/path/excerpt`` references that are persisted and exposed
+    publicly. Unknown, duplicate, or cross-directory IDs are rejected strictly.
+    """
     if set(proposal) != _FIELDS:
         raise MockInterviewContractError("unexpected_field")
     if proposal["schema_version"] != "mock-interview-feedback-v1":
@@ -145,6 +167,7 @@ def validate_feedback(
     if status != "normal":
         raise MockInterviewContractError("invalid_status")
 
+    persisted: dict[str, Any] = {**proposal}
     seen_ids: set[str] = set()
     for field in ("strengths", "practice_points", "follow_up_questions", "next_practice_steps"):
         items = proposal[field]
@@ -152,18 +175,19 @@ def validate_feedback(
             raise MockInterviewContractError("field_type")
         if len(items) > 8:
             raise MockInterviewContractError("limit_exceeded")
+        persisted_items: list[dict[str, Any]] = []
         for item in items:
-            _validate_item(item, seen_ids, snapshot, turns, field)
-    return proposal
+            persisted_items.append(_validate_item(item, seen_ids, evidence_catalog, field))
+        persisted[field] = persisted_items
+    return persisted
 
 
 def _validate_item(
     item: Any,
     seen_ids: set[str],
-    snapshot: dict[str, Any],
-    turns: list[dict[str, Any]],
+    evidence_catalog: list[dict[str, str]],
     field: str,
-) -> None:
+) -> dict[str, Any]:
     if not isinstance(item, dict) or set(item) != _ITEM_FIELDS:
         raise MockInterviewContractError("item_shape")
     item_id = item["id"]
@@ -173,73 +197,22 @@ def _validate_item(
     if not isinstance(text, str) or not text.strip() or len(text) > 1000:
         raise MockInterviewContractError("blank_value")
     seen_ids.add(item_id)
-    refs = item["evidence_refs"]
-    if not isinstance(refs, list):
-        raise MockInterviewContractError("evidence_refs_not_array")
-    if len(refs) > 4:
-        raise MockInterviewContractError("limit_exceeded")
-    for ref in refs:
-        _validate_reference(ref, snapshot, turns)
-    if field in {"strengths", "practice_points", "next_practice_steps"}:
-        if not refs or not any(ref.get("source") == "turn" for ref in refs if isinstance(ref, dict)):
-            raise MockInterviewContractError("missing_turn_evidence")
-    if field == "follow_up_questions" and not refs:
+    evidence_ids = item["evidence_ids"]
+    if not isinstance(evidence_ids, list):
+        raise MockInterviewContractError("evidence_ids_not_array")
+    if any(not isinstance(evidence_id, str) for evidence_id in evidence_ids):
+        raise MockInterviewContractError("evidence_id_not_string")
+    if field == "follow_up_questions" and not evidence_ids:
         if _FIXED_QUESTIONS.get(item_id) == text:
-            return
+            return {"id": item_id, "text": text, "evidence_refs": []}
         if text in _FIXED_QUESTIONS.values():
             raise MockInterviewContractError("fixed_question")
         raise MockInterviewContractError("missing_evidence_ref")
-    if not refs and field != "follow_up_questions":
-        raise MockInterviewContractError("missing_evidence_ref")
-
-
-def _validate_reference(ref: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]) -> None:
-    required_fields = {"source", "path", "excerpt"}
-    if not isinstance(ref, dict):
-        raise MockInterviewContractError("evidence_ref_not_object")
-    ref_fields = set(ref)
-    if ref_fields != required_fields:
-        if required_fields - ref_fields:
-            raise MockInterviewContractError("evidence_ref_missing_field")
-        raise MockInterviewContractError("evidence_ref_unexpected_field")
-    source, path, excerpt = ref["source"], ref["path"], ref["excerpt"]
-    if not all(isinstance(value, str) for value in (source, path, excerpt)):
-        raise MockInterviewContractError("evidence_ref_field_type")
-    if not excerpt.strip():
-        raise MockInterviewContractError("blank_value")
-    catalog_entry = next(
-        (
-            entry
-            for entry in build_mock_interview_evidence_catalog(snapshot, turns)
-            if entry["source"] == source and entry["path"] == path
-        ),
-        None,
-    )
-    if catalog_entry is None:
-        raise MockInterviewContractError("unknown_evidence_ref")
-    value = catalog_entry["value"]
-    if not isinstance(value, str) or excerpt not in value:
-        raise MockInterviewContractError("excerpt_mismatch")
-
-
-def _resolve_resume_pointer(snapshot: dict[str, Any], path: str) -> str:
-    value: Any = snapshot.get("resume", {}).get("content_json")
-    for token in path.removeprefix("/resume/content_json/").split("/"):
-        token = token.replace("~1", "/").replace("~0", "~")
-        if isinstance(value, list):
-            if token == "" or (len(token) > 1 and token.startswith("0")) or not token.isdigit():
-                raise MockInterviewContractError("unknown_evidence_ref")
-            index = int(token)
-            if index >= len(value):
-                raise MockInterviewContractError("unknown_evidence_ref")
-            value = value[index]
-        elif isinstance(value, dict) and token in value:
-            value = value[token]
-        else:
-            raise MockInterviewContractError("unknown_evidence_ref")
-    if not isinstance(value, str):
-        raise MockInterviewContractError("unknown_evidence_ref")
-    return value
+    refs = _expand_evidence_ids(evidence_ids, evidence_catalog)
+    if field in {"strengths", "practice_points", "next_practice_steps"}:
+        if not any(ref["source"] == "turn" for ref in refs):
+            raise MockInterviewContractError("missing_turn_evidence")
+    return {"id": item_id, "text": text, "evidence_refs": refs}
 
 
 def _escape_json_pointer_token(value: str) -> str:
@@ -306,7 +279,7 @@ def build_mock_interview_evidence_catalog(
     return catalog
 
 
-def _question_provider_evidence_catalog(
+def _provider_evidence_catalog(
     snapshot: dict[str, Any], turns: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
     """Expose opaque, deterministic references so the model never copies citations.
@@ -327,17 +300,17 @@ def _normalize_question_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
 
-def _expand_question_evidence_ids(
+def _expand_evidence_ids(
     evidence_ids: Any, catalog: list[dict[str, str]]
 ) -> list[dict[str, str]]:
     if not isinstance(evidence_ids, list):
-        raise MockInterviewContractError("evidence_refs_not_array")
+        raise MockInterviewContractError("evidence_ids_not_array")
     if not evidence_ids:
         raise MockInterviewContractError("missing_evidence_ref")
     if len(evidence_ids) > 4:
         raise MockInterviewContractError("limit_exceeded")
     if any(not isinstance(evidence_id, str) for evidence_id in evidence_ids):
-        raise MockInterviewContractError("evidence_ref_field_type")
+        raise MockInterviewContractError("evidence_id_not_string")
     if len(set(evidence_ids)) != len(evidence_ids):
         raise MockInterviewContractError("duplicate_evidence_ref")
     by_id = {entry["id"]: entry for entry in catalog}
@@ -376,15 +349,11 @@ def should_retry_mock_interview_format(category: str) -> bool:
 def _format_repair_instruction(category: str) -> str:
     instruction = (
         " Format repair: the previous response failed the structural check "
-        f"{category!r}. Return only one raw JSON object matching the declared schema."
-        " Each evidence reference must be an object with exactly these string fields: "
-        "source, path, excerpt. Allowed references are exactly jd + /jd/text, "
-        "resume + /resume/content_json/<string-leaf-pointer>, or turn + "
-        "/turns/<turn-number>/answer. The excerpt must be a non-empty contiguous "
-        "substring copied verbatim from that allowed frozen value, including its "
-        "original punctuation, spacing, and Unicode. If a path or excerpt cannot "
-        "be copied exactly from the supplied input, do not invent it. Do not repeat "
-        "or explain the previous response."
+        f"{category!r}. Return only one raw JSON object matching the declared schema. "
+        "Each item must be an object with exactly id, text, and evidence_ids. "
+        "evidence_ids must contain one to four IDs copied verbatim from the "
+        "evidence_catalog id field. Do not output source, path, or excerpt values "
+        "and never invent an ID. Do not repeat or explain the previous response."
     )
     if category == "missing_turn_evidence":
         instruction += _FEEDBACK_TURN_EVIDENCE_RULE
@@ -443,9 +412,10 @@ def generate_feedback(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Generate one strictly validated feedback proposal, or a safe empty result.
 
-    The provider sees only the frozen snapshot and transcript. Contract repair is
-    deliberately bounded to one retry; provider failures remain distinguishable
-    from a model response that cannot be verified.
+    The provider sees only the frozen snapshot and transcript and selects
+    evidence IDs; the server expands them into exact frozen citations. Contract
+    repair is deliberately bounded to one retry; provider failures remain
+    distinguishable from a model response that cannot be verified.
     """
     if not any(
         isinstance(turn.get("answer"), str) and turn["answer"].strip() for turn in turns
@@ -461,8 +431,9 @@ def generate_feedback(
     last_category = "invalid_json"
     failure_categories: list[str] = []
     provider_request_id = ""
+    evidence_catalog = _provider_evidence_catalog(snapshot, turns)
     for attempt in range(2):
-        prompt = _feedback_prompt(snapshot, turns, last_category if attempt else "")
+        prompt = _feedback_prompt(evidence_catalog, turns, last_category if attempt else "")
         try:
             assistant = _complete_feedback(model, prompt)
             provider_request_id = _assistant_provider_request_id(assistant)
@@ -477,7 +448,7 @@ def generate_feedback(
             ) from exc
         try:
             parsed = parse_mock_interview_json(assistant.content)
-            validated = validate_feedback(parsed, snapshot, turns)
+            validated = validate_feedback(parsed, evidence_catalog)
             return validated, build_mock_interview_diagnostic(
                 "", repair_count > 0, repair_count,
                 int((perf_counter() - started) * 1000), provider_request_id
@@ -504,13 +475,15 @@ def generate_feedback(
 
 def generate_question(
     model: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Generate one strictly validated question plus its sanitized diagnostic."""
     if model is None:
         raise MockInterviewProviderError("mock_interview_provider_error")
+    started = perf_counter()
     last_category = "invalid_json"
     failure_categories: list[str] = []
     provider_request_id = ""
-    evidence_catalog = _question_provider_evidence_catalog(snapshot, turns)
+    evidence_catalog = _provider_evidence_catalog(snapshot, turns)
     allowed_evidence_ids = [entry["id"] for entry in evidence_catalog]
     answered_turns = [
         turn
@@ -603,21 +576,27 @@ def generate_question(
             else:
                 assistant = cast(Assistant, model.complete(messages, []))
             provider_request_id = _assistant_provider_request_id(assistant)
+            elapsed_ms = int((perf_counter() - started) * 1000)
             parsed = parse_mock_interview_json(assistant.content)
             if set(parsed) != {"question", "evidence_ids"}:
                 raise MockInterviewContractError("unexpected_field")
             question = parsed["question"]
             if not isinstance(question, str) or not question.strip() or len(question) > 1000:
                 raise MockInterviewContractError("blank_value")
-            refs = _expand_question_evidence_ids(parsed["evidence_ids"], evidence_catalog)
+            refs = _expand_evidence_ids(parsed["evidence_ids"], evidence_catalog)
             if _normalize_question_text(question) in previous_questions:
                 raise MockInterviewContractError("duplicate_question")
             if latest_turn_evidence_ids and not set(latest_turn_evidence_ids).intersection(parsed["evidence_ids"]):
                 raise MockInterviewContractError("missing_latest_turn_evidence")
-            return {
-                "question": question,
-                "evidence_refs": refs,
-            }
+            return (
+                {
+                    "question": question,
+                    "evidence_refs": refs,
+                },
+                build_mock_interview_diagnostic(
+                    "", attempt > 0, 1 if attempt > 0 else 0, elapsed_ms, provider_request_id
+                ),
+            )
         except MockInterviewProviderError:
             raise
         except MockInterviewContractError as exc:
@@ -631,7 +610,7 @@ def generate_question(
                     "failure_category": last_category,
                     "repair_attempted": attempt > 0,
                     "repair_count": 1 if attempt > 0 else 0,
-                    "elapsed_ms": 0,
+                    "elapsed_ms": int((perf_counter() - started) * 1000),
                     "failure_categories": failure_categories,
                     "provider_request_id": _redact_provider_request_id(provider_request_id),
                 },
@@ -651,7 +630,7 @@ def generate_question(
             "failure_category": last_category,
             "repair_attempted": True,
             "repair_count": 1,
-            "elapsed_ms": 0,
+            "elapsed_ms": int((perf_counter() - started) * 1000),
             "failure_categories": failure_categories,
             "provider_request_id": _redact_provider_request_id(provider_request_id),
         },
@@ -667,35 +646,30 @@ def _complete_feedback(model: Any, prompt: str) -> Assistant:
                 "你是文本模拟面试练习助手。只返回符合 mock-interview-feedback-v1 的原始 JSON。"
                 "顶层必须严格包含 schema_version、proposal_status、strengths、practice_points、"
                 "follow_up_questions、next_practice_steps，且不得有额外字段。"
-                "normal 的每项必须包含 id、text、evidence_refs；每个 evidence_refs 项必须严格包含 "
-                "source、path、excerpt 三个字符串字段。safe_empty 必须是四个空数组的固定结构。"
+                "normal 的每项必须包含 id、text、evidence_ids；evidence_ids 必须是 0 到 4 个字符串组成的数组，"
+                "每个 ID 必须从 evidence_catalog 的 id 字段逐字选择，不得输出 source、path、excerpt 或自行构造 ID。"
+                "safe_empty 必须是四个空数组的固定结构。"
                 "不得评分、预测录用或编造证据。没有可靠建议时返回安全空结构。"
                 "完整 JSON Schema 如下：" + schema_text
-                + " evidence_catalog is the only allowed evidence directory; source/path must exactly "
-                "select one catalog entry, and excerpt must be a non-empty contiguous substring "
-                "of that entry's value."
+                + " evidence_catalog is the only allowed evidence directory; every evidence ID must "
+                "be copied verbatim from its id field."
                 + _FEEDBACK_TURN_EVIDENCE_RULE
             ),
         ),
         Message(role="user", content=prompt),
     ]
-    schema = {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "mock_interview_feedback",
-            "strict": True,
-            "schema": MOCK_INTERVIEW_FEEDBACK_SCHEMA,
-        },
-    }
     if getattr(model, "supports_json_schema", False):
-        return cast(Assistant, model.complete(messages, [], response_format=schema))
+        return cast(Assistant, model.complete(messages, [], response_format=MOCK_INTERVIEW_FEEDBACK_RESPONSE_FORMAT))
     return cast(Assistant, model.complete(messages, []))
 
 
-def _feedback_prompt(snapshot: dict[str, Any], turns: list[dict[str, Any]], failure_category: str) -> str:
-    payload = {
-        "snapshot": snapshot,
-        "evidence_catalog": build_mock_interview_evidence_catalog(snapshot, turns),
+def _feedback_prompt(
+    evidence_catalog: list[dict[str, str]],
+    turns: list[dict[str, Any]],
+    failure_category: str,
+) -> str:
+    payload: dict[str, Any] = {
+        "evidence_catalog": evidence_catalog,
         "turns": turns,
     }
     if failure_category:

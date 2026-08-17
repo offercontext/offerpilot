@@ -19,6 +19,7 @@ import {
 } from '@/services/mockInterviews';
 import { saveInterviewStudioVoiceCoachingSnapshot } from '@/services/voiceCoaching';
 import type { MockInterviewProposalResponse, MockInterviewTurn } from '@/types/mockInterview';
+import { resolveErrorRecovery, type RecoveryDecision } from '@/lib/recoveryPolicy/recoveryPolicy';
 import {
   createStudioState,
   reduceStudioState,
@@ -67,7 +68,8 @@ type VoiceReview = {
 type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voiceReview: VoiceReview };
 type StudioBusinessRecovery = { attemptKey: string; attemptId: number; state: StudioState; timeline: TimelineEntry[] };
 type StudioStartRecovery = { attemptKey: string; questionKey: string; message: string };
-type StudioTerminalFailure = { message: string; attemptId: number | null };
+type TerminalDisposition = 'terminal_no_retry' | 'restart_new_attempt' | 'reload_source';
+type StudioTerminalFailure = { message: string; attemptId: number | null; disposition: TerminalDisposition };
 type WorkspaceTab = 'answer' | 'evidence';
 
 const CONTINUOUS_VOICE_PREFERENCE_KEY = 'offerpilot:interview-studio:continuous-voice-preference';
@@ -98,22 +100,18 @@ function isTurnResponse(value: Awaited<ReturnType<typeof startInterviewStudioAtt
   return 'turn' in value;
 }
 
-function errorDetails(error: unknown): { message: string; terminal: boolean; attemptId: number | null } {
-  const response = (error as { response?: { status?: number; data?: { error_code?: string; attempt_id?: unknown; details?: { attempt_id?: unknown } } } })?.response;
-  const code = response?.data?.error_code;
-  const rawAttemptId = response?.data?.attempt_id ?? response?.data?.details?.attempt_id;
-  const failedAttemptId = typeof rawAttemptId === 'number' && Number.isInteger(rawAttemptId) ? rawAttemptId : null;
-  if (code === 'mock_interview_source_conflict') return { message: '冻结来源暂时无法验证，请回到准备中心重新确认。', terminal: false, attemptId: failedAttemptId };
-  if (code === 'mock_interview_unverifiable') return { message: 'AI 输出未通过证据验证。本次生成已终止，请重新开始练习。', terminal: true, attemptId: failedAttemptId };
-  if (code === 'mock_interview_question_result_unknown') return { message: '下一题结果待确认，已保留原 question key。', terminal: false, attemptId: failedAttemptId };
-  if (code === 'mock_interview_feedback_result_unknown') return { message: '复盘结果待确认，已保留原 feedback key。', terminal: false, attemptId: failedAttemptId };
-  if (response?.status === 422) return { message: '当前回答或来源无法用于本次练习，请检查后重试。', terminal: false, attemptId: failedAttemptId };
-  if (response?.status === 409) return { message: '本次操作与已有结果冲突，请使用原 key 对账。', terminal: false, attemptId: failedAttemptId };
-  return { message: '网络或服务结果待确认，输入和原 key 已冻结。', terminal: false, attemptId: failedAttemptId };
+function isBlockingFailure(decision: RecoveryDecision): decision is RecoveryDecision & { disposition: TerminalDisposition } {
+  return decision.disposition === 'terminal_no_retry'
+    || decision.disposition === 'restart_new_attempt'
+    || decision.disposition === 'reload_source';
 }
 
-function errorCopy(error: unknown): string {
-  return errorDetails(error).message;
+function terminalFailureOf(decision: RecoveryDecision, fallbackAttemptId: number | null): StudioTerminalFailure {
+  return {
+    message: decision.message,
+    attemptId: decision.attemptId ?? fallbackAttemptId,
+    disposition: decision.disposition as TerminalDisposition,
+  };
 }
 
 function questionLabel(turn: TimelineEntry): string {
@@ -540,11 +538,16 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       setState(createStudioState({ turnNo: result.turn.turn_no, question: result.turn.question }));
     } catch (error) {
       if (requestId !== startRequestRef.current || !isBusinessRequestCurrent(businessGeneration)) return;
-      const failure = errorDetails(error);
-      if (failure.terminal) {
+      const failure = resolveErrorRecovery(error, 'start');
+      if (isBlockingFailure(failure)) {
         clearStudioStartRecovery();
         setStartError(null);
-        setTerminalFailure({ message: failure.message, attemptId: failure.attemptId });
+        setTerminalFailure(terminalFailureOf(failure, null));
+        return;
+      }
+      if (failure.disposition === 'edit_input') {
+        clearStudioStartRecovery();
+        setStartError(failure.message);
         return;
       }
       const message = failure.message;
@@ -684,15 +687,18 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       continuousController.nextQuestionReady(result.turn.question);
     } catch (error) {
       if (!isBusinessRequestCurrent(businessGeneration)) return;
-      const failure = errorDetails(error);
-      if (failure.terminal) {
-        clearStudioBusinessRecovery();
-        setTerminalFailure({ message: failure.message, attemptId: failure.attemptId ?? currentAttemptId });
-        update({ type: 'contract_failed', message: failure.message });
-        continuousController.fallback(failure.message);
-      } else {
+      const failure = resolveErrorRecovery(error, 'question');
+      if (failure.disposition === 'retry_same_key') {
         update({ type: 'result_unknown', operation: 'question', message: failure.message });
         continuousController.nextQuestionUnknown(failure.message);
+      } else if (failure.disposition === 'edit_input') {
+        update({ type: 'edit_input', message: failure.message });
+        continuousController.fallback(failure.message);
+      } else {
+        clearStudioBusinessRecovery();
+        setTerminalFailure(terminalFailureOf(failure, currentAttemptId));
+        update({ type: 'contract_failed', message: failure.message });
+        continuousController.fallback(failure.message);
       }
     } finally {
       if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
@@ -731,8 +737,18 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       else setState((current) => current ? reduceStudioState(current, { type: 'answer_succeeded' }) : current);
     } catch (error) {
       if (!isBusinessRequestCurrent(businessGeneration)) return;
-      update({ type: 'result_unknown', operation: 'answer', message: errorCopy(error) });
-      continuousController.answerSubmissionUnknown(errorCopy(error));
+      const failure = resolveErrorRecovery(error, 'answer');
+      if (failure.disposition === 'retry_same_key') {
+        update({ type: 'result_unknown', operation: 'answer', message: failure.message });
+        continuousController.answerSubmissionUnknown(failure.message);
+      } else if (failure.disposition === 'edit_input') {
+        update({ type: 'edit_input', message: failure.message });
+      } else {
+        clearStudioBusinessRecovery();
+        setTerminalFailure(terminalFailureOf(failure, attemptId));
+        update({ type: 'contract_failed', message: failure.message });
+        continuousController.fallback(failure.message);
+      }
     } finally {
       if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
     }
@@ -758,13 +774,15 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       setState((current) => current ? { ...current, pendingOperation: null, resultUnknown: false, phase: 'completed' } : current);
     } catch (error) {
       if (!isBusinessRequestCurrent(businessGeneration)) return;
-      const failure = errorDetails(error);
-      if (failure.terminal) {
-        clearStudioBusinessRecovery();
-        setTerminalFailure({ message: failure.message, attemptId: failure.attemptId ?? attemptId });
-        update({ type: 'contract_failed', message: failure.message });
-      } else {
+      const failure = resolveErrorRecovery(error, 'feedback');
+      if (failure.disposition === 'retry_same_key') {
         update({ type: 'result_unknown', operation: 'feedback', message: failure.message });
+      } else if (failure.disposition === 'edit_input') {
+        update({ type: 'edit_input', message: failure.message });
+      } else {
+        clearStudioBusinessRecovery();
+        setTerminalFailure(terminalFailureOf(failure, attemptId));
+        update({ type: 'contract_failed', message: failure.message });
       }
     } finally {
       if (isBusinessRequestCurrent(businessGeneration)) setWorking(false);
@@ -918,11 +936,25 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
             </div>
           ) : terminalFailure ? (
             <div ref={studioStatusRef} className={styles.studioStatus} data-interview-studio-status tabIndex={-1}>
-              <Alert className={styles.alert} type="warning" showIcon message={terminalFailure.message} action={<Button size="small" onClick={() => void restartAfterTerminalFailure()} disabled={working}>重新开始练习</Button>} />
+              <Alert
+                className={styles.alert}
+                type="warning"
+                showIcon
+                message={terminalFailure.message}
+                action={terminalFailure.disposition === 'reload_source' ? (
+                  <Button size="small" onClick={requestClose} disabled={working}>退出并重新加载</Button>
+                ) : (
+                  <Button size="small" onClick={() => void restartAfterTerminalFailure()} disabled={working}>重新开始练习</Button>
+                )}
+              />
             </div>
           ) : state?.phase === 'result_unknown' && state.error ? (
             <div ref={studioStatusRef} className={styles.studioStatus} data-interview-studio-status tabIndex={-1}>
               <Alert className={styles.alert} type="warning" showIcon message={state.error} action={<Button size="small" onClick={retry} disabled={working}>使用原 key 重试</Button>} />
+            </div>
+          ) : state?.error ? (
+            <div className={styles.studioStatus} data-interview-studio-status>
+              <Alert className={styles.alert} type="warning" showIcon message={state.error} />
             </div>
           ) : proposal ? (
             <div className={styles.studioStatus} data-interview-studio-status role="status" aria-live="polite">

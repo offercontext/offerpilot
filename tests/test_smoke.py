@@ -74,11 +74,7 @@ class _MockInterviewAcceptanceModel:
                 "strengths": [{
                     "id": "strength-1",
                     "text": "回答包含具体经历。",
-                    "evidence_refs": [{
-                        "source": "turn",
-                        "path": "/turns/001/answer",
-                        "excerpt": "Python",
-                    }],
+                    "evidence_ids": ["ev_003"],
                 }],
                 "practice_points": [],
                 "follow_up_questions": [],

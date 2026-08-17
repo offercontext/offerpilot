@@ -239,6 +239,16 @@ RECOVERY_POLICIES: Final[dict[str, RecoveryPolicyEntry]] = {
         preserve_idempotency_key=False,
         provider_retry_allowed=False,
     ),
+    'quick_practice_review_not_available': RecoveryPolicyEntry(
+        error_code='quick_practice_review_not_available',
+        http_status=422,
+        disposition='terminal_no_retry',
+        attempt_retention='retained',
+        user_action='none',
+        input_frozen=True,
+        preserve_idempotency_key=False,
+        provider_retry_allowed=False,
+    ),
 }
 
 UNKNOWN_CODE_POLICY: Final[dict[str, object]] = {

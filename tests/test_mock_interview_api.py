@@ -91,11 +91,7 @@ class _BlankFeedbackRepairModel:
                     "strengths": [{
                         "id": "strength-1",
                         "text": "",
-                        "evidence_refs": [{
-                            "source": "turn",
-                            "path": "/turns/001/answer",
-                            "excerpt": "我做过 Python 服务",
-                        }],
+                        "evidence_ids": ["ev_003"],
                     }],
                     "practice_points": [],
                     "follow_up_questions": [],

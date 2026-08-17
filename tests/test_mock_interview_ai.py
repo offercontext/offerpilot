@@ -7,6 +7,7 @@ from offerpilot.ai.mock_interview import (
     SAFE_EMPTY_FEEDBACK,
     MockInterviewContractError,
     MockInterviewUnverifiableError,
+    _provider_evidence_catalog,
     build_mock_interview_evidence_catalog,
     generate_feedback,
     generate_question,
@@ -26,6 +27,10 @@ def _snapshot():
 
 def _turns():
     return [{"turn_no": 1, "question": "介绍项目", "answer": "我做过 Python 服务"}]
+
+
+def _catalog():
+    return _provider_evidence_catalog(_snapshot(), _turns())
 
 
 class _QuestionRepairModel:
@@ -82,7 +87,7 @@ def test_structural_evidence_error_is_repaired_once():
         _valid_question(),
     ])
 
-    question = generate_question(model, _snapshot(), _turns())
+    question, diagnostic = generate_question(model, _snapshot(), _turns())
 
     assert question == {
         "question": "请分享一次经历？",
@@ -92,9 +97,10 @@ def test_structural_evidence_error_is_repaired_once():
             "excerpt": "我做过 Python 服务",
         }],
     }
+    assert diagnostic["repair_count"] == 1
     assert model.calls == 2
     repair_prompt = model.messages[1][0].content
-    assert "evidence_ref_field_type" in repair_prompt
+    assert "evidence_id_not_string" in repair_prompt
     assert "evidence_ids" in repair_prompt
     assert "raw model output" not in repair_prompt
 
@@ -108,16 +114,16 @@ def test_repeated_structural_evidence_error_is_terminal():
     with pytest.raises(MockInterviewUnverifiableError) as error:
         generate_question(model, _snapshot(), _turns())
 
-    assert error.value.category == "evidence_ref_field_type"
+    assert error.value.category == "evidence_id_not_string"
     assert error.value.diagnostic["failure_categories"] == [
-        "evidence_ref_field_type", "evidence_ref_field_type"
+        "evidence_id_not_string", "evidence_id_not_string"
     ]
     assert model.calls == 2
 
 
 def test_semantic_evidence_failures_never_enter_format_repair():
     assert not should_retry_mock_interview_format("unknown_evidence_ref")
-    assert not should_retry_mock_interview_format("excerpt_mismatch")
+    assert not should_retry_mock_interview_format("duplicate_evidence_ref")
     assert not should_retry_mock_interview_format("limit_exceeded")
     assert not should_retry_mock_interview_format("missing_evidence_ref")
 
@@ -145,7 +151,7 @@ def test_feedback_structural_evidence_error_is_repaired_once():
 
     proposal, diagnostic = generate_feedback(model, _snapshot(), _turns())
 
-    assert proposal == _feedback()
+    assert proposal == _persisted_feedback()
     assert diagnostic["repair_count"] == 1
     assert model.calls == 2
 
@@ -154,11 +160,7 @@ def test_feedback_blank_value_is_repaired_once():
     blank = _feedback(strengths=[{
         "id": "strength-1",
         "text": "",
-        "evidence_refs": [{
-            "source": "turn",
-            "path": "/turns/001/answer",
-            "excerpt": "我做过 Python 服务",
-        }],
+        "evidence_ids": ["ev_003"],
     }])
     model = _QuestionRepairModel([
         json.dumps(blank, ensure_ascii=False),
@@ -167,7 +169,7 @@ def test_feedback_blank_value_is_repaired_once():
 
     proposal, diagnostic = generate_feedback(model, _snapshot(), _turns())
 
-    assert proposal == _feedback()
+    assert proposal == _persisted_feedback()
     assert diagnostic["repair_attempted"] is True
     assert diagnostic["repair_count"] == 1
     assert model.calls == 2
@@ -180,11 +182,7 @@ def test_feedback_repeated_blank_value_is_terminal_after_one_repair():
     blank = _feedback(strengths=[{
         "id": "strength-1",
         "text": "",
-        "evidence_refs": [{
-            "source": "turn",
-            "path": "/turns/001/answer",
-            "excerpt": "我做过 Python 服务",
-        }],
+        "evidence_ids": ["ev_003"],
     }])
     model = _QuestionRepairModel([
         json.dumps(blank, ensure_ascii=False),
@@ -210,8 +208,8 @@ def test_feedback_text_prompt_declares_complete_contract():
     prompt = model.messages[0][0].content
     for field in ("schema_version", "proposal_status", "strengths", "practice_points", "follow_up_questions", "next_practice_steps"):
         assert field in prompt
-    assert "evidence_refs" in prompt
-    assert "source" in prompt
+    assert "evidence_ids" in prompt
+    assert "evidence_catalog" in prompt
     assert "safe_empty" in prompt
     assert "normal" in prompt
 
@@ -244,9 +242,22 @@ def test_feedback_native_schema_declares_complete_contract():
     }
     item_schema = schema["properties"]["strengths"]["items"]
     assert item_schema["additionalProperties"] is False
-    assert set(item_schema["required"]) == {"id", "text", "evidence_refs"}
-    ref_schema = item_schema["properties"]["evidence_refs"]["items"]
-    assert set(ref_schema["required"]) == {"source", "path", "excerpt"}
+    assert set(item_schema["required"]) == {"id", "text", "evidence_ids"}
+    id_schema = item_schema["properties"]["evidence_ids"]
+    assert id_schema["type"] == "array"
+    assert id_schema["maxItems"] == 4
+
+
+def test_feedback_provider_payload_exposes_id_catalog_only():
+    model = _QuestionRepairModel([json.dumps(_feedback(), ensure_ascii=False)])
+
+    generate_feedback(model, _snapshot(), _turns())
+
+    payload = json.loads(model.messages[0][1].content)
+    assert [entry["id"] for entry in payload["evidence_catalog"]] == [
+        "ev_001", "ev_002", "ev_003"
+    ]
+    assert "snapshot" not in payload
 
 
 def test_feedback_repeated_structural_failure_is_terminal():
@@ -266,11 +277,7 @@ def test_missing_turn_evidence_is_repaired_once_when_second_response_adds_turn_r
         strengths=[{
             "id": "s1",
             "text": marker,
-            "evidence_refs": [{
-                "source": "jd",
-                "path": "/jd/text",
-                "excerpt": _snapshot()["jd"]["text"],
-            }],
+            "evidence_ids": ["ev_001"],
         }]
     )
     model = _QuestionRepairModel([
@@ -280,7 +287,7 @@ def test_missing_turn_evidence_is_repaired_once_when_second_response_adds_turn_r
 
     proposal, diagnostic = generate_feedback(model, _snapshot(), _turns())
 
-    assert proposal == _feedback()
+    assert proposal == _persisted_feedback()
     assert diagnostic["repair_count"] == 1
     assert model.calls == 2
     repair_messages = model.messages[1]
@@ -295,22 +302,14 @@ def test_repaired_missing_turn_evidence_with_forged_turn_reference_fails():
         strengths=[{
             "id": "s1",
             "text": "JD-only claim",
-            "evidence_refs": [{
-                "source": "jd",
-                "path": "/jd/text",
-                "excerpt": _snapshot()["jd"]["text"],
-            }],
+            "evidence_ids": ["ev_001"],
         }]
     )
     second = _feedback(
         strengths=[{
             "id": "s1",
             "text": "forged turn claim",
-            "evidence_refs": [{
-                "source": "turn",
-                "path": "/turns/999/answer",
-                "excerpt": "forged answer",
-            }],
+            "evidence_ids": ["ev_999"],
         }]
     )
     model = _QuestionRepairModel([
@@ -330,11 +329,7 @@ def test_semantic_feedback_reference_failure_is_not_repaired():
         strengths=[{
             "id": "s1",
             "text": "forged turn claim",
-            "evidence_refs": [{
-                "source": "turn",
-                "path": "/turns/999/answer",
-                "excerpt": "forged answer",
-            }],
+            "evidence_ids": ["ev_999"],
         }]
     )
     model = _QuestionRepairModel([json.dumps(forged, ensure_ascii=False)])
@@ -347,27 +342,14 @@ def test_semantic_feedback_reference_failure_is_not_repaired():
 
 
 @pytest.mark.parametrize(
-    ("reference", "category"),
+    ("evidence_ids", "category"),
     [
-        (
-            {"source": "attacker", "path": "/x", "excerpt": "forged"},
-            "unknown_evidence_ref",
-        ),
-        (
-            {"source": "jd", "path": "/jd/text", "excerpt": "not in jd"},
-            "excerpt_mismatch",
-        ),
-        (
-            {
-                "source": "resume",
-                "path": "/resume/content_json/missing",
-                "excerpt": "forged",
-            },
-            "unknown_evidence_ref",
-        ),
+        (["ev_999"], "unknown_evidence_ref"),
+        (["ev_003", "ev_003"], "duplicate_evidence_ref"),
+        (["ev_001"] * 5, "limit_exceeded"),
     ],
 )
-def test_invalid_feedback_reference_without_turn_is_not_repaired(reference, category):
+def test_invalid_feedback_evidence_id_without_turn_is_not_repaired(evidence_ids, category):
     model = _QuestionRepairModel(
         [
             json.dumps(
@@ -376,7 +358,7 @@ def test_invalid_feedback_reference_without_turn_is_not_repaired(reference, cate
                         {
                             "id": "s1",
                             "text": "invalid reference",
-                            "evidence_refs": [reference],
+                            "evidence_ids": evidence_ids,
                         }
                     ]
                 ),
@@ -402,7 +384,7 @@ def test_question_evidence_id_shape_failures_have_stable_category(evidence_id):
     with pytest.raises(MockInterviewUnverifiableError) as error:
         generate_question(model, _snapshot(), _turns())
 
-    assert error.value.category == "evidence_ref_field_type"
+    assert error.value.category == "evidence_id_not_string"
     assert model.calls == 2
 
 
@@ -440,7 +422,7 @@ def test_question_provider_uses_opaque_evidence_ids_and_server_expands_exact_ref
         '{"question":"请说明你如何验证 Python 服务？","evidence_ids":["ev_003"]}'
     ])
 
-    question = generate_question(model, _snapshot(), _turns())
+    question, _ = generate_question(model, _snapshot(), _turns())
 
     assert question == {
         "question": "请说明你如何验证 Python 服务？",
@@ -514,7 +496,7 @@ def test_follow_up_prompt_and_result_are_grounded_in_the_latest_answer():
         '{"question":"你刚才提到 Python 服务，如何处理超时与部分失败？","evidence_ids":["ev_003"]}'
     ])
 
-    result = generate_question(model, _snapshot(), _turns())
+    result, _ = generate_question(model, _snapshot(), _turns())
 
     assert result["question"] == "你刚才提到 Python 服务，如何处理超时与部分失败？"
     prompt = model.messages[0][0].content
@@ -528,7 +510,7 @@ def test_opening_question_does_not_require_turn_evidence():
         '{"question":"请介绍最相关的 Python 项目。","evidence_ids":["ev_001"]}'
     ])
 
-    result = generate_question(model, _snapshot(), [])
+    result, _ = generate_question(model, _snapshot(), [])
 
     assert result["evidence_refs"] == [{
         "source": "jd",
@@ -587,7 +569,30 @@ def _feedback(**overrides):
             {
                 "id": "s1",
                 "text": "回答引用了实际项目",
-                "evidence_refs": [{"source": "turn", "path": "/turns/001/answer", "excerpt": "我做过 Python 服务"}],
+                "evidence_ids": ["ev_003"],
+            }
+        ],
+        "practice_points": [],
+        "follow_up_questions": [],
+        "next_practice_steps": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _persisted_feedback(**overrides):
+    value = {
+        "schema_version": "mock-interview-feedback-v1",
+        "proposal_status": "normal",
+        "strengths": [
+            {
+                "id": "s1",
+                "text": "回答引用了实际项目",
+                "evidence_refs": [{
+                    "source": "turn",
+                    "path": "/turns/001/answer",
+                    "excerpt": "我做过 Python 服务",
+                }],
             }
         ],
         "practice_points": [],
@@ -609,42 +614,63 @@ def test_feedback_contract_rejects_nonfinite_extra_blank_and_over_limit_values()
     with pytest.raises(MockInterviewContractError, match="invalid_json"):
         parse_mock_interview_json('{"value":NaN}')
     with pytest.raises(MockInterviewContractError, match="unexpected_field"):
-        validate_feedback({**_feedback(), "extra": 1}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "extra": 1}, _catalog())
     with pytest.raises(MockInterviewContractError, match="blank_value"):
-        validate_feedback({**_feedback(), "strengths": [{"id": "s1", "text": " ", "evidence_refs": []}]}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "strengths": [{"id": "s1", "text": " ", "evidence_ids": ["ev_003"]}]}, _catalog())
     with pytest.raises(MockInterviewContractError, match="limit_exceeded"):
-        validate_feedback({**_feedback(), "practice_points": [_feedback()["strengths"][0]] * 9}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "practice_points": [_feedback()["strengths"][0]] * 9}, _catalog())
+
+
+def test_validate_feedback_expands_ids_into_persisted_references():
+    persisted = validate_feedback(_feedback(), _catalog())
+    assert persisted == _persisted_feedback()
 
 
 def test_strengths_and_practice_points_require_turn_answer_evidence():
-    item = {"id": "s1", "text": "岗位要求 Python", "evidence_refs": [{"source": "jd", "path": "/jd/text", "excerpt": "需要 Python"}]}
+    item = {"id": "s1", "text": "岗位要求 Python", "evidence_ids": ["ev_001"]}
     with pytest.raises(MockInterviewContractError, match="missing_turn_evidence"):
-        validate_feedback({**_feedback(), "strengths": [item]}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "strengths": [item]}, _catalog())
 
 
 def test_follow_up_fixed_question_requires_versioned_id_and_exact_text():
-    fixed = {"id": "free", "text": "您希望进一步澄清哪一部分？", "evidence_refs": []}
+    fixed = {"id": "free", "text": "您希望进一步澄清哪一部分？", "evidence_ids": []}
     with pytest.raises(MockInterviewContractError, match="fixed_question"):
-        validate_feedback({**_feedback(), "follow_up_questions": [fixed]}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "follow_up_questions": [fixed]}, _catalog())
 
 
 def test_follow_up_context_question_requires_evidence():
-    item = {"id": "q1", "text": "你在 Python 项目中做了什么？", "evidence_refs": []}
+    item = {"id": "q1", "text": "你在 Python 项目中做了什么？", "evidence_ids": []}
     with pytest.raises(MockInterviewContractError, match="evidence"):
-        validate_feedback({**_feedback(), "follow_up_questions": [item]}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "follow_up_questions": [item]}, _catalog())
 
 
 def test_next_practice_step_requires_turn_and_optional_source_refs():
-    item = {"id": "n1", "text": "复习 Python", "evidence_refs": [{"source": "jd", "path": "/jd/text", "excerpt": "需要 Python"}]}
+    item = {"id": "n1", "text": "复习 Python", "evidence_ids": ["ev_001"]}
     with pytest.raises(MockInterviewContractError, match="missing_turn_evidence"):
-        validate_feedback({**_feedback(), "next_practice_steps": [item]}, _snapshot(), _turns())
+        validate_feedback({**_feedback(), "next_practice_steps": [item]}, _catalog())
 
 
-def test_resume_pointer_and_excerpt_must_resolve_to_frozen_string_leaf():
-    item = {"id": "s1", "text": "回答引用了实际项目", "evidence_refs": [{"source": "resume", "path": "/resume/content_json/skills/0", "excerpt": "Go"}]}
-    item["evidence_refs"].append({"source": "turn", "path": "/turns/001/answer", "excerpt": "Python"})
-    with pytest.raises(MockInterviewContractError, match="excerpt_mismatch"):
-        validate_feedback({**_feedback(), "strengths": [item]}, _snapshot(), _turns())
+def test_feedback_evidence_must_resolve_within_the_frozen_catalog():
+    with pytest.raises(MockInterviewContractError, match="duplicate_evidence_ref"):
+        validate_feedback(
+            {**_feedback(), "strengths": [{"id": "s1", "text": "回答引用了实际项目", "evidence_ids": ["ev_003", "ev_003"]}]},
+            _catalog(),
+        )
+    with pytest.raises(MockInterviewContractError, match="unknown_evidence_ref"):
+        validate_feedback(
+            {**_feedback(), "strengths": [{"id": "s1", "text": "回答引用了实际项目", "evidence_ids": ["ev_004"]}]},
+            _catalog(),
+        )
+
+
+def test_feedback_rejects_legacy_copied_reference_shape():
+    legacy = {
+        "id": "s1",
+        "text": "回答引用了实际项目",
+        "evidence_refs": [{"source": "turn", "path": "/turns/001/answer", "excerpt": "我做过 Python 服务"}],
+    }
+    with pytest.raises(MockInterviewContractError, match="item_shape"):
+        validate_feedback({**_feedback(), "strengths": [legacy]}, _catalog())
 
 
 def test_safe_empty_has_exactly_four_empty_arrays():

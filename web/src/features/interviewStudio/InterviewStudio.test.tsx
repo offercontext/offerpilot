@@ -325,6 +325,64 @@ describe('InterviewStudio continuous voice integration', () => {
     expect(serviceSpies.finish).toHaveBeenCalledTimes(1);
   });
 
+  it('treats provider_error as a same-key reconciliation, never a restart', async () => {
+    serviceSpies.nextQuestion.mockRejectedValueOnce({
+      response: { status: 502, data: { error_code: 'mock_interview_provider_error', attempt_id: 41 } },
+    });
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(
+        <InterviewStudio
+          context={{ kind: 'application_event', applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' }}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+    await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+    await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(host!.textContent).toContain('下一题结果待确认，已保留原 question key');
+    expect(host!.textContent).toContain('使用原 key 重试');
+    expect(host!.textContent).not.toContain('重新开始练习');
+    expect(serviceSpies.discard).not.toHaveBeenCalled();
+  });
+
+  it('treats idempotency conflicts as a restart with fresh keys, not a same-key retry', async () => {
+    serviceSpies.nextQuestion.mockRejectedValueOnce({
+      response: { status: 409, data: { error_code: 'mock_interview_turn_idempotency_conflict', attempt_id: 41 } },
+    });
+    const context = { kind: 'application_event' as const, applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: '需要排障与回滚能力。' };
+    await act(async () => {
+      root = createRoot(host = document.createElement('div'));
+      document.body.appendChild(host);
+      root.render(<InterviewStudio context={context} onClose={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    const firstStart = serviceSpies.start.mock.calls[0]?.[0] as { attemptKey: string; questionKey: string };
+
+    await act(async () => { button('开启连续语音模式').click(); await Promise.resolve(); });
+    await act(async () => { button('结束本轮录音').click(); await Promise.resolve(); });
+    await act(async () => { button('确认录音文字').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(host!.textContent).not.toContain('使用原 key 重试');
+    expect(host!.textContent).toContain('重新开始练习');
+    await act(async () => { button('重新开始练习').click(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(serviceSpies.discard).toHaveBeenCalledWith({ context: { kind: 'application_event', applicationId: 7, eventId: 8 }, attemptId: 41 });
+    const restarted = serviceSpies.start.mock.calls[1]?.[0] as { attemptKey: string; questionKey: string };
+    expect(restarted.attemptKey).not.toBe(firstStart.attemptKey);
+    expect(restarted.questionKey).not.toBe(firstStart.questionKey);
+  });
+
   it('restarts a terminally unverifiable question with fresh keys instead of retrying the failed key', async () => {
     serviceSpies.nextQuestion.mockRejectedValueOnce({
       response: {
@@ -571,7 +629,9 @@ describe('InterviewStudio continuous voice integration', () => {
   });
 
   it('persists an initial result-unknown attempt key until the user retries it', async () => {
-    serviceSpies.start.mockRejectedValueOnce({ response: { status: 502 } });
+    serviceSpies.start.mockRejectedValueOnce({
+      response: { status: 502, data: { error_code: 'mock_interview_provider_error' } },
+    });
     const context = { kind: 'application_event' as const, applicationId: 7, eventId: 8, resumeId: 9, jdVersionId: 10, jdText: 'Debugging and rollback.', companyName: 'Example', positionName: 'Platform Engineer' };
     await act(async () => {
       root = createRoot(host = document.createElement('div'));

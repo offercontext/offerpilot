@@ -224,6 +224,16 @@ export const RECOVERY_POLICIES: Readonly<Record<string, RecoveryPolicyEntry>> = 
     provider_retry_allowed: false,
     user_action: 'restart_new_attempt',
   },
+  quick_practice_review_not_available: {
+    error_code: 'quick_practice_review_not_available',
+    http_status: 422,
+    disposition: 'terminal_no_retry',
+    attempt_retention: 'retained',
+    input_frozen: true,
+    preserve_idempotency_key: false,
+    provider_retry_allowed: false,
+    user_action: 'none',
+  },
 };
 
 export const UNKNOWN_CODE_POLICY: FallbackRecoveryPolicy = {
