@@ -243,13 +243,23 @@ def _canonical_value(
     active: set[int],
     depth: int,
     nodes: list[int],
+    budget_check: Callable[[], None] | None,
 ) -> object:
+    if budget_check is not None:
+        budget_check()
     nodes[0] += 1
     if nodes[0] > 100_000 or depth > 128:
         raise JournalEventValidationError("journal value exceeds canonicalization budget")
     if type(value) is str:
-        if len(value.encode("utf-8")) > _MAX_CANONICAL_STRING_BYTES:
-            raise JournalEventValidationError("journal string exceeds canonicalization budget")
+        encoded_bytes = 0
+        for offset in range(0, len(value), 4096):
+            if budget_check is not None:
+                budget_check()
+            encoded_bytes += len(value[offset : offset + 4096].encode("utf-8"))
+            if encoded_bytes > _MAX_CANONICAL_STRING_BYTES:
+                raise JournalEventValidationError(
+                    "journal string exceeds canonicalization budget"
+                )
         return value
     if value is None or type(value) in {bool, int}:
         return value
@@ -266,27 +276,62 @@ def _canonical_value(
     try:
         if type(value) is dict:
             object_value = cast(dict[object, object], value)
-            if any(type(key) is not str for key in object_value):
-                raise JournalEventValidationError("journal JSON object keys must be plain strings")
+            for key in object_value:
+                if budget_check is not None:
+                    budget_check()
+                if type(key) is not str:
+                    raise JournalEventValidationError(
+                        "journal JSON object keys must be plain strings"
+                    )
             string_object = cast(dict[str, object], object_value)
             result: dict[str, object] = {}
             for key in sorted(string_object):
                 result[key] = _canonical_value(
-                    string_object[key], active=active, depth=depth + 1, nodes=nodes
+                    string_object[key],
+                    active=active,
+                    depth=depth + 1,
+                    nodes=nodes,
+                    budget_check=budget_check,
                 )
             return result
         sequence_value = cast(list[object] | tuple[object, ...], value)
         return [
-            _canonical_value(item, active=active, depth=depth + 1, nodes=nodes)
+            _canonical_value(
+                item,
+                active=active,
+                depth=depth + 1,
+                nodes=nodes,
+                budget_check=budget_check,
+            )
             for item in sequence_value
         ]
     finally:
         active.remove(identity)
 
 
-def canonical_json(value: object) -> str:
-    normalized = _canonical_value(value, active=set(), depth=0, nodes=[0])
-    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def canonical_json(
+    value: object,
+    *,
+    budget_check: Callable[[], None] | None = None,
+) -> str:
+    normalized = _canonical_value(
+        value,
+        active=set(),
+        depth=0,
+        nodes=[0],
+        budget_check=budget_check,
+    )
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    chunks: list[str] = []
+    for chunk in encoder.iterencode(normalized):
+        if budget_check is not None:
+            budget_check()
+        chunks.append(chunk)
+    return "".join(chunks)
 
 
 def _canonical_uuid(value: object) -> str | None:
@@ -299,17 +344,48 @@ def _canonical_uuid(value: object) -> str | None:
     return parsed if parsed == value else None
 
 
-def _hmac_fingerprint(key: JournalKeyDomain, domain: bytes, value: object) -> str:
-    payload = canonical_json(value).encode("utf-8")
-    return hmac.new(key.secret, domain + payload, hashlib.sha256).hexdigest()
+def _hmac_fingerprint(
+    key: JournalKeyDomain,
+    domain: bytes,
+    value: object,
+    *,
+    budget_check: Callable[[], None] | None = None,
+) -> str:
+    payload = canonical_json(value, budget_check=budget_check)
+    digest = hmac.new(key.secret, domain, hashlib.sha256)
+    for offset in range(0, len(payload), 4096):
+        if budget_check is not None:
+            budget_check()
+        digest.update(payload[offset : offset + 4096].encode("utf-8"))
+    return digest.hexdigest()
 
 
-def pending_identity_fingerprint(key: JournalKeyDomain, value: object) -> str:
-    return _hmac_fingerprint(key, b"offerpilot-agent-pending-v1\0", value)
+def pending_identity_fingerprint(
+    key: JournalKeyDomain,
+    value: object,
+    *,
+    budget_check: Callable[[], None] | None = None,
+) -> str:
+    return _hmac_fingerprint(
+        key,
+        b"offerpilot-agent-pending-v1\0",
+        value,
+        budget_check=budget_check,
+    )
 
 
-def model_id_fingerprint(key: JournalKeyDomain, value: str) -> str:
-    return _hmac_fingerprint(key, b"offerpilot-agent-model-v1\0", value)
+def model_id_fingerprint(
+    key: JournalKeyDomain,
+    value: str,
+    *,
+    budget_check: Callable[[], None] | None = None,
+) -> str:
+    return _hmac_fingerprint(
+        key,
+        b"offerpilot-agent-model-v1\0",
+        value,
+        budget_check=budget_check,
+    )
 
 
 def normalize_context_identity(
@@ -318,7 +394,10 @@ def normalize_context_identity(
     *,
     application_visible: Callable[[int], bool],
     key: JournalKeyDomain,
+    budget_check: Callable[[], None] | None = None,
 ) -> NormalizedContextIdentity:
+    if budget_check is not None:
+        budget_check()
     normalized_type = context_type.strip().lower() if type(context_type) is str else "unknown"
     if normalized_type not in _CONTEXT_TYPES:
         return NormalizedContextIdentity(
@@ -328,6 +407,7 @@ def normalize_context_identity(
                 key,
                 b"offerpilot-agent-context-v1\0",
                 [normalized_type, context_ref if type(context_ref) is str else None],
+                budget_check=budget_check,
             ),
         )
     if normalized_type in {"workspace", "global"}:
@@ -336,8 +416,12 @@ def normalize_context_identity(
         parsed: int | None = None
         if type(context_ref) is str and re.fullmatch(r"[1-9][0-9]{0,17}", context_ref):
             parsed = int(context_ref)
-        if parsed is not None and application_visible(parsed):
-            return NormalizedContextIdentity("application", parsed, None)
+        if parsed is not None:
+            visible = application_visible(parsed)
+            if budget_check is not None:
+                budget_check()
+            if visible:
+                return NormalizedContextIdentity("application", parsed, None)
         return NormalizedContextIdentity("application", None, None)
     return NormalizedContextIdentity(
         "mode",
@@ -346,6 +430,7 @@ def normalize_context_identity(
             key,
             b"offerpilot-agent-context-v1\0",
             ["mode", context_ref if type(context_ref) is str else None],
+            budget_check=budget_check,
         ),
     )
 
@@ -371,11 +456,23 @@ def normalize_source_reference(source_type: object, source_id: object) -> tuple[
     return None, None
 
 
-def _ordered_digest(value: object) -> str:
-    return "sha256:" + hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+def _ordered_digest(
+    value: object,
+    *,
+    budget_check: Callable[[], None] | None = None,
+) -> str:
+    return "sha256:" + hashlib.sha256(
+        canonical_json(value, budget_check=budget_check).encode("utf-8")
+    ).hexdigest()
 
 
-def _normalize_manifest_ref(value: Mapping[str, object]) -> dict[str, object]:
+def _normalize_manifest_ref(
+    value: Mapping[str, object],
+    *,
+    budget_check: Callable[[], None] | None = None,
+) -> dict[str, object]:
+    if budget_check is not None:
+        budget_check()
     if type(value) is not dict or not set(value).issubset({"id", "revision", "kind", "path_category"}):
         raise JournalEventValidationError("invalid manifest reference shape")
     result: dict[str, object] = {}
@@ -405,53 +502,74 @@ def prepare_context_snapshot(
     manifest: ContextManifestInput,
     *,
     key: JournalKeyDomain,
+    budget_check: Callable[[], None] | None = None,
 ) -> PreparedSnapshot:
     messages = manifest.conversation_message_ids
-    if any(type(item) is not int or item <= 0 for item in messages):
-        raise JournalEventValidationError("invalid conversation message id")
+    for item in messages:
+        if budget_check is not None:
+            budget_check()
+        if type(item) is not int or item <= 0:
+            raise JournalEventValidationError("invalid conversation message id")
     tools = manifest.tool_names
-    if any(type(item) is not str or _SAFE_NAME.fullmatch(item) is None for item in tools):
-        raise JournalEventValidationError("invalid tool name")
-    attachments = [_normalize_manifest_ref(item) for item in manifest.attachment_refs]
-    sources = [_normalize_manifest_ref(item) for item in manifest.domain_source_refs]
+    for item in tools:
+        if budget_check is not None:
+            budget_check()
+        if type(item) is not str or _SAFE_NAME.fullmatch(item) is None:
+            raise JournalEventValidationError("invalid tool name")
+    attachments = [
+        _normalize_manifest_ref(item, budget_check=budget_check)
+        for item in manifest.attachment_refs
+    ]
+    sources = [
+        _normalize_manifest_ref(item, budget_check=budget_check)
+        for item in manifest.domain_source_refs
+    ]
     manifest_payload = {
         "manifest_schema_version": 1,
         "conversation": {
             "message_count": len(messages),
             "first_message_id": messages[0] if messages else None,
             "last_message_id": messages[-1] if messages else None,
-            "ordered_ids_digest": _ordered_digest(messages),
+            "ordered_ids_digest": _ordered_digest(messages, budget_check=budget_check),
             "included_recent_message_ids": list(messages[-16:]),
         },
         "tools": {
             "count": len(tools),
-            "ordered_names_digest": _ordered_digest(tools),
+            "ordered_names_digest": _ordered_digest(tools, budget_check=budget_check),
             "included_names": list(tools[:32]),
         },
         "attachments": {
             "count": len(attachments),
-            "ordered_refs_digest": _ordered_digest(attachments),
+            "ordered_refs_digest": _ordered_digest(
+                attachments,
+                budget_check=budget_check,
+            ),
             "included_refs": attachments[:16],
         },
         "domain_sources": {
             "count": len(sources),
-            "ordered_refs_digest": _ordered_digest(sources),
+            "ordered_refs_digest": _ordered_digest(sources, budget_check=budget_check),
             "included_refs": sources[:32],
         },
     }
-    manifest_json = canonical_json(manifest_payload)
+    manifest_json = canonical_json(manifest_payload, budget_check=budget_check)
     if len(manifest_json.encode("utf-8")) > 16_384:
         raise JournalEventValidationError("manifest exceeds 16 KiB")
-    logical_json = canonical_json(logical_input).encode("utf-8")
+    logical_json = canonical_json(logical_input, budget_check=budget_check)
+    logical_digest = hmac.new(
+        key.secret,
+        b"offerpilot-agent-input-v1\0",
+        hashlib.sha256,
+    )
+    for offset in range(0, len(logical_json), 4096):
+        if budget_check is not None:
+            budget_check()
+        logical_digest.update(logical_json[offset : offset + 4096].encode("utf-8"))
     return PreparedSnapshot(
         manifest_schema_version=1,
         manifest_json=manifest_json,
         manifest_digest=hashlib.sha256(manifest_json.encode("utf-8")).hexdigest(),
-        logical_input_fingerprint=hmac.new(
-            key.secret,
-            b"offerpilot-agent-input-v1\0" + logical_json,
-            hashlib.sha256,
-        ).hexdigest(),
+        logical_input_fingerprint=logical_digest.hexdigest(),
         fingerprint_key_id=key.key_id,
     )
 
@@ -597,7 +715,10 @@ def prepare_event(
     source_ref_type: str | None = None,
     source_ref_id: object = None,
     fingerprint_key_id: str | None = None,
+    budget_check: Callable[[], None] | None = None,
 ) -> EventDraft:
+    if budget_check is not None:
+        budget_check()
     if event_type not in _FACT_KEYS or type(facts) is not dict:
         raise JournalEventValidationError("unsupported journal event type")
     if set(facts) != _FACT_KEYS[event_type] or set(facts) & _FORBIDDEN_KEYS:
@@ -606,8 +727,12 @@ def prepare_event(
     if type(telemetry) is not dict or not set(telemetry).issubset(_TELEMETRY_KEYS):
         raise JournalEventValidationError("journal event contains unknown telemetry")
     for field, value in facts.items():
+        if budget_check is not None:
+            budget_check()
         _validate_fact_value(event_type, field, value)
     for value in telemetry.values():
+        if budget_check is not None:
+            budget_check()
         if type(value) not in {int, float}:
             raise JournalEventValidationError("invalid journal telemetry value")
         numeric_value = cast(int | float, value)
@@ -640,7 +765,7 @@ def prepare_event(
         if normalized_type is None:
             raise JournalEventValidationError("invalid source reference")
     payload = {"facts": facts, "telemetry": telemetry}
-    payload_json = canonical_json(payload)
+    payload_json = canonical_json(payload, budget_check=budget_check)
     if len(payload_json.encode("utf-8")) > 4096:
         raise JournalEventValidationError("event payload exceeds 4 KiB")
     fact_envelope = {
@@ -664,7 +789,9 @@ def prepare_event(
         fingerprint_key_id=fingerprint_key_id,
         payload_json=payload_json,
         payload_digest=hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
-        fact_digest=hashlib.sha256(canonical_json(fact_envelope).encode("utf-8")).hexdigest(),
+        fact_digest=hashlib.sha256(
+            canonical_json(fact_envelope, budget_check=budget_check).encode("utf-8")
+        ).hexdigest(),
         dedupe_key=_dedupe_key(event_type, segment, call, facts),
     )
 

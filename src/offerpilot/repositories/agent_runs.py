@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -106,7 +107,18 @@ class CapturedContext:
     event: AgentEvent
 
 
+@dataclass(frozen=True)
+class RunJournalRows:
+    run: AgentRun | None
+    events: tuple[AgentEvent, ...]
+    snapshots: tuple[AgentContextSnapshot, ...]
+
+
 class JournalConflictError(RuntimeError):
+    pass
+
+
+class JournalDeadlineExceeded(RuntimeError):
     pass
 
 
@@ -126,10 +138,17 @@ class AgentRunRepository:
         self._before_event_insert = before_event_insert
         self._now_factory = now_factory
 
-    def create_run_and_initial_segment(self, command: StartRunCommand) -> StartedRun:
+    def create_run_and_initial_segment(
+        self,
+        command: StartRunCommand,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> StartedRun:
         self._validate_initial_command(command)
         try:
             with self.session_factory() as session, session.begin():
+                self._configure_deadline(session, deadline, clock)
                 self._assert_input_message_belongs(
                     session,
                     command.conversation_id,
@@ -176,14 +195,22 @@ class AgentRunRepository:
                     (self._detach(session, first), self._detach(session, second)),
                 )
         except IntegrityError:
-            replayed = self._replay_created_run(command)
+            replayed = self._replay_created_run(command, deadline=deadline, clock=clock)
             if replayed is not None:
                 return replayed
             raise JournalConflictError("run creation conflicts with persisted journal state") from None
 
-    def attach_input_message(self, run_id: str, message_id: int) -> AgentRun:
+    def attach_input_message(
+        self,
+        run_id: str,
+        message_id: int,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentRun:
         try:
             with self.session_factory() as session, session.begin():
+                self._configure_deadline(session, deadline, clock)
                 run = self._required_run(session, run_id)
                 if run.input_message_id == message_id:
                     return self._detach(session, run)
@@ -208,17 +235,29 @@ class AgentRunRepository:
                     session.refresh(run)
                 return self._detach(session, run)
         except IntegrityError:
-            replayed = self._replay_input_attachment(run_id, message_id)
+            replayed = self._replay_input_attachment(
+                run_id,
+                message_id,
+                deadline=deadline,
+                clock=clock,
+            )
             if replayed is not None:
                 return replayed
             raise JournalConflictError("input message attachment conflicts") from None
 
-    def start_segment(self, command: StartSegmentCommand) -> AgentEvent:
+    def start_segment(
+        self,
+        command: StartSegmentCommand,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentEvent:
         self._validate_event_draft(command.segment_started)
         if command.segment_started.event_type != "segment.started":
             raise JournalConflictError("segment command requires segment.started")
         try:
             with self.session_factory() as session, session.begin():
+                self._configure_deadline(session, deadline, clock)
                 existing = self._existing_event(session, command.run_id, command.segment_started)
                 if existing is not None:
                     return self._detach(session, existing)
@@ -235,12 +274,24 @@ class AgentRunRepository:
                 )
                 return self._detach(session, event)
         except IntegrityError:
-            replayed = self._replay_event(command.run_id, command.segment_started)
+            replayed = self._replay_event(
+                command.run_id,
+                command.segment_started,
+                deadline=deadline,
+                clock=clock,
+            )
             if replayed is not None:
                 return replayed
             raise JournalConflictError("segment start conflicts with persisted journal state") from None
 
-    def append_event(self, run_id: str, draft: EventDraft) -> AgentEvent:
+    def append_event(
+        self,
+        run_id: str,
+        draft: EventDraft,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentEvent:
         self._validate_event_draft(draft)
         is_noop_finish = False
         if draft.event_type == "segment.finished":
@@ -250,6 +301,7 @@ class AgentRunRepository:
             raise JournalConflictError("disposition event requires its atomic repository method")
         try:
             with self.session_factory() as session, session.begin():
+                self._configure_deadline(session, deadline, clock)
                 existing = self._existing_event(session, run_id, draft)
                 if existing is not None:
                     return self._detach(session, existing)
@@ -272,12 +324,24 @@ class AgentRunRepository:
                 event = self._insert_event(session, run_id, draft, self._utc_now())
                 return self._detach(session, event)
         except IntegrityError:
-            replayed = self._replay_event(run_id, draft)
+            replayed = self._replay_event(
+                run_id,
+                draft,
+                deadline=deadline,
+                clock=clock,
+            )
             if replayed is not None:
                 return replayed
             raise JournalConflictError("event conflicts with persisted journal state") from None
 
-    def capture_context(self, run_id: str, command: CaptureContextCommand) -> CapturedContext:
+    def capture_context(
+        self,
+        run_id: str,
+        command: CaptureContextCommand,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> CapturedContext:
         self._validate_snapshot_command(command)
         try:
             event_draft = prepare_event(
@@ -299,6 +363,7 @@ class AgentRunRepository:
             raise JournalConflictError("context event identity is invalid") from None
         try:
             with self.session_factory() as session, session.begin():
+                self._configure_deadline(session, deadline, clock)
                 existing = session.scalar(
                     select(AgentContextSnapshot).where(
                         AgentContextSnapshot.run_id == run_id,
@@ -352,17 +417,29 @@ class AgentRunRepository:
                     self._detach(session, snapshot), self._detach(session, event)
                 )
         except IntegrityError:
-            replayed = self._replay_captured_context(run_id, command, event_draft)
+            replayed = self._replay_captured_context(
+                run_id,
+                command,
+                event_draft,
+                deadline=deadline,
+                clock=clock,
+            )
             if replayed is not None:
                 return replayed
             raise JournalConflictError("context capture conflicts with persisted journal state") from None
 
     def converge_disposition(
-        self, run_id: str, command: DispositionCommand
+        self,
+        run_id: str,
+        command: DispositionCommand,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> tuple[AgentEvent, ...]:
         self._validate_disposition_shape(run_id, command)
         try:
             with self.session_factory() as session, session.begin():
+                self._configure_deadline(session, deadline, clock)
                 existing: list[AgentEvent | None] = [
                     self._existing_event(session, run_id, draft) for draft in command.events
                 ]
@@ -402,13 +479,61 @@ class AgentRunRepository:
                 session.flush()
                 return tuple(self._detach(session, event) for event in created)
         except IntegrityError:
-            replayed = self._replay_disposition(run_id, command)
+            replayed = self._replay_disposition(
+                run_id,
+                command,
+                deadline=deadline,
+                clock=clock,
+            )
             if replayed is not None:
                 return replayed
             raise JournalConflictError("disposition conflicts with persisted journal state") from None
 
-    def find_waiting_run(self, conversation_id: int, tool_call_id: str) -> AgentRun | None:
+    def mark_degraded(
+        self,
+        run_id: str,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentRun:
+        """Latch persisted recording health without changing the business lifecycle."""
+
+        with self.session_factory() as session, session.begin():
+            self._configure_deadline(session, deadline, clock)
+            run = self._required_run(session, run_id)
+            if run.recording_status == "degraded":
+                return self._detach(session, run)
+            now = self._utc_now()
+            result = session.execute(
+                update(AgentRun)
+                .where(
+                    AgentRun.id == run_id,
+                    AgentRun.recording_status == "healthy",
+                )
+                .values(
+                    recording_status="degraded",
+                    recording_error_count=AgentRun.recording_error_count + 1,
+                    updated_at=now,
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.expire(run)
+                if run.recording_status != "degraded":
+                    raise JournalConflictError("recording health transition conflicts")
+            else:
+                session.refresh(run)
+            return self._detach(session, run)
+
+    def find_waiting_run(
+        self,
+        conversation_id: int,
+        tool_call_id: str,
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentRun | None:
         with self.session_factory() as session:
+            self._configure_deadline(session, deadline, clock)
             run = session.scalar(
                 select(AgentRun).where(
                     AgentRun.conversation_id == conversation_id,
@@ -445,6 +570,35 @@ class AgentRunRepository:
             )
             return [self._detach(session, snapshot) for snapshot in snapshots]
 
+    def read_run_journal(self, run_id: str) -> RunJournalRows:
+        """Read one causally consistent diagnostic view from a single Session."""
+
+        with self.session_factory() as session, session.begin():
+            run = session.get(AgentRun, run_id)
+            events = list(
+                session.scalars(
+                    select(AgentEvent)
+                    .where(AgentEvent.run_id == run_id)
+                    .order_by(AgentEvent.seq.asc())
+                )
+            )
+            snapshots = list(
+                session.scalars(
+                    select(AgentContextSnapshot)
+                    .where(AgentContextSnapshot.run_id == run_id)
+                    .order_by(
+                        AgentContextSnapshot.execution_segment_id.asc(),
+                        AgentContextSnapshot.model_step.asc(),
+                        AgentContextSnapshot.snapshot_key.asc(),
+                    )
+                )
+            )
+            return RunJournalRows(
+                None if run is None else self._detach(session, run),
+                tuple(self._detach(session, event) for event in events),
+                tuple(self._detach(session, snapshot) for snapshot in snapshots),
+            )
+
     def count_events(self, run_id: str, dedupe_key: str) -> int:
         with self.session_factory() as session:
             return len(
@@ -457,6 +611,27 @@ class AgentRunRepository:
                     )
                 )
             )
+
+    @staticmethod
+    def _configure_deadline(
+        session: Session,
+        deadline: float | None,
+        clock: Callable[[], float],
+    ) -> None:
+        if deadline is None:
+            session.connection().exec_driver_sql("PRAGMA busy_timeout = 50")
+            return
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise JournalDeadlineExceeded("journal deadline exhausted")
+        connection = session.connection()
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise JournalDeadlineExceeded("journal deadline exhausted")
+        busy_timeout_ms = min(50, max(0, int(remaining * 1000)))
+        connection.exec_driver_sql(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+        if clock() >= deadline:
+            raise JournalDeadlineExceeded("journal deadline exhausted")
 
     @staticmethod
     def _dialect_supports_returning(session: Session) -> bool:
@@ -564,8 +739,15 @@ class AgentRunRepository:
             raise JournalConflictError("event dedupe identity has different stable facts")
         return event
 
-    def _replay_created_run(self, command: StartRunCommand) -> StartedRun | None:
+    def _replay_created_run(
+        self,
+        command: StartRunCommand,
+        *,
+        deadline: float | None,
+        clock: Callable[[], float],
+    ) -> StartedRun | None:
         with self.session_factory() as session:
+            self._configure_deadline(session, deadline, clock)
             run = session.get(AgentRun, command.run_id)
             if run is None:
                 return None
@@ -579,15 +761,31 @@ class AgentRunRepository:
                 (self._detach(session, first), self._detach(session, second)),
             )
 
-    def _replay_input_attachment(self, run_id: str, message_id: int) -> AgentRun | None:
+    def _replay_input_attachment(
+        self,
+        run_id: str,
+        message_id: int,
+        *,
+        deadline: float | None,
+        clock: Callable[[], float],
+    ) -> AgentRun | None:
         with self.session_factory() as session:
+            self._configure_deadline(session, deadline, clock)
             run = session.get(AgentRun, run_id)
             if run is None or run.input_message_id != message_id:
                 return None
             return self._detach(session, run)
 
-    def _replay_event(self, run_id: str, draft: EventDraft) -> AgentEvent | None:
+    def _replay_event(
+        self,
+        run_id: str,
+        draft: EventDraft,
+        *,
+        deadline: float | None,
+        clock: Callable[[], float],
+    ) -> AgentEvent | None:
         with self.session_factory() as session:
+            self._configure_deadline(session, deadline, clock)
             event = self._existing_event(session, run_id, draft)
             return None if event is None else self._detach(session, event)
 
@@ -596,8 +794,12 @@ class AgentRunRepository:
         run_id: str,
         command: CaptureContextCommand,
         event_draft: EventDraft,
+        *,
+        deadline: float | None,
+        clock: Callable[[], float],
     ) -> CapturedContext | None:
         with self.session_factory() as session:
+            self._configure_deadline(session, deadline, clock)
             snapshot = session.scalar(
                 select(AgentContextSnapshot).where(
                     AgentContextSnapshot.run_id == run_id,
@@ -619,8 +821,12 @@ class AgentRunRepository:
         self,
         run_id: str,
         command: DispositionCommand,
+        *,
+        deadline: float | None,
+        clock: Callable[[], float],
     ) -> tuple[AgentEvent, ...] | None:
         with self.session_factory() as session:
+            self._configure_deadline(session, deadline, clock)
             events = [self._existing_event(session, run_id, draft) for draft in command.events]
             if any(event is None for event in events):
                 return None

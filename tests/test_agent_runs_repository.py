@@ -26,6 +26,7 @@ from offerpilot.repositories.agent_runs import (
     CaptureContextCommand,
     DispositionCommand,
     JournalConflictError,
+    JournalDeadlineExceeded,
     StartRunCommand,
     StartSegmentCommand,
 )
@@ -828,6 +829,20 @@ def test_journal_pool_checkout_fails_within_budget(tmp_path: Path) -> None:
     finally:
         held.close()
     assert time.monotonic() - started < 0.25
+
+
+def test_expired_call_deadline_prevents_repository_write(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+
+    with pytest.raises(JournalDeadlineExceeded):
+        repository.append_event(
+            RUN_ID,
+            _assistant_event(602),
+            deadline=1.0,
+            clock=lambda: 1.0,
+        )
+
+    assert repository.count_events(RUN_ID, _assistant_event(602).dedupe_key) == 0
 
 
 def test_context_conflict_does_not_modify_existing_snapshot(tmp_path: Path) -> None:

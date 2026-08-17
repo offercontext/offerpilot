@@ -5,8 +5,10 @@ import hmac
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from offerpilot.agent_runtime.events import (
     ContextManifestInput,
@@ -18,6 +20,14 @@ from offerpilot.agent_runtime.events import (
     prepare_event,
 )
 from offerpilot.agent_runtime.keyring import JournalKeyDomain
+from offerpilot.agent_runtime.journal import (
+    EventInput,
+    NullRunRecorder,
+    RunRecorderFactory,
+    SafeRunRecorder,
+    SuspendedDisposition,
+    TerminalDisposition,
+)
 
 KEY = JournalKeyDomain(
     key_id="11111111-1111-4111-8111-111111111111",
@@ -378,3 +388,411 @@ def test_canonical_json_rejects_str_subclass_keys_without_comparing_them() -> No
     with pytest.raises(JournalEventValidationError):
         canonical_json({EvilKey("a"): 1, EvilKey("b"): 2})
     assert called is False
+
+
+class ManualClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class RecordingJournalRepository:
+    def __init__(self) -> None:
+        self.append_calls = 0
+        self.capture_calls = 0
+        self.create_calls = 0
+        self.converge_calls = 0
+        self.dispositions: list[object] = []
+        self.converge_kwargs: list[dict[str, object]] = []
+        self.create_kwargs: list[dict[str, object]] = []
+        self.mark_degraded_calls = 0
+        self.append_failure: BaseException | None = None
+        self.mark_degraded_failure: Exception | None = None
+        self.create_failure: Exception | None = None
+        self.waiting_run: object | None = None
+
+    def append_event(self, _run_id: str, draft: object, **_kwargs: object) -> object:
+        self.append_calls += 1
+        if self.append_failure is not None:
+            raise self.append_failure
+        return draft
+
+    def capture_context(
+        self, _run_id: str, command: object, **_kwargs: object
+    ) -> object:
+        self.capture_calls += 1
+        return command
+
+    def converge_disposition(
+        self, _run_id: str, command: object, **_kwargs: object
+    ) -> tuple[object, ...]:
+        self.converge_calls += 1
+        self.dispositions.append(command)
+        self.converge_kwargs.append(dict(_kwargs))
+        return tuple(getattr(command, "events"))
+
+    def mark_degraded(self, run_id: str, **_kwargs: object) -> object:
+        self.mark_degraded_calls += 1
+        if self.mark_degraded_failure is not None:
+            raise self.mark_degraded_failure
+        return SimpleNamespace(id=run_id, recording_status="degraded")
+
+    def create_run_and_initial_segment(
+        self, command: object, **_kwargs: object
+    ) -> object:
+        self.create_calls += 1
+        self.create_kwargs.append(dict(_kwargs))
+        if self.create_failure is not None:
+            raise self.create_failure
+        return SimpleNamespace(run=SimpleNamespace(id=getattr(command, "run_id")))
+
+    def find_waiting_run(
+        self,
+        _conversation_id: int,
+        _tool_call_id: str,
+        **_kwargs: object,
+    ) -> object | None:
+        return self.waiting_run
+
+    def start_segment(self, command: object, **_kwargs: object) -> object:
+        return getattr(command, "segment_started")
+
+
+def _route_event() -> EventInput:
+    return EventInput(
+        event_type="route.selected",
+        facts={"route_kind": "model", "route_reason_code": "model_default"},
+    )
+
+
+def _recorder(
+    repository: RecordingJournalRepository,
+    *,
+    clock: ManualClock | None = None,
+    event_preparer: object | None = None,
+) -> SafeRunRecorder:
+    return SafeRunRecorder(
+        repository,  # type: ignore[arg-type]
+        KEY,
+        "77777777-7777-4777-8777-777777777777",
+        SEGMENT_A,
+        clock=clock or ManualClock(),
+        event_preparer=event_preparer,  # type: ignore[arg-type]
+    )
+
+
+def test_segment_budget_includes_preprocessing_and_stops_nonterminal_writes() -> None:
+    clock = ManualClock()
+    repository = RecordingJournalRepository()
+
+    def slow_prepare(value: EventInput, _deadline: float) -> object:
+        clock.advance(0.151)
+        return prepare_event(
+            event_type=value.event_type,
+            execution_segment_id=SEGMENT_A,
+            facts=dict(value.facts),
+        )
+
+    recorder = _recorder(repository, clock=clock, event_preparer=slow_prepare)
+    recorder.append_event(_route_event())
+
+    assert recorder.recording_status == "degraded"
+    assert repository.append_calls == 0
+    assert recorder.diagnostics == ["journal_budget_exhausted"]
+
+
+def test_safe_recorder_does_not_swallow_base_exception() -> None:
+    repository = RecordingJournalRepository()
+    repository.append_failure = KeyboardInterrupt()
+    recorder = _recorder(repository)
+
+    with pytest.raises(KeyboardInterrupt):
+        recorder.append_event(_route_event())
+
+
+def test_safe_recorder_diagnostics_never_include_exception_text_and_latch() -> None:
+    repository = RecordingJournalRepository()
+    repository.append_failure = RuntimeError("private-user-canary")
+    recorder = _recorder(repository)
+
+    recorder.append_event(_route_event())
+    recorder.append_event(_route_event())
+
+    assert recorder.recording_status == "degraded"
+    assert repository.append_calls == 1
+    assert repository.mark_degraded_calls == 1
+    assert "private-user-canary" not in json.dumps(recorder.diagnostics)
+    assert recorder.diagnostics == ["journal_event_write_failed"]
+
+
+def test_sqlite_lock_exhaustion_is_classified_as_budget_exhaustion() -> None:
+    class LockedError(Exception):
+        sqlite_errorcode = 5
+
+    repository = RecordingJournalRepository()
+    repository.append_failure = OperationalError(
+        "private statement",
+        {"private": "params"},
+        LockedError("private lock"),
+    )
+    recorder = _recorder(repository)
+
+    recorder.append_event(_route_event())
+
+    assert recorder.diagnostics == ["journal_budget_exhausted"]
+    assert "private" not in json.dumps(recorder.diagnostics)
+
+
+def test_safe_recorder_captures_context_with_model_identity() -> None:
+    repository = RecordingJournalRepository()
+    recorder = _recorder(repository)
+
+    snapshot_id = recorder.capture_context(
+        {"messages": [1]},
+        ContextManifestInput(
+            conversation_message_ids=(1,),
+            tool_names=("get_application",),
+            attachment_refs=(),
+            domain_source_refs=(),
+        ),
+        snapshot_kind="model_input",
+        model_step=1,
+        model_call_id=CALL_A,
+    )
+
+    assert snapshot_id is not None
+    assert repository.capture_calls == 1
+    assert recorder.recording_status == "healthy"
+
+
+def test_mark_degraded_failure_is_safe_and_does_not_recurse() -> None:
+    repository = RecordingJournalRepository()
+    repository.append_failure = RuntimeError("write canary")
+    repository.mark_degraded_failure = RuntimeError("mark canary")
+    recorder = _recorder(repository)
+
+    recorder.append_event(_route_event())
+
+    assert repository.mark_degraded_calls == 1
+    assert recorder.diagnostics == [
+        "journal_event_write_failed",
+        "journal_mark_degraded_failed",
+    ]
+    assert "canary" not in json.dumps(recorder.diagnostics)
+
+
+@pytest.mark.parametrize("disposition_kind", ["suspended", "terminal"])
+def test_degraded_recorder_attempts_final_convergence_only_once(
+    disposition_kind: str,
+) -> None:
+    repository = RecordingJournalRepository()
+    repository.append_failure = RuntimeError("fail")
+    recorder = _recorder(repository)
+    recorder.append_event(_route_event())
+
+    if disposition_kind == "suspended":
+        command = SuspendedDisposition(
+            tool_call_id="call-1",
+            tool_name="create_application",
+            tool_kind="write",
+            args_shape_digest="sha256:" + "a" * 64,
+            pending_identity_fingerprint="b" * 64,
+        )
+        recorder.suspend(command)
+        recorder.suspend(command)
+    else:
+        command = TerminalDisposition(status="failed", failure_code="provider_error")
+        recorder.finish(command)
+        recorder.finish(command)
+
+    assert repository.converge_calls == 1
+    event_types = [
+        event.event_type for event in getattr(repository.dispositions[0], "events")
+    ]
+    if disposition_kind == "suspended":
+        assert event_types == [
+            "tool.proposed",
+            "approval.requested",
+            "run.waiting_confirmation",
+            "segment.finished",
+        ]
+    else:
+        assert event_types == ["run.failed", "segment.finished"]
+
+
+def test_factory_returns_null_recorder_when_key_is_unavailable() -> None:
+    repository = RecordingJournalRepository()
+    factory = RunRecorderFactory(repository, key=None)  # type: ignore[arg-type]
+
+    recorder = factory.start_run(SimpleNamespace(run_id="unused"))  # type: ignore[arg-type]
+
+    assert isinstance(recorder, NullRunRecorder)
+    assert recorder.diagnostics == ["journal_secret_unavailable"]
+
+
+def test_factory_environment_switch_returns_silent_null_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OFFERPILOT_AGENT_JOURNAL_ENABLED", "false")
+    repository = RecordingJournalRepository()
+    factory = RunRecorderFactory(repository, key=KEY)  # type: ignore[arg-type]
+
+    recorder = factory.start_run(SimpleNamespace(run_id="unused"))  # type: ignore[arg-type]
+
+    assert isinstance(recorder, NullRunRecorder)
+    assert recorder.diagnostics == []
+
+
+def test_factory_run_creation_failure_is_fail_open_and_safely_classified() -> None:
+    repository = RecordingJournalRepository()
+    repository.create_failure = RuntimeError("private-create-canary")
+    factory = RunRecorderFactory(repository, key=KEY)  # type: ignore[arg-type]
+    segment = prepare_event(
+        event_type="segment.started",
+        execution_segment_id=SEGMENT_A,
+        facts={
+            "request_kind": "initial",
+            "transport_mode": "sync",
+            "execution_path": "model_turn",
+            "transport_run_id": None,
+        },
+    )
+
+    recorder = factory.start_run(
+        SimpleNamespace(
+            run_id="77777777-7777-4777-8777-777777777777",
+            fingerprint_key_id=KEY.key_id,
+            segment_started=segment,
+        )  # type: ignore[arg-type]
+    )
+
+    assert isinstance(recorder, NullRunRecorder)
+    assert recorder.diagnostics == ["journal_run_create_failed"]
+    assert "canary" not in json.dumps(recorder.diagnostics)
+
+
+def test_factory_success_returns_safe_recorder_for_initial_segment() -> None:
+    repository = RecordingJournalRepository()
+    clock = ManualClock()
+    factory = RunRecorderFactory(
+        repository,  # type: ignore[arg-type]
+        key=KEY,
+        clock=clock,
+    )
+    segment = prepare_event(
+        event_type="segment.started",
+        execution_segment_id=SEGMENT_A,
+        facts={
+            "request_kind": "initial",
+            "transport_mode": "sync",
+            "execution_path": "model_turn",
+            "transport_run_id": None,
+        },
+    )
+
+    recorder = factory.start_run(
+        SimpleNamespace(
+            run_id="77777777-7777-4777-8777-777777777777",
+            fingerprint_key_id=KEY.key_id,
+            segment_started=segment,
+        )  # type: ignore[arg-type]
+    )
+
+    assert isinstance(recorder, SafeRunRecorder)
+    assert recorder.run_id == "77777777-7777-4777-8777-777777777777"
+    assert recorder.segment_id == SEGMENT_A
+    assert repository.create_kwargs[0]["deadline"] == 0.15
+    assert repository.create_kwargs[0]["clock"] is clock
+
+
+def test_factory_budget_starts_before_deferred_command_preprocessing() -> None:
+    clock = ManualClock()
+    repository = RecordingJournalRepository()
+    factory = RunRecorderFactory(
+        repository,  # type: ignore[arg-type]
+        key=KEY,
+        clock=clock,
+    )
+
+    def slow_builder(_key: JournalKeyDomain, guard: object) -> object:
+        del guard
+        clock.advance(0.151)
+        return SimpleNamespace()
+
+    recorder = factory.start_run(slow_builder)  # type: ignore[arg-type]
+
+    assert isinstance(recorder, NullRunRecorder)
+    assert recorder.diagnostics == ["journal_budget_exhausted"]
+    assert repository.create_calls == 0
+
+
+def test_changed_key_domain_returns_null_recorder_without_raising() -> None:
+    repository = RecordingJournalRepository()
+    repository.waiting_run = SimpleNamespace(
+        id="77777777-7777-4777-8777-777777777777",
+        fingerprint_key_id="99999999-9999-4999-8999-999999999999",
+    )
+    factory = RunRecorderFactory(repository, key=KEY)  # type: ignore[arg-type]
+    segment = prepare_event(
+        event_type="segment.started",
+        execution_segment_id=SEGMENT_B,
+        facts={
+            "request_kind": "confirmation",
+            "transport_mode": "sync",
+            "execution_path": "agent_resume",
+            "transport_run_id": None,
+        },
+    )
+
+    recorder = factory.resume_waiting_run(
+        1,
+        "call-1",
+        SimpleNamespace(
+            run_id="77777777-7777-4777-8777-777777777777",
+            segment_started=segment,
+        ),  # type: ignore[arg-type]
+    )
+
+    assert isinstance(recorder, NullRunRecorder)
+    assert recorder.diagnostics == ["fingerprint_key_domain_changed"]
+
+
+def test_final_disposition_preparation_uses_one_independent_fifty_ms_deadline() -> None:
+    clock = ManualClock()
+    repository = RecordingJournalRepository()
+    deadlines: list[float] = []
+
+    def capture_deadline(value: EventInput, deadline: float) -> object:
+        deadlines.append(deadline)
+        return prepare_event(
+            event_type=value.event_type,
+            execution_segment_id=SEGMENT_A,
+            facts=dict(value.facts),
+        )
+
+    recorder = _recorder(repository, clock=clock, event_preparer=capture_deadline)
+    recorder.finish(TerminalDisposition(status="completed"))
+
+    assert deadlines == [0.05, 0.05]
+    assert repository.converge_calls == 1
+    assert repository.converge_kwargs[0]["deadline"] == 0.05
+    assert repository.converge_kwargs[0]["clock"] is clock
+
+
+def test_canonicalization_invokes_budget_guard_during_collection_traversal() -> None:
+    checks = 0
+
+    def guard() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 8:
+            raise RuntimeError("deadline")
+
+    with pytest.raises(RuntimeError, match="deadline"):
+        canonical_json(list(range(100)), budget_check=guard)
+    assert checks == 8

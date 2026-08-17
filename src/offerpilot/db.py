@@ -820,7 +820,7 @@ def journal_session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
         connect_args={"check_same_thread": False, "timeout": 0.05},
         pool_size=1,
         max_overflow=0,
-        pool_timeout=0.05,
+        pool_timeout=0.0,
     )
 
     @event.listens_for(engine, "connect")

@@ -1,3 +1,6 @@
+from importlib import import_module
+from typing import TYPE_CHECKING
+
 from offerpilot.agent_runtime.keyring import (
     JOURNAL_KEY_FILENAME,
     JournalKeyDomain,
@@ -18,6 +21,25 @@ from offerpilot.agent_runtime.events import (
     prepare_event,
 )
 
+if TYPE_CHECKING:
+    from offerpilot.agent_runtime.journal import (
+        EventInput,
+        NullRunRecorder,
+        NullRunRecorderFactory,
+        RunRecorder,
+        RunRecorderFactory,
+        SafeRunRecorder,
+        StartRunBuilder,
+        StartSegmentBuilder,
+        SuspendedDisposition,
+        TerminalDisposition,
+    )
+    from offerpilot.agent_runtime.trace import (
+        AgentRunTrace,
+        AgentRunTraceNotFound,
+        reconstruct_agent_run,
+    )
+
 __all__ = [
     "JOURNAL_KEY_FILENAME",
     "JournalKeyDomain",
@@ -34,4 +56,38 @@ __all__ = [
     "pending_identity_fingerprint",
     "prepare_context_snapshot",
     "prepare_event",
+    "EventInput",
+    "NullRunRecorder",
+    "NullRunRecorderFactory",
+    "RunRecorder",
+    "RunRecorderFactory",
+    "SafeRunRecorder",
+    "StartRunBuilder",
+    "StartSegmentBuilder",
+    "SuspendedDisposition",
+    "TerminalDisposition",
+    "AgentRunTrace",
+    "AgentRunTraceNotFound",
+    "reconstruct_agent_run",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name in {
+        "EventInput",
+        "NullRunRecorder",
+        "NullRunRecorderFactory",
+        "RunRecorder",
+        "RunRecorderFactory",
+        "SafeRunRecorder",
+        "StartRunBuilder",
+        "StartSegmentBuilder",
+        "SuspendedDisposition",
+        "TerminalDisposition",
+    }:
+        journal = import_module("offerpilot.agent_runtime.journal")
+        return getattr(journal, name)
+    if name in {"AgentRunTrace", "AgentRunTraceNotFound", "reconstruct_agent_run"}:
+        trace = import_module("offerpilot.agent_runtime.trace")
+        return getattr(trace, name)
+    raise AttributeError(name)
