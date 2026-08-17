@@ -356,7 +356,7 @@ Key file 生成或原子持久化失败时：
 - 禁止使用仅存在内存的临时 Secret 继续写 Journal；
 - 普通配置文件整体不可写时仍沿用现有设置 API 的失败语义，Journal 不伪造设置保存成功。
 
-`GET /api/settings`、`GET /api/settings/backup` 和 `GET /api/backups/export` 都不得包含 Journal key file、Secret 或 key ID；完整备份构建器必须按精确相对路径排除 `agent-journal-key.json`，不能只依赖对 `config.json` 脱敏。由于备份恢复不会携带 Key Domain，恢复后生成新的 key/ID；不同 `fingerprint_key_id` 下的 fingerprint 明确不可比较。若恢复后的业务仍引用旧 Journal Run，Recorder 不得用新 key 重算后与旧 fingerprint 判等，而是将该 Journal 路径标为 `fingerprint_key_domain_changed` 并 fail-open；业务确认、恢复或写入仍由既有事实源决定。
+`GET /api/settings` 和 `GET /api/settings/backup` 不得返回 Journal key file、Secret 或当前 key ID。`GET /api/backups/export` 必须按精确相对路径排除 `agent-journal-key.json`，不能只依赖对 `config.json` 脱敏；备份中的 `data.db` 保留历史 Journal 行及其非秘密 `fingerprint_key_id`，但绝不包含 Secret。由于备份恢复不会携带当前 Key Domain，恢复后生成新的 key/ID；不同 `fingerprint_key_id` 下的 fingerprint 明确不可比较。若恢复后的业务仍引用旧 Journal Run，Recorder 不得用新 key 重算后与旧 fingerprint 判等，而是将该 Journal 路径标为 `fingerprint_key_domain_changed` 并 fail-open；业务确认、恢复或写入仍由既有事实源决定。
 
 输入 fingerprint 属于敏感派生数据，不得进入普通日志或发布报告。`payload_digest` 和 `manifest_digest` 的输入已经过白名单且不含正文，可以使用普通 SHA-256。`pending_identity_fingerprint` 和模型 ID fingerprint 都使用 Journal HMAC；不得将低熵参数或模型 ID 的裸 SHA-256 描述成匿名化。
 
@@ -931,7 +931,7 @@ README.md
 - Context 只保存版本化、有界 manifest、稳定 ID、revision、计数、版本化估算器和 HMAC fingerprint；
 - `agent-journal-key.json` 原子生成；持久化失败时应用与设置仍可工作、Journal 禁用，且不使用临时内存 key；
 - POSIX key file 权限为 `0600`；Windows 测试验证位于当前用户数据目录、未放宽继承 ACL，并把平台差异记录为明确契约；
-- `/api/settings`、`/api/settings/backup` 与 `/api/backups/export` 均不包含 key file、Secret 或 key ID；设置更新不接触 key file；
+- `/api/settings` 与 `/api/settings/backup` 不包含 key file、Secret 或当前 key ID；`/api/backups/export` 排除 key file 与 Secret，同时保留数据库中解释历史 fingerprint 所需的非秘密 `fingerprint_key_id`；设置更新不接触 key file；
 - 备份恢复生成新 `journal_hmac_key_id`；同一 Key Domain 内输入相同可比，不同 `fingerprint_key_id` 的 fingerprint 明确不可比较，旧 Run 进入 `fingerprint_key_domain_changed` fail-open 路径而不阻断业务；
 - 输入 fingerprint 被视为敏感派生数据，日志、普通诊断与发布报告不得包含；
 - 开启与关闭 Journal 时，HTTP 状态、响应体、SSE 序列、消息、业务写入以及 Provider/工具调用次数逐项一致；
