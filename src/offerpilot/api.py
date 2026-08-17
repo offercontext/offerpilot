@@ -10020,7 +10020,9 @@ def _build_backup_archive(data_dir: Path) -> bytes:
             if not path.is_file() or path.is_symlink():
                 continue
             archive_path = path.relative_to(data_dir).as_posix()
-            if archive_path == JOURNAL_KEY_FILENAME:
+            if archive_path == JOURNAL_KEY_FILENAME or archive_path.startswith(
+                f".{JOURNAL_KEY_FILENAME}."
+            ):
                 continue
             if archive_path == "config.json":
                 archive.writestr(archive_path, _redacted_backup_config(data_dir))

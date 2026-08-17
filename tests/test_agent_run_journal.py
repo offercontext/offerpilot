@@ -156,6 +156,24 @@ def test_event_payload_is_canonical_bounded_and_rejects_unknown_or_sensitive_key
         _model_completed(telemetry={"duration_ms": float("nan")})
     with pytest.raises(JournalEventValidationError):
         _model_completed(telemetry={"duration_ms": lambda: None})
+    with pytest.raises(JournalEventValidationError):
+        _model_completed(
+            facts={
+                "assistant_kind": "private answer copied into a legal field",
+                "tool_call_count": 0,
+                "finish_category": "stop",
+            }
+        )
+    with pytest.raises(JournalEventValidationError):
+        _model_completed(
+            facts={
+                "assistant_kind": {"nested": "private"},
+                "tool_call_count": 0,
+                "finish_category": "stop",
+            }
+        )
+    with pytest.raises(JournalEventValidationError):
+        _model_completed(facts={"assistant_kind": "text", "tool_call_count": 0})
 
 
 def test_manifest_is_bounded_versioned_and_preserves_ordered_summaries() -> None:
@@ -227,6 +245,24 @@ def test_canonical_json_rejects_cycles() -> None:
 
     with pytest.raises(JournalEventValidationError):
         canonical_json(value)
+
+
+def test_canonical_json_rejects_oversized_leaf_before_serialization() -> None:
+    with pytest.raises(JournalEventValidationError):
+        canonical_json("x" * 1_048_577)
+
+
+def test_uuid_normalizer_does_not_execute_str_subclass_methods() -> None:
+    called = False
+
+    class EvilStr(str):
+        def replace(self, *_args: object, **_kwargs: object) -> str:
+            nonlocal called
+            called = True
+            raise AssertionError("untrusted str subclass executed")
+
+    assert normalize_source_reference("transport_run", EvilStr(SEGMENT_A)) == (None, None)
+    assert called is False
 
 
 def test_event_draft_is_immutable() -> None:

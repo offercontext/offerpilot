@@ -575,6 +575,21 @@ def test_settings_and_backup_exports_exclude_journal_key_domain(tmp_path):
     assert key_path.read_bytes() == original_key_bytes
 
 
+def test_backup_export_excludes_interrupted_journal_key_temp_files(tmp_path):
+    secret = "journal-secret-canary"
+    (tmp_path / f".agent-journal-key.json.{'a' * 32}.tmp").write_text(
+        secret,
+        encoding="utf-8",
+    )
+    (tmp_path / ".agent-journal-key.json.lock").write_text("", encoding="utf-8")
+
+    response = TestClient(create_app(data_dir=tmp_path)).get("/api/backups/export")
+
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert all("agent-journal-key.json" not in name for name in archive.namelist())
+        assert secret.encode() not in response.content
+
+
 def test_settings_reports_a_keyed_enabled_fallback_as_available(tmp_path):
     save_config(
         tmp_path,

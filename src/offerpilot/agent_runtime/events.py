@@ -92,6 +92,8 @@ _FACT_KEYS: dict[str, set[str]] = {
     "run.timed_out": {"agent_run_id", "status", "failure_code"},
 }
 _TELEMETRY_KEYS = {"duration_ms", "retry_count", "item_count", "byte_count"}
+_HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
+_MAX_CANONICAL_STRING_BYTES = 1_048_576
 
 
 class JournalEventValidationError(ValueError):
@@ -148,7 +150,11 @@ def _canonical_value(
     nodes[0] += 1
     if nodes[0] > 100_000 or depth > 128:
         raise JournalEventValidationError("journal value exceeds canonicalization budget")
-    if value is None or type(value) in {str, bool, int}:
+    if type(value) is str:
+        if len(value.encode("utf-8")) > _MAX_CANONICAL_STRING_BYTES:
+            raise JournalEventValidationError("journal string exceeds canonicalization budget")
+        return value
+    if value is None or type(value) in {bool, int}:
         return value
     if type(value) is float:
         if not math.isfinite(value):
@@ -186,7 +192,7 @@ def canonical_json(value: object) -> str:
 
 
 def _canonical_uuid(value: object) -> str | None:
-    if not isinstance(value, str):
+    if type(value) is not str:
         return None
     try:
         parsed = str(UUID(value))
@@ -402,11 +408,19 @@ def prepare_event(
 ) -> EventDraft:
     if event_type not in _FACT_KEYS or type(facts) is not dict:
         raise JournalEventValidationError("unsupported journal event type")
-    if not set(facts).issubset(_FACT_KEYS[event_type]) or set(facts) & _FORBIDDEN_KEYS:
+    if set(facts) != _FACT_KEYS[event_type] or set(facts) & _FORBIDDEN_KEYS:
         raise JournalEventValidationError("journal event contains unknown or sensitive facts")
     telemetry = {} if telemetry is None else telemetry
     if type(telemetry) is not dict or not set(telemetry).issubset(_TELEMETRY_KEYS):
         raise JournalEventValidationError("journal event contains unknown telemetry")
+    for field, value in facts.items():
+        _validate_fact_value(field, value)
+    for value in telemetry.values():
+        if type(value) not in {int, float}:
+            raise JournalEventValidationError("invalid journal telemetry value")
+        numeric_value = cast(int | float, value)
+        if not math.isfinite(numeric_value) or numeric_value < 0:
+            raise JournalEventValidationError("invalid journal telemetry value")
     segment = _canonical_uuid(execution_segment_id)
     if segment is None:
         raise JournalEventValidationError("invalid execution segment id")
@@ -451,3 +465,30 @@ def prepare_event(
         fact_digest=hashlib.sha256(canonical_json(fact_envelope).encode("utf-8")).hexdigest(),
         dedupe_key=_dedupe_key(event_type, segment, call, facts),
     )
+
+
+def _validate_fact_value(field: str, value: object) -> None:
+    if field in {"agent_run_id", "snapshot_id", "transport_run_id"}:
+        if _canonical_uuid(value) is None:
+            raise JournalEventValidationError("invalid journal UUID fact")
+        return
+    if field in {"conversation_id", "message_id"}:
+        if type(value) is not int or value <= 0:
+            raise JournalEventValidationError("invalid journal database id fact")
+        return
+    if field in {"tool_call_count", "tools_count"}:
+        if type(value) is not int or value < 0:
+            raise JournalEventValidationError("invalid journal count fact")
+        return
+    if field in {"supports_tools", "supports_json_schema", "stream"}:
+        if type(value) is not bool:
+            raise JournalEventValidationError("invalid journal boolean fact")
+        return
+    if field.endswith("_digest") or field.endswith("_fingerprint"):
+        if type(value) is not str or _HEX_DIGEST.fullmatch(value) is None:
+            raise JournalEventValidationError("invalid journal digest fact")
+        return
+    if field in {"failure_code", "terminal_run_status"} and value is None:
+        return
+    if type(value) is not str or _SAFE_NAME.fullmatch(value) is None:
+        raise JournalEventValidationError("invalid journal token fact")

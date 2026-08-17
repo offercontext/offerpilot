@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from offerpilot.db import init_database, journal_session_factory_for_data_dir
 from offerpilot.models import AgentContextSnapshot, AgentEvent, AgentRun, ChatMessage, Conversation
@@ -148,3 +150,25 @@ def test_journal_session_factory_uses_existing_schema_and_foreign_keys(tmp_path:
     with journal_factory() as session:
         assert session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
         assert session.execute(text("SELECT COUNT(*) FROM agent_runs")).scalar_one() == 0
+
+
+def test_database_rejects_malformed_uuid_strings(tmp_path: Path) -> None:
+    session_factory = init_database(tmp_path / "data.db")
+    with session_factory() as session:
+        conversation = Conversation(title="uuid-check")
+        session.add(conversation)
+        session.flush()
+        session.add(
+            AgentRun(
+                id="x" * 36,
+                conversation_id=conversation.id,
+                origin_kind="system",
+                initial_context_type="workspace",
+                fingerprint_key_id="y" * 36,
+                initial_transport_mode="sync",
+                initial_route_kind="deterministic",
+                status="running",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()

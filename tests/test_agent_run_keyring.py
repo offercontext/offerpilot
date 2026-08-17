@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import stat
+import threading
 from pathlib import Path
 from uuid import UUID
 
@@ -66,6 +67,47 @@ def test_windows_key_inherits_data_directory_acl_without_posix_chmod(tmp_path: P
     assert domain is not None
     assert (tmp_path / JOURNAL_KEY_FILENAME).resolve().parent == tmp_path.resolve()
     assert chmod_calls == []
+
+
+def test_existing_posix_key_is_restricted_before_use(tmp_path: Path) -> None:
+    created = load_or_create_journal_key(tmp_path)
+    assert created is not None
+    calls: list[tuple[Path, int]] = []
+
+    loaded = load_or_create_journal_key(
+        tmp_path,
+        platform_name="posix",
+        chmod_file=lambda path, mode: calls.append((path, mode)),
+    )
+
+    assert loaded == created
+    assert calls == [(tmp_path.resolve() / JOURNAL_KEY_FILENAME, 0o600)]
+
+
+def test_concurrent_creation_never_returns_two_different_key_domains(tmp_path: Path) -> None:
+    entered_replace = threading.Event()
+    release_replace = threading.Event()
+    results: list[object] = []
+
+    def delayed_replace(source: Path, target: Path) -> None:
+        entered_replace.set()
+        assert release_replace.wait(timeout=2)
+        os.replace(source, target)
+
+    owner = threading.Thread(
+        target=lambda: results.append(load_or_create_journal_key(tmp_path, replace_file=delayed_replace))
+    )
+    owner.start()
+    assert entered_replace.wait(timeout=2)
+    contender = load_or_create_journal_key(tmp_path)
+    release_replace.set()
+    owner.join(timeout=2)
+
+    assert not owner.is_alive()
+    persisted = load_or_create_journal_key(tmp_path)
+    non_null = [item for item in [*results, contender, persisted] if item is not None]
+    assert persisted is not None
+    assert {item.key_id for item in non_null} == {persisted.key_id}  # type: ignore[attr-defined]
 
 
 def test_journal_key_does_not_swallow_base_exception(tmp_path: Path) -> None:

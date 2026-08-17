@@ -1432,12 +1432,22 @@ class ChatMessage(Base):
     )
 
 
+def _sqlite_uuid_check(column: str) -> str:
+    return (
+        f"length({column}) = 36 AND lower({column}) = {column} "
+        f"AND substr({column}, 9, 1) = '-' AND substr({column}, 14, 1) = '-' "
+        f"AND substr({column}, 19, 1) = '-' AND substr({column}, 24, 1) = '-' "
+        f"AND length(replace({column}, '-', '')) = 32 "
+        f"AND {column} NOT GLOB '*[^0-9a-f-]*'"
+    )
+
+
 class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (
-        CheckConstraint("length(id) = 36 AND lower(id) = id", name="ck_agent_runs_id_uuid"),
+        CheckConstraint(_sqlite_uuid_check("id"), name="ck_agent_runs_id_uuid"),
         CheckConstraint(
-            "length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id",
+            _sqlite_uuid_check("fingerprint_key_id"),
             name="ck_agent_runs_key_uuid",
         ),
         CheckConstraint("last_seq >= 0", name="ck_agent_runs_last_seq"),
@@ -1503,15 +1513,14 @@ class AgentEvent(Base):
     __table_args__ = (
         UniqueConstraint("run_id", "seq", name="uq_agent_events_run_seq"),
         UniqueConstraint("run_id", "dedupe_key", name="uq_agent_events_run_dedupe"),
-        CheckConstraint("length(id) = 36 AND lower(id) = id", name="ck_agent_events_id_uuid"),
+        CheckConstraint(_sqlite_uuid_check("id"), name="ck_agent_events_id_uuid"),
         CheckConstraint(
-            "length(execution_segment_id) = 36 AND lower(execution_segment_id) = execution_segment_id",
+            _sqlite_uuid_check("execution_segment_id"),
             name="ck_agent_events_segment_uuid",
         ),
         CheckConstraint("seq > 0", name="ck_agent_events_seq"),
         CheckConstraint(
-            "fingerprint_key_id IS NULL OR "
-            "(length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id)",
+            f"fingerprint_key_id IS NULL OR ({_sqlite_uuid_check('fingerprint_key_id')})",
             name="ck_agent_events_key_uuid",
         ),
         CheckConstraint(
@@ -1547,13 +1556,13 @@ class AgentContextSnapshot(Base):
     __tablename__ = "agent_context_snapshots"
     __table_args__ = (
         UniqueConstraint("run_id", "snapshot_key", name="uq_agent_context_run_snapshot"),
-        CheckConstraint("length(id) = 36 AND lower(id) = id", name="ck_agent_context_id_uuid"),
+        CheckConstraint(_sqlite_uuid_check("id"), name="ck_agent_context_id_uuid"),
         CheckConstraint(
-            "length(execution_segment_id) = 36 AND lower(execution_segment_id) = execution_segment_id",
+            _sqlite_uuid_check("execution_segment_id"),
             name="ck_agent_context_segment_uuid",
         ),
         CheckConstraint(
-            "length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id",
+            _sqlite_uuid_check("fingerprint_key_id"),
             name="ck_agent_context_key_uuid",
         ),
         CheckConstraint("manifest_schema_version = 1", name="ck_agent_context_manifest_schema"),

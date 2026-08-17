@@ -51,11 +51,27 @@ def load_or_create_journal_key(
     """Return the durable Journal key domain, or disable journaling on ordinary failure."""
 
     key_path = data_dir.resolve() / JOURNAL_KEY_FILENAME
+    lock_path = key_path.with_name(f".{JOURNAL_KEY_FILENAME}.lock")
     temp_path: Path | None = None
+    owns_lock = False
     try:
         data_dir.mkdir(parents=True, exist_ok=True)
         if key_path.exists():
+            if platform_name != "nt":
+                chmod_file(key_path, 0o600)
             return _read_key(key_path)
+
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if key_path.exists():
+                if platform_name != "nt":
+                    chmod_file(key_path, 0o600)
+                return _read_key(key_path)
+            return None
+        else:
+            os.close(lock_fd)
+            owns_lock = True
 
         domain = JournalKeyDomain(key_id=str(uuid4()), secret=secrets.token_bytes(32))
         payload = {
@@ -84,3 +100,9 @@ def load_or_create_journal_key(
             except OSError:
                 pass
         return None
+    finally:
+        if owns_lock:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
