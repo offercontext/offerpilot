@@ -1813,22 +1813,17 @@ def _run_real_ai_mock_interview_smoke(
     base = f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
 
     for index in range(3):
-        def _restart_failed_attempt(stage: str, error_code: str) -> None:
-            attempt_id: int | None = None
-            attempt_ids = _mock_interview_attempt_ids(data_dir, application_id, event_id)
-            if len(attempt_ids) > 1:
-                raise RuntimeError("mock interview failure created multiple attempts")
-            if attempt_ids:
-                attempt_id = attempt_ids[0]
-                deleted = client.delete(f"{base}/{attempt_id}")
-                _assert_status(deleted.status_code, 200, f"http_mock_interview_cleanup_{index}_{stage}")
-                _assert_mock_interview_failed_attempt_clean(
-                    data_dir, application_id, event_id, resume_id, attempt_id, baseline
-                )
-            else:
-                _assert_real_ai_browser_no_cross_domain_writes(
-                    data_dir, application_id, baseline, [event_id], [resume_id]
-                )
+        def _record_failed_attempt(
+            stage: str,
+            error_code: str,
+            attempt_id: int | None,
+            attempt_retention: str,
+        ) -> None:
+            if attempt_retention.startswith("retained") and attempt_id is None:
+                raise RuntimeError("retained mock interview failure omitted attempt_id")
+            _assert_real_ai_browser_no_cross_domain_writes(
+                data_dir, application_id, baseline, [event_id], [resume_id]
+            )
             diagnostic_stage = "feedback" if stage == "feedback" else "question"
             diagnostic = (
                 _latest_mock_interview_failure_diagnostic(data_dir, attempt_id, diagnostic_stage)
@@ -1857,6 +1852,7 @@ def _run_real_ai_mock_interview_smoke(
             error_code = str(response.json().get("error_code"))
             if (
                 policy.disposition == "retry_same_key"
+                and policy.preserve_idempotency_key
                 and policy.provider_retry_allowed
                 and replay is not None
             ):
@@ -1865,8 +1861,20 @@ def _run_real_ai_mock_interview_smoke(
                     outcomes.append(f"attempt_{index + 1}:{stage}:reconciled_same_key")
                     return reconciled, False
                 response = reconciled
+                replay_policy = _response_recovery_policy(response)
+                if replay_policy is not None:
+                    policy = replay_policy
+                    error_code = str(response.json().get("error_code"))
             if policy.disposition in {"terminal_no_retry", "retry_same_key", "restart_new_attempt"}:
-                _restart_failed_attempt(stage, error_code)
+                body = response.json()
+                raw_attempt_id = body.get("attempt_id") if isinstance(body, dict) else None
+                attempt_id = raw_attempt_id if isinstance(raw_attempt_id, int) else None
+                _record_failed_attempt(
+                    stage,
+                    error_code,
+                    attempt_id,
+                    policy.attempt_retention,
+                )
                 return response, True
             raise RuntimeError(
                 f"real-ai mock interview smoke cannot apply disposition "
@@ -1983,6 +1991,44 @@ def _run_real_ai_mock_interview_smoke(
             + json.dumps(outcomes, ensure_ascii=True, separators=(",", ":")),
         )
     )
+    _assert_mock_interview_traces_sanitized(data_dir, body["operation_id"])
+
+
+def _assert_mock_interview_traces_sanitized(data_dir: Path, success_operation_id: str) -> None:
+    """Every provider operation must leave a complete, redacted trace envelope."""
+    traces = read_mock_interview_traces(data_dir)
+    if not traces:
+        raise RuntimeError("mock interview real-ai smoke produced no trace envelopes")
+    allowed_stages = {"question", "feedback"}
+    allowed_outcomes = {"success", "success_after_repair", "unverifiable", "provider_error"}
+    forbidden_fragments = (
+        "需要能够维护",
+        "我负责过",
+        "我确认了",
+        "API key",
+        "real-ai-mock-attempt-",
+        "real-ai-mock-feedback-",
+    )
+    for trace in traces:
+        if trace.get("validator_stage") not in allowed_stages:
+            raise RuntimeError("mock interview trace envelope has an unknown validator stage")
+        if trace.get("provider_outcome") not in allowed_outcomes:
+            raise RuntimeError("mock interview trace envelope has an unknown provider outcome")
+        if not str(trace.get("idempotency_key_hash", "")).startswith("idem-"):
+            raise RuntimeError("mock interview trace envelope leaked an unhashed idempotency key")
+        if trace.get("final_disposition") == "success" and trace.get("response_error_code"):
+            raise RuntimeError("mock interview trace envelope mixed success with an error code")
+        serialized = json.dumps(trace, ensure_ascii=False)
+        for fragment in forbidden_fragments:
+            if fragment in serialized:
+                raise RuntimeError("mock interview trace envelope leaked sensitive content")
+    if not any(
+        trace.get("operation_id") == success_operation_id
+        and trace.get("validator_stage") == "feedback"
+        and trace.get("provider_outcome") in {"success", "success_after_repair"}
+        for trace in traces
+    ):
+        raise RuntimeError("the successful feedback operation is missing from the trace envelopes")
 
 
 def run_mock_interview_real_ai_smoke(
@@ -2782,27 +2828,47 @@ def _mock_interview_attempt_state(
 def _assert_mock_interview_attempt_restart_state(kind: str, category: str, state: str) -> None:
     """Reject a cleanup/retention result that contradicts the recovery contract.
 
-    The expected retention comes from contracts/recovery-policy.v1.json: a
-    provider failure maps to a retry_same_key error whose Attempt must stay
-    retained for same-key reconciliation; a contract failure is terminal and the
-    failed Attempt must be deleted before the browser restarts.
+    The expected retention comes from contracts/recovery-policy.v1.json.  The
+    diagnostic category is significant because source/transcript conflicts may
+    be observed while finalizing either a provider or contract failure.
     """
     if kind not in {"provider", "contract"}:
         raise RuntimeError("missing mock interview Attempt failure diagnostic")
-    error_code = "mock_interview_provider_error" if kind == "provider" else "mock_interview_unverifiable"
+    categories = {item.strip() for item in category.split(",") if item.strip()}
+    if "source_conflict" in categories:
+        error_code = "mock_interview_source_conflict"
+        expected_state = "retained:source_conflict"
+        label = "source-conflict"
+    elif "transcript_conflict" in categories:
+        error_code = "mock_interview_transcript_conflict"
+        expected_state = None
+        label = "transcript-conflict"
+    elif kind == "provider":
+        error_code = "mock_interview_provider_error"
+        expected_state = "retained:provider_unknown"
+        label = "provider-unknown"
+    else:
+        error_code = "mock_interview_unverifiable"
+        expected_state = "retained:contract_failed"
+        label = "retained-terminal"
     policy = get_recovery_policy(error_code)
     if policy is None:
         raise RuntimeError(f"recovery contract is missing {error_code}")
-    if policy.disposition == "retry_same_key":
-        if state != "retained:provider_unknown":
-            raise RuntimeError("A provider-unknown Attempt was not retained for the browser restart.")
+    if policy.attempt_retention.startswith("retained"):
+        if not state.startswith("retained:") or (
+            expected_state is not None and state != expected_state
+        ):
+            raise RuntimeError(
+                f"A {label} Attempt did not match its contract-mandated retained state."
+            )
         return
-    if policy.disposition == "terminal_no_retry":
-        if state.startswith("retained:"):
-            raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
+    if policy.attempt_retention == "absent":
+        if state != "deleted":
+            raise RuntimeError(f"An absent Attempt was unexpectedly retained as {state}.")
         return
     raise RuntimeError(
-        f"recovery contract defines unexpected disposition {policy.disposition!r} for {error_code}"
+        f"recovery contract defines unsupported attempt retention {policy.attempt_retention!r} "
+        f"for {error_code}"
     )
 
 
@@ -2940,13 +3006,7 @@ def _assert_mock_interview_failed_attempt_clean(
     session_factory = session_factory_for_data_dir(data_dir)
     try:
         with session_factory() as session:
-            attempt_count = session.scalar(
-                select(func.count()).select_from(MockInterviewAttempt).where(
-                    MockInterviewAttempt.application_id == application_id,
-                    MockInterviewAttempt.event_id == event_id,
-                )
-            )
-            if attempt_count:
+            if session.get(MockInterviewAttempt, attempt_id) is not None:
                 raise RuntimeError("mock interview failed attempt was not deleted")
             for model in (MockInterviewTurn, MockInterviewFeedbackProposal, MockInterviewReviewDraft):
                 count = session.scalar(

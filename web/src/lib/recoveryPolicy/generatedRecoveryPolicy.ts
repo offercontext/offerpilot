@@ -9,25 +9,40 @@ export type RecoveryDisposition =
   | 'terminal_no_retry'
 ;
 
+export type RecoveryUserAction =
+  | 'retry_same_key'
+  | 'restart_new_attempt'
+  | 'reload_source'
+  | 'edit_input'
+  | 'none'
+;
+
+export type RecoveryAttemptRetention =
+  | 'retained_reconcile'
+  | 'retained_terminal'
+  | 'retained'
+  | 'absent'
+;
+
 export interface RecoveryPolicyEntry {
   error_code: string;
   http_status: number;
   disposition: RecoveryDisposition;
-  attempt_retention: string;
+  attempt_retention: RecoveryAttemptRetention;
   input_frozen: boolean;
   preserve_idempotency_key: boolean;
   provider_retry_allowed: boolean;
-  user_action: string;
+  user_action: RecoveryUserAction;
 }
 
 export interface FallbackRecoveryPolicy {
   policy_name: string;
   disposition: RecoveryDisposition;
-  attempt_retention: string;
+  attempt_retention: RecoveryAttemptRetention;
   input_frozen: boolean;
   preserve_idempotency_key: boolean;
   provider_retry_allowed: boolean;
-  user_action: string;
+  user_action: RecoveryUserAction;
 }
 
 export const CONTRACT_VERSION = 1;

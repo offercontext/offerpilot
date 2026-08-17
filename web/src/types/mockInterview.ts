@@ -27,6 +27,7 @@ export interface MockInterviewAttemptResponse {
   attempt_id: number;
   attempt_status: string;
   generation_revision: number;
+  operation_id?: string;
   jd_version_id?: number | null;
   context_kind?: 'application_event' | 'quick_practice';
   application_id?: number | null;
@@ -42,12 +43,14 @@ export interface MockInterviewProposalResponse {
   proposal_status: 'normal' | 'safe_empty';
   proposal_hash: string;
   proposal: MockInterviewProposal;
+  operation_id?: string;
 }
 
 export interface MockInterviewPendingResponse {
   attempt_id: number;
   attempt_status: 'generating_question' | 'generating_feedback' | 'provider_unknown';
   retry_after_ms: number;
+  operation_id?: string;
 }
 
 export interface MockInterviewHistoryItem extends MockInterviewProposalResponse {

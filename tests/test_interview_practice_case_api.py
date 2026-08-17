@@ -56,25 +56,26 @@ class _NormalFeedbackPracticeModel:
 
     def complete(self, messages, tools, **kwargs):
         if any("mock-interview-feedback-v1" in message.content for message in messages):
-            evidence = {
-                "source": "turn",
-                "path": "/turns/001/answer",
-                "excerpt": "我会先拆解接口，再用指标验证稳定性。",
-            }
+            payload = json.loads(messages[-1].content)
+            turn_evidence_id = next(
+                entry["id"]
+                for entry in payload["evidence_catalog"]
+                if entry.get("source") == "turn"
+            )
             return Assistant(
                 content=json.dumps(
                     {
                         "schema_version": "mock-interview-feedback-v1",
                         "proposal_status": "normal",
                         "strengths": [
-                            {"id": "strength-1", "text": "回答有清晰的拆解顺序。", "evidence_refs": [evidence]},
+                            {"id": "strength-1", "text": "回答有清晰的拆解顺序。", "evidence_ids": [turn_evidence_id]},
                         ],
                         "practice_points": [
-                            {"id": "practice-1", "text": "可以补充指标选择的原因。", "evidence_refs": [evidence]},
+                            {"id": "practice-1", "text": "可以补充指标选择的原因。", "evidence_ids": [turn_evidence_id]},
                         ],
                         "follow_up_questions": [],
                         "next_practice_steps": [
-                            {"id": "next-1", "text": "练习用指标说明验证方案。", "evidence_refs": [evidence]},
+                            {"id": "next-1", "text": "练习用指标说明验证方案。", "evidence_ids": [turn_evidence_id]},
                         ],
                     },
                     ensure_ascii=False,

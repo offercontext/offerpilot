@@ -63,4 +63,31 @@ describe('interview studio controller', () => {
     expect(shouldGenerateNextQuestion(state)).toBe(false);
     expect(reduceStudioState(state, { type: 'answer_succeeded' }).phase).toBe('completed');
   });
+
+  it('clears only the operation key when edit recovery forbids key reuse', () => {
+    const state = {
+      ...createStudioState({ turnNo: 2, question: '请补充验证方法。' }),
+      turnKey: 'turn-old',
+      questionKey: 'question-old',
+      feedbackKey: 'feedback-old',
+    };
+
+    const answer = reduceStudioState(state, {
+      type: 'edit_input',
+      operation: 'answer',
+      preserveIdempotencyKey: false,
+      message: '请修改回答',
+    });
+    expect(answer.turnKey).toBeNull();
+    expect(answer.questionKey).toBe('question-old');
+    expect(answer.feedbackKey).toBe('feedback-old');
+
+    const preserved = reduceStudioState(state, {
+      type: 'edit_input',
+      operation: 'answer',
+      preserveIdempotencyKey: true,
+      message: '请补充回答',
+    });
+    expect(preserved.turnKey).toBe('turn-old');
+  });
 });

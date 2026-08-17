@@ -250,6 +250,7 @@ def test_application_provider_error_matches_contract_and_replay_keeps_same_key(t
     }
     first = client.post(base, json=payload)
     _assert_contract_response(first, "mock_interview_provider_error")
+    assert isinstance(first.json().get("operation_id"), str)
     entry = CONTRACT_BY_CODE["mock_interview_provider_error"]
     assert entry["disposition"] == "retry_same_key"
     assert entry["preserve_idempotency_key"] is True
@@ -260,6 +261,15 @@ def test_application_provider_error_matches_contract_and_replay_keeps_same_key(t
     assert replay.json()["attempt_id"] == first.json()["attempt_id"]
     calls_after_replay = model.calls
     assert calls_after_replay == 1  # same-key replay while lease is active never re-calls the provider
+    from offerpilot.reliability.trace import hash_idempotency_key, read_mock_interview_traces
+
+    trace = read_mock_interview_traces(tmp_path)[-1]
+    assert trace["operation_id"] == first.json()["operation_id"]
+    assert trace["idempotency_key_hash"] == hash_idempotency_key(
+        payload["initial_question_idempotency_key"]
+    )
+    assert trace["provider"] == "_ProviderFailureModel"
+    assert trace["first_byte_ms"] is None
 
 
 def test_quick_provider_error_matches_contract_result_unknown(tmp_path) -> None:
@@ -443,3 +453,169 @@ def test_trace_envelope_sanitizes_idempotency_key(tmp_path) -> None:
     assert digest.startswith("idem-")
     assert "attempt-secret-key-001" not in digest
     assert hash_idempotency_key("attempt-secret-key-001") == digest
+
+
+def test_feedback_trace_records_the_final_cas_disposition(tmp_path, monkeypatch) -> None:
+    from offerpilot.reliability.trace import read_mock_interview_traces
+    from offerpilot.repositories.mock_interviews import MockInterviewRepository
+
+    client, app_id, event_id, resume_id = _application_client(tmp_path)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(
+        base,
+        json={
+            "resume_id": resume_id,
+            "jd_version_id": 1,
+            "attempt_idempotency_key": "trace-cas-attempt",
+            "initial_question_idempotency_key": "trace-cas-question",
+        },
+    )
+    assert started.status_code == 201
+    attempt_id = started.json()["attempt_id"]
+    answered = client.post(
+        f"{base}/{attempt_id}/turns",
+        json={
+            "turn_no": 1,
+            "answer_text": "我通过回归测试验证修复。",
+            "turn_idempotency_key": "trace-cas-answer",
+        },
+    )
+    assert answered.status_code == 200
+
+    monkeypatch.setattr(MockInterviewRepository, "complete_feedback", lambda *args, **kwargs: (None, False))
+    finished = client.post(
+        f"{base}/{attempt_id}/finish",
+        json={"feedback_idempotency_key": "trace-cas-feedback"},
+    )
+
+    _assert_contract_response(finished, "mock_interview_transcript_conflict")
+    trace = read_mock_interview_traces(tmp_path)[-1]
+    assert trace["validator_stage"] == "feedback"
+    assert trace["provider_outcome"] == "success"
+    assert trace["response_error_code"] == "mock_interview_transcript_conflict"
+    assert trace["final_disposition"] == "retry_same_key"
+
+
+def test_provider_trace_survives_source_conflict_during_failure_finalization(
+    tmp_path, monkeypatch
+) -> None:
+    from offerpilot.reliability.trace import read_mock_interview_traces
+    from offerpilot.repositories.mock_interviews import (
+        MockInterviewRepository,
+        MockInterviewSourceChanged,
+    )
+
+    model = _ProviderFailureModel()
+    client, app_id, event_id, resume_id = _application_client(tmp_path, model)
+
+    def source_changed(*args, **kwargs):
+        raise MockInterviewSourceChanged("source changed after provider operation")
+
+    monkeypatch.setattr(MockInterviewRepository, "mark_provider_unknown", source_changed)
+    response = client.post(
+        f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts",
+        json={
+            "resume_id": resume_id,
+            "jd_version_id": 1,
+            "attempt_idempotency_key": "trace-source-conflict-attempt",
+            "initial_question_idempotency_key": "trace-source-conflict-question",
+        },
+    )
+
+    _assert_contract_response(response, "mock_interview_source_conflict")
+    trace = read_mock_interview_traces(tmp_path)[-1]
+    assert response.json()["operation_id"] == trace["operation_id"]
+    assert trace["provider_outcome"] == "provider_error"
+    assert trace["response_error_code"] == "mock_interview_source_conflict"
+    assert trace["final_disposition"] == "reload_source"
+
+
+def test_stale_contract_failure_finalization_is_reconcilable_not_terminal(
+    tmp_path, monkeypatch
+) -> None:
+    from offerpilot.reliability.trace import read_mock_interview_traces
+    from offerpilot.repositories.mock_interviews import MockInterviewRepository
+
+    model = _ContractFailureModel()
+    client, app_id, event_id, resume_id = _application_client(tmp_path, model)
+    monkeypatch.setattr(
+        MockInterviewRepository,
+        "mark_contract_failure",
+        lambda *args, **kwargs: None,
+    )
+    response = client.post(
+        f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts",
+        json={
+            "resume_id": resume_id,
+            "jd_version_id": 1,
+            "attempt_idempotency_key": "stale-contract-attempt",
+            "initial_question_idempotency_key": "stale-contract-question",
+        },
+    )
+
+    _assert_contract_response(response, "mock_interview_transcript_conflict")
+    trace = read_mock_interview_traces(tmp_path)[-1]
+    assert trace["operation_id"] == response.json()["operation_id"]
+    assert trace["response_error_code"] == "mock_interview_transcript_conflict"
+    assert trace["final_disposition"] == "retry_same_key"
+
+
+def test_successful_provider_source_drift_returns_correlated_trace(
+    tmp_path, monkeypatch
+) -> None:
+    from offerpilot.reliability.trace import read_mock_interview_traces
+    from offerpilot.repositories.mock_interviews import (
+        MockInterviewRepository,
+        MockInterviewSourceChanged,
+    )
+
+    client, app_id, event_id, resume_id = _application_client(tmp_path, _WorkingModel())
+
+    def source_changed(*args, **kwargs):
+        raise MockInterviewSourceChanged("source changed after provider success")
+
+    monkeypatch.setattr(MockInterviewRepository, "complete_question", source_changed)
+    response = client.post(
+        f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts",
+        json={
+            "resume_id": resume_id,
+            "jd_version_id": 1,
+            "attempt_idempotency_key": "success-source-attempt",
+            "initial_question_idempotency_key": "success-source-question",
+        },
+    )
+
+    _assert_contract_response(response, "mock_interview_source_conflict")
+    trace = read_mock_interview_traces(tmp_path)[-1]
+    assert trace["operation_id"] == response.json()["operation_id"]
+    assert trace["provider_outcome"] == "success"
+    assert trace["response_error_code"] == "mock_interview_source_conflict"
+
+
+def test_existing_attempt_replay_revalidates_frozen_sources(tmp_path, monkeypatch) -> None:
+    from offerpilot.repositories.mock_interviews import (
+        MockInterviewRepository,
+        MockInterviewSourceChanged,
+    )
+
+    client, app_id, event_id, resume_id = _application_client(tmp_path, _WorkingModel())
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_version_id": 1,
+        "attempt_idempotency_key": "revalidate-existing-attempt",
+        "initial_question_idempotency_key": "revalidate-existing-question",
+    }
+    assert client.post(base, json=payload).status_code == 201
+
+    def source_changed(*args, **kwargs):
+        raise MockInterviewSourceChanged("frozen source is no longer visible")
+
+    monkeypatch.setattr(
+        MockInterviewRepository,
+        "_assert_attempt_sources",
+        staticmethod(source_changed),
+    )
+    replay = client.post(base, json=payload)
+
+    _assert_contract_response(replay, "mock_interview_source_conflict")

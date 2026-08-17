@@ -377,7 +377,7 @@ describe('InterviewStudio continuous voice integration', () => {
     await act(async () => { button('重新开始练习').click(); await Promise.resolve(); });
     await act(async () => { await Promise.resolve(); });
 
-    expect(serviceSpies.discard).toHaveBeenCalledWith({ context: { kind: 'application_event', applicationId: 7, eventId: 8 }, attemptId: 41 });
+    expect(serviceSpies.discard).not.toHaveBeenCalled();
     const restarted = serviceSpies.start.mock.calls[1]?.[0] as { attemptKey: string; questionKey: string };
     expect(restarted.attemptKey).not.toBe(firstStart.attemptKey);
     expect(restarted.questionKey).not.toBe(firstStart.questionKey);
@@ -410,7 +410,7 @@ describe('InterviewStudio continuous voice integration', () => {
     await act(async () => { button('重新开始练习').click(); await Promise.resolve(); });
     await act(async () => { await Promise.resolve(); });
 
-    expect(serviceSpies.discard).toHaveBeenCalledWith({ context: { kind: 'application_event', applicationId: 7, eventId: 8 }, attemptId: 41 });
+    expect(serviceSpies.discard).not.toHaveBeenCalled();
     expect(serviceSpies.start).toHaveBeenCalledTimes(2);
     const restarted = serviceSpies.start.mock.calls[1]?.[0] as { attemptKey: string; questionKey: string };
     expect(restarted.attemptKey).not.toBe(firstStart.attemptKey);

@@ -3,6 +3,8 @@ import {
   RECOVERY_POLICIES,
   UNKNOWN_CODE_POLICY,
   type RecoveryDisposition,
+  type RecoveryAttemptRetention,
+  type RecoveryUserAction,
 } from './generatedRecoveryPolicy';
 
 export type RecoveryOperation = 'start' | 'answer' | 'question' | 'feedback';
@@ -10,9 +12,11 @@ export type RecoveryOperation = 'start' | 'answer' | 'question' | 'feedback';
 export interface RecoveryDecision {
   errorCode: string | null;
   disposition: RecoveryDisposition;
+  attemptRetention: RecoveryAttemptRetention;
   inputFrozen: boolean;
   preserveIdempotencyKey: boolean;
   providerRetryAllowed: boolean;
+  userAction: RecoveryUserAction;
   attemptId: number | null;
   operationId: string | null;
   /** No further automatic recovery is possible; the user must act. */
@@ -47,13 +51,27 @@ function messageFor(errorCode: string, disposition: RecoveryDisposition, operati
   return CODE_MESSAGES[errorCode] ?? DISPOSITION_MESSAGES[disposition];
 }
 
-function responseOf(error: unknown): { status?: number; data?: { error_code?: string; attempt_id?: unknown; details?: { attempt_id?: unknown; operation_id?: unknown } } } | undefined {
-  return (error as { response?: { status?: number; data?: { error_code?: string; attempt_id?: unknown; details?: { attempt_id?: unknown; operation_id?: unknown } } } } | null)?.response;
+type RecoveryErrorData = {
+  error_code?: string;
+  attempt_id?: unknown;
+  operation_id?: unknown;
+  details?: { attempt_id?: unknown; operation_id?: unknown };
+};
+
+function responseOf(error: unknown): { status?: number; data?: RecoveryErrorData } | undefined {
+  return (error as { response?: { status?: number; data?: RecoveryErrorData } } | null)?.response;
 }
 
 function attemptIdOf(data: { attempt_id?: unknown; details?: { attempt_id?: unknown } } | undefined): number | null {
   const raw = data?.attempt_id ?? data?.details?.attempt_id;
   return typeof raw === 'number' && Number.isInteger(raw) ? raw : null;
+}
+
+function operationIdOf(
+  data: { operation_id?: unknown; details?: { operation_id?: unknown } } | undefined,
+): string | null {
+  const raw = data?.operation_id ?? data?.details?.operation_id;
+  return typeof raw === 'string' && raw ? raw : null;
 }
 
 /**
@@ -70,9 +88,11 @@ export function resolveErrorRecovery(error: unknown, operation: RecoveryOperatio
     return {
       errorCode: null,
       disposition: NETWORK_TRANSPORT_POLICY.disposition,
+      attemptRetention: NETWORK_TRANSPORT_POLICY.attempt_retention,
       inputFrozen: NETWORK_TRANSPORT_POLICY.input_frozen,
       preserveIdempotencyKey: NETWORK_TRANSPORT_POLICY.preserve_idempotency_key,
       providerRetryAllowed: NETWORK_TRANSPORT_POLICY.provider_retry_allowed,
+      userAction: NETWORK_TRANSPORT_POLICY.user_action,
       attemptId: null,
       operationId: null,
       terminal: false,
@@ -84,11 +104,13 @@ export function resolveErrorRecovery(error: unknown, operation: RecoveryOperatio
     return {
       errorCode,
       disposition: UNKNOWN_CODE_POLICY.disposition,
+      attemptRetention: UNKNOWN_CODE_POLICY.attempt_retention,
       inputFrozen: UNKNOWN_CODE_POLICY.input_frozen,
       preserveIdempotencyKey: UNKNOWN_CODE_POLICY.preserve_idempotency_key,
       providerRetryAllowed: UNKNOWN_CODE_POLICY.provider_retry_allowed,
+      userAction: UNKNOWN_CODE_POLICY.user_action,
       attemptId: attemptIdOf(data),
-      operationId: null,
+      operationId: operationIdOf(data),
       terminal: true,
       message: errorCode
         ? `遇到未登记的错误（${errorCode}），已停止自动恢复，请重新开始练习。`
@@ -98,11 +120,13 @@ export function resolveErrorRecovery(error: unknown, operation: RecoveryOperatio
   return {
     errorCode: entry.error_code,
     disposition: entry.disposition,
+    attemptRetention: entry.attempt_retention,
     inputFrozen: entry.input_frozen,
     preserveIdempotencyKey: entry.preserve_idempotency_key,
     providerRetryAllowed: entry.provider_retry_allowed,
+    userAction: entry.user_action,
     attemptId: attemptIdOf(data),
-    operationId: typeof data?.details?.operation_id === 'string' ? data.details.operation_id : null,
+    operationId: operationIdOf(data),
     terminal: entry.disposition === 'terminal_no_retry' || entry.disposition === 'restart_new_attempt',
     message: messageFor(entry.error_code, entry.disposition, operation),
   };

@@ -127,7 +127,8 @@ def render_python(contract: dict[str, Any]) -> str:
     lines.append(f"DOMAIN: Final[str] = {contract['domain']!r}")
     lines.append(f"DISPOSITIONS: Final[tuple[str, ...]] = {tuple(contract['dispositions'])!r}")
     lines.append(f"ATTEMPT_RETENTIONS: Final[tuple[str, ...]] = {tuple(contract['attempt_retentions'])!r}")
-    lines.append("UNKNOWN_CODE_DISPOSITION: Final[str] = " f"{contract['unknown_code_policy']['disposition']!r}")
+    lines.append("UNKNOWN_CODE_DISPOSITION: Final[str] = "
+                 f"{contract['unknown_code_policy']['disposition']!r}")
     lines.append("UNKNOWN_CODE_PROVIDER_RETRY_ALLOWED: Final[bool] = "
                  f"{contract['unknown_code_policy']['provider_retry_allowed']!r}")
     lines.append("NETWORK_TRANSPORT_DISPOSITION: Final[str] = "
@@ -162,7 +163,7 @@ def render_python(contract: dict[str, Any]) -> str:
     lines.append("    def __hash__(self) -> int:")
     lines.append("        return hash(self.error_code)")
     lines.append("")
-    lines.append(f"RECOVERY_POLICIES: Final[dict[str, RecoveryPolicyEntry]] = {{")
+    lines.append("RECOVERY_POLICIES: Final[dict[str, RecoveryPolicyEntry]] = {")
     for entry in sorted(contract["errors"], key=lambda item: item["error_code"]):
         lines.append(f"    {entry['error_code']!r}: RecoveryPolicyEntry(")
         body = _policy_block("        ", entry)
@@ -194,23 +195,33 @@ def render_typescript(contract: dict[str, Any]) -> str:
         lines.append(f"  | '{disposition}'")
     lines.append(";")
     lines.append("")
+    lines.append("export type RecoveryUserAction =")
+    for action in contract["user_actions"]:
+        lines.append(f"  | '{action}'")
+    lines.append(";")
+    lines.append("")
+    lines.append("export type RecoveryAttemptRetention =")
+    for retention in contract["attempt_retentions"]:
+        lines.append(f"  | '{retention}'")
+    lines.append(";")
+    lines.append("")
     lines.append("export interface RecoveryPolicyEntry {")
     lines.append("  error_code: string;")
     lines.append("  http_status: number;")
-    for field in ("disposition", "attempt_retention"):
-        lines.append(f"  {field}: {('RecoveryDisposition' if field == 'disposition' else 'string')};")
+    lines.append("  disposition: RecoveryDisposition;")
+    lines.append("  attempt_retention: RecoveryAttemptRetention;")
     for field in ("input_frozen", "preserve_idempotency_key", "provider_retry_allowed"):
         lines.append(f"  {field}: boolean;")
-    lines.append("  user_action: string;")
+    lines.append("  user_action: RecoveryUserAction;")
     lines.append("}")
     lines.append("")
     lines.append("export interface FallbackRecoveryPolicy {")
     lines.append("  policy_name: string;")
     lines.append("  disposition: RecoveryDisposition;")
-    lines.append("  attempt_retention: string;")
+    lines.append("  attempt_retention: RecoveryAttemptRetention;")
     for field in ("input_frozen", "preserve_idempotency_key", "provider_retry_allowed"):
         lines.append(f"  {field}: boolean;")
-    lines.append("  user_action: string;")
+    lines.append("  user_action: RecoveryUserAction;")
     lines.append("}")
     lines.append("")
     lines.append(f"export const CONTRACT_VERSION = {contract['version']};")

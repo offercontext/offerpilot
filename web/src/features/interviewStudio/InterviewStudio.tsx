@@ -20,6 +20,7 @@ import {
 import { saveInterviewStudioVoiceCoachingSnapshot } from '@/services/voiceCoaching';
 import type { MockInterviewProposalResponse, MockInterviewTurn } from '@/types/mockInterview';
 import { resolveErrorRecovery, type RecoveryDecision } from '@/lib/recoveryPolicy/recoveryPolicy';
+import type { RecoveryAttemptRetention, RecoveryUserAction } from '@/lib/recoveryPolicy/generatedRecoveryPolicy';
 import {
   createStudioState,
   reduceStudioState,
@@ -69,7 +70,13 @@ type VoiceReviewRecovery = { attemptKey: string; attemptId: number | null; voice
 type StudioBusinessRecovery = { attemptKey: string; attemptId: number; state: StudioState; timeline: TimelineEntry[] };
 type StudioStartRecovery = { attemptKey: string; questionKey: string; message: string };
 type TerminalDisposition = 'terminal_no_retry' | 'restart_new_attempt' | 'reload_source';
-type StudioTerminalFailure = { message: string; attemptId: number | null; disposition: TerminalDisposition };
+type StudioTerminalFailure = {
+  message: string;
+  attemptId: number | null;
+  disposition: TerminalDisposition;
+  userAction: RecoveryUserAction;
+  attemptRetention: RecoveryAttemptRetention;
+};
 type WorkspaceTab = 'answer' | 'evidence';
 
 const CONTINUOUS_VOICE_PREFERENCE_KEY = 'offerpilot:interview-studio:continuous-voice-preference';
@@ -111,6 +118,8 @@ function terminalFailureOf(decision: RecoveryDecision, fallbackAttemptId: number
     message: decision.message,
     attemptId: decision.attemptId ?? fallbackAttemptId,
     disposition: decision.disposition as TerminalDisposition,
+    userAction: decision.userAction,
+    attemptRetention: decision.attemptRetention,
   };
 }
 
@@ -547,6 +556,10 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       }
       if (failure.disposition === 'edit_input') {
         clearStudioStartRecovery();
+        if (!failure.preserveIdempotencyKey) {
+          attemptKeyRef.current = key('attempt');
+          initialQuestionKeyRef.current = key('question');
+        }
         setStartError(failure.message);
         return;
       }
@@ -692,7 +705,12 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         update({ type: 'result_unknown', operation: 'question', message: failure.message });
         continuousController.nextQuestionUnknown(failure.message);
       } else if (failure.disposition === 'edit_input') {
-        update({ type: 'edit_input', message: failure.message });
+        update({
+          type: 'edit_input',
+          operation: 'question',
+          preserveIdempotencyKey: failure.preserveIdempotencyKey,
+          message: failure.message,
+        });
         continuousController.fallback(failure.message);
       } else {
         clearStudioBusinessRecovery();
@@ -742,7 +760,12 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
         update({ type: 'result_unknown', operation: 'answer', message: failure.message });
         continuousController.answerSubmissionUnknown(failure.message);
       } else if (failure.disposition === 'edit_input') {
-        update({ type: 'edit_input', message: failure.message });
+        update({
+          type: 'edit_input',
+          operation: 'answer',
+          preserveIdempotencyKey: failure.preserveIdempotencyKey,
+          message: failure.message,
+        });
       } else {
         clearStudioBusinessRecovery();
         setTerminalFailure(terminalFailureOf(failure, attemptId));
@@ -778,7 +801,12 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
       if (failure.disposition === 'retry_same_key') {
         update({ type: 'result_unknown', operation: 'feedback', message: failure.message });
       } else if (failure.disposition === 'edit_input') {
-        update({ type: 'edit_input', message: failure.message });
+        update({
+          type: 'edit_input',
+          operation: 'feedback',
+          preserveIdempotencyKey: failure.preserveIdempotencyKey,
+          message: failure.message,
+        });
       } else {
         clearStudioBusinessRecovery();
         setTerminalFailure(terminalFailureOf(failure, attemptId));
@@ -818,7 +846,7 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
     cancelStartRetry();
     setWorking(true);
     try {
-      if (failed.attemptId !== null) {
+      if (failed.attemptId !== null && failed.attemptRetention === 'absent') {
         try {
           await discardInterviewStudioAttempt({ context: serviceContext, attemptId: failed.attemptId });
         } catch (error) {
@@ -941,10 +969,12 @@ export default function InterviewStudio({ context, onClose, onActivityChange, on
                 type="warning"
                 showIcon
                 message={terminalFailure.message}
-                action={terminalFailure.disposition === 'reload_source' ? (
+                action={terminalFailure.userAction === 'reload_source' ? (
                   <Button size="small" onClick={requestClose} disabled={working}>退出并重新加载</Button>
-                ) : (
+                ) : terminalFailure.userAction === 'restart_new_attempt' ? (
                   <Button size="small" onClick={() => void restartAfterTerminalFailure()} disabled={working}>重新开始练习</Button>
+                ) : (
+                  <Button size="small" onClick={requestClose} disabled={working}>关闭</Button>
                 )}
               />
             </div>

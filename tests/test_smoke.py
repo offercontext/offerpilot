@@ -235,12 +235,14 @@ def test_real_ai_mock_interview_smoke_restarts_unverifiable_attempts_and_confirm
         assert len(event_ids) == 1
 
     with session_factory_for_data_dir(data_dir)() as session:
-        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 1
-        assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 2
+        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 3
+        assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 6
         assert session.scalar(select(func.count()).select_from(MockInterviewFeedbackProposal)) == 1
         assert session.scalar(select(func.count()).select_from(MockInterviewReviewDraft)) == 1
-        attempt = session.scalar(select(MockInterviewAttempt))
-        assert attempt is not None
+        draft = session.scalar(select(MockInterviewReviewDraft))
+        assert draft is not None
+        attempt = session.get(MockInterviewAttempt, draft.attempt_id)
+        assert attempt is not None and attempt.attempt_status == "feedback_ready"
         assert str(attempt.event_id) in event_ids
         assert attempt.resume_id == start_posts[0]["resume_id"]
     assert "unverifiable" in steps[-1].detail
@@ -260,10 +262,12 @@ def test_real_ai_mock_interview_smoke_fails_after_three_unverifiable_restarts(tm
             _run_real_ai_mock_interview_smoke(client, [], application["id"], [], data_dir)
 
     with session_factory_for_data_dir(data_dir)() as session:
-        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 0
-        assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 0
+        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 3
+        assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 6
         assert session.scalar(select(func.count()).select_from(MockInterviewFeedbackProposal)) == 0
         assert session.scalar(select(func.count()).select_from(MockInterviewReviewDraft)) == 0
+        statuses = list(session.scalars(select(MockInterviewAttempt.attempt_status)).all())
+        assert statuses == ["contract_failed", "contract_failed", "contract_failed"]
     assert model.feedback_calls == 6
 
 

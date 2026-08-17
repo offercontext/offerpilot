@@ -38,7 +38,12 @@ export type StudioAction =
   | { type: 'feedback_submitting'; feedbackKey: string }
   | { type: 'contract_failed'; message: string }
   | { type: 'result_unknown'; operation: StudioOperation; message: string }
-  | { type: 'edit_input'; message: string }
+  | {
+    type: 'edit_input';
+    operation: StudioOperation;
+    preserveIdempotencyKey: boolean;
+    message: string;
+  }
   | { type: 'error'; message: string };
 
 export function createStudioState(input: { turnNo: number; question: string; maxTurns?: number }): StudioState {
@@ -84,8 +89,25 @@ export function reduceStudioState(state: StudioState, action: StudioAction): Stu
       return { ...state, phase: 'contract_failed', pendingOperation: null, resultUnknown: false, error: action.message };
     case 'result_unknown':
       return { ...state, phase: 'result_unknown', pendingOperation: action.operation, resultUnknown: true, error: action.message };
-    case 'edit_input':
-      return { ...state, phase: 'question_ready', pendingOperation: null, resultUnknown: false, error: action.message };
+    case 'edit_input': {
+      const clearedKey = action.preserveIdempotencyKey
+        ? {}
+        : action.operation === 'answer'
+          ? { turnKey: null }
+          : action.operation === 'question'
+            ? { questionKey: null }
+            : action.operation === 'feedback'
+              ? { feedbackKey: null }
+              : {};
+      return {
+        ...state,
+        ...clearedKey,
+        phase: 'question_ready',
+        pendingOperation: null,
+        resultUnknown: false,
+        error: action.message,
+      };
+    }
     case 'error':
       return { ...state, error: action.message };
     default:

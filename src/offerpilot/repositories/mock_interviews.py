@@ -142,6 +142,7 @@ class MockInterviewRepository:
                 )
             )
             if existing is not None:
+                self._assert_attempt_sources(session, existing)
                 if existing.jd_version_id != jd_version_id or existing.resume_id != resume_id:
                     raise MockInterviewIdempotencyConflict("mock interview input changed")
                 try:
@@ -311,6 +312,7 @@ class MockInterviewRepository:
                 )
             )
             if existing is not None:
+                self._assert_attempt_sources(session, existing)
                 turn = session.scalar(
                     select(MockInterviewTurn).where(
                         MockInterviewTurn.attempt_id == existing.id,
@@ -532,7 +534,7 @@ class MockInterviewRepository:
             if attempt is None:
                 return None
             if attempt.generation_revision != revision or attempt.provider_call_token != provider_call_token:
-                return attempt
+                return None
             try:
                 self._assert_attempt_sources(session, attempt)
             except MockInterviewSourceChanged:
@@ -687,7 +689,7 @@ class MockInterviewRepository:
             if attempt is None:
                 return None
             if attempt.generation_revision != revision or attempt.provider_call_token != provider_call_token:
-                return attempt
+                return None
             try:
                 self._assert_attempt_sources(session, attempt)
             except MockInterviewSourceChanged:

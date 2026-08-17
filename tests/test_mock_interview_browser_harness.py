@@ -18,7 +18,9 @@ from offerpilot.models import (
     Resume,
 )
 from offerpilot.smoke import (
+    _assert_mock_interview_failed_attempt_clean,
     _assert_real_ai_smoke_data_clean,
+    _capture_real_ai_browser_domain_baseline,
     _cleanup_real_ai_smoke_records,
     _assert_mock_interview_attempt_restart_state,
     _latest_mock_interview_failure_diagnostic,
@@ -85,15 +87,12 @@ def test_browser_harness_prefers_modern_http_status_code_property():
     assert status_property < legacy_data
 
 
-@pytest.mark.parametrize(
-    ("kind", "category", "state"),
-    [
-        ("contract", "contract_failed", "retained:contract_failed"),
-    ],
-)
-def test_browser_harness_rejects_retained_terminal_attempt(kind, category, state):
-    with pytest.raises(RuntimeError, match="terminally unverifiable"):
-        _assert_mock_interview_attempt_restart_state(kind, category, state)
+def test_browser_harness_requires_contract_failed_attempt_to_remain_retained():
+    _assert_mock_interview_attempt_restart_state(
+        "contract", "contract_failed", "retained:contract_failed"
+    )
+    with pytest.raises(RuntimeError, match="retained-terminal"):
+        _assert_mock_interview_attempt_restart_state("contract", "contract_failed", "deleted")
 
 
 def test_browser_harness_rejects_deleted_provider_unknown_attempt():
@@ -155,10 +154,20 @@ def test_browser_harness_provider_failure_categories_require_retention(category)
         _assert_mock_interview_attempt_restart_state("provider", category, "deleted")
 
 
-def test_browser_harness_contract_failure_requires_deletion():
-    _assert_mock_interview_attempt_restart_state("contract", "unknown_evidence_ref", "deleted")
-    with pytest.raises(RuntimeError, match="terminally unverifiable"):
-        _assert_mock_interview_attempt_restart_state("contract", "unknown_evidence_ref", "retained:contract_failed")
+def test_browser_harness_contract_failure_requires_retention():
+    _assert_mock_interview_attempt_restart_state(
+        "contract", "unknown_evidence_ref", "retained:contract_failed"
+    )
+    with pytest.raises(RuntimeError, match="retained-terminal"):
+        _assert_mock_interview_attempt_restart_state("contract", "unknown_evidence_ref", "deleted")
+
+
+def test_browser_harness_source_conflict_requires_retention():
+    _assert_mock_interview_attempt_restart_state(
+        "contract", "source_conflict", "retained:source_conflict"
+    )
+    with pytest.raises(RuntimeError, match="source-conflict"):
+        _assert_mock_interview_attempt_restart_state("contract", "source_conflict", "deleted")
 
 
 def test_browser_harness_missing_failure_diagnostic_is_not_treated_as_unverifiable_fallback():
@@ -200,6 +209,63 @@ def test_browser_harness_records_failed_attempt_cleanup_or_retention(tmp_path):
     assert _mock_interview_attempt_state(
         data_dir, application_id, event_id, resume_id, attempt_id
     ) == "retained:provider_unknown"
+
+
+def test_safe_empty_cleanup_allows_an_older_retained_terminal_attempt(tmp_path):
+    data_dir = tmp_path / "data"
+    factory = session_factory_for_data_dir(data_dir)
+    with factory() as session:
+        application = Application(company_name="Smoke", position_name="QA")
+        session.add(application)
+        session.flush()
+        event = ApplicationEvent(application_id=application.id, event_type="interview")
+        resume = Resume(title="Smoke", content_json=json.dumps({}))
+        session.add_all([event, resume])
+        session.flush()
+        retained = MockInterviewAttempt(
+            application_id=application.id,
+            event_id=event.id,
+            resume_id=resume.id,
+            idempotency_key="retained",
+            input_snapshot_json="{}",
+            source_fingerprint="source",
+            attempt_status="contract_failed",
+            generation_revision=1,
+            transcript_fingerprint="transcript-retained",
+        )
+        deleted = MockInterviewAttempt(
+            application_id=application.id,
+            event_id=event.id,
+            resume_id=resume.id,
+            idempotency_key="safe-empty",
+            input_snapshot_json="{}",
+            source_fingerprint="source",
+            attempt_status="feedback_ready",
+            generation_revision=1,
+            transcript_fingerprint="transcript-deleted",
+        )
+        session.add_all([retained, deleted])
+        session.commit()
+        application_id, event_id, resume_id = application.id, event.id, resume.id
+        deleted_id = deleted.id
+    baseline = _capture_real_ai_browser_domain_baseline(
+        data_dir, application_id, [event_id], [resume_id]
+    )
+    with factory() as session:
+        session.delete(session.get(MockInterviewAttempt, deleted_id))
+        session.commit()
+    bind = factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    _assert_mock_interview_failed_attempt_clean(
+        data_dir,
+        application_id,
+        event_id,
+        resume_id,
+        deleted_id,
+        baseline,
+    )
 
 
 def test_browser_harness_fake_cdp_two_failures_then_success_selects_third_attempt():
