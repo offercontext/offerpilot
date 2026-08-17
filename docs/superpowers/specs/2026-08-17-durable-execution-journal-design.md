@@ -2,7 +2,7 @@
 
 日期：2026-08-17
 
-状态：待复审
+状态：待实施
 
 分支：`feat/20260817-durable-execution-journal`
 
@@ -160,9 +160,12 @@ transport_run_id       当前流式请求的 SseRun 身份
 |---|---|
 | `id` | UUID 字符串，逻辑 Run 身份 |
 | `conversation_id` | Conversation 外键，删除 Conversation 时级联清理 |
-| `input_message_id` | 初始用户消息 ID，可空，不保存正文，也不改变现有消息持久化顺序 |
+| `input_message_id` | 初始用户消息 nullable 外键，`ON DELETE SET NULL`，不保存正文，也不改变现有消息持久化顺序 |
 | `origin_kind` | `user_message / pilot_action / system` |
-| `context_type` / `context_ref` | 当次运行上下文身份 |
+| `initial_context_type` | Recorder allowlist 归一化后的上下文类型 |
+| `initial_context_entity_id` | 经类型校验和可见性校验的内部整数或 UUID，可空 |
+| `initial_context_ref_fingerprint` | 非结构化上下文引用的 HMAC fingerprint，可空，绝不保存原文 |
+| `fingerprint_key_id` | 当前安装的非秘密 Key Domain UUID，非空；没有可持久化 Key Domain 时不创建 Journal Run |
 | `initial_transport_mode` | `sync / stream` |
 | `initial_route_kind` | `model / deterministic / unknown` |
 | `status` | Journal 观察到的运行状态投影，不是业务事实源 |
@@ -172,6 +175,21 @@ transport_run_id       当前流式请求的 SseRun 身份
 | `recording_error_count` | Journal 内部错误计数 |
 | `failure_code` | 脱敏的最终失败类别，可空 |
 | `started_at / updated_at / finished_at` | UTC 时间 |
+
+上下文归一化规则固定为：
+
+```text
+initial_context_type = workspace | global | application | mode | unknown
+```
+
+- 只有 `application` 且 `context_ref` 是经严格解析、当前可见的内部 Application ID 时，才保存 `initial_context_entity_id`；
+- `workspace` 与 `global` 不保存 entity ID 或 ref；
+- `mode` 和未知类型不保存原始 type/ref，需要诊断时只保存两者 canonical tuple 的 HMAC fingerprint；
+- 任意未进入 allowlist 的 `Conversation.context_type/context_ref` 都不能原样复制到 Journal。
+
+所有引用字段采用 type-specific normalizer：数据库整数 ID、36 位 UUID 和受控 Provider Tool Call ID 可以在字符集与长度校验后保存；自由字符串、模型 ID 和不满足语法的引用只能保存 HMAC fingerprint 或留空。`transport_run_id` 必须是当前 `SseRun` 的合法 UUID；`operation_id` 必须通过既有格式校验；`model_id` 使用 HMAC fingerprint，不使用普通 SHA-256 伪装匿名化。
+
+每次成功追加 Event、Context Snapshot 或状态转换都更新 `AgentRun.updated_at`。Trace 的 stale 判断使用 `max(AgentRun.updated_at, latest AgentEvent.created_at)`，不得只使用 `started_at`。
 
 Run 状态固定为：
 
@@ -238,6 +256,7 @@ WHERE waiting_tool_call_id IS NOT NULL
 | `model_step` | 模型调用序号，可空 |
 | `model_call_id` | 模型调用 UUID，可空 |
 | `source_ref_type / source_ref_id` | Message、Tool Call、Operation 等稳定关联，可空 |
+| `fingerprint_key_id` | payload 中存在 HMAC fingerprint 时使用的非秘密 Key Domain UUID，可空 |
 | `payload_json` | 白名单、脱敏、限长 canonical JSON |
 | `payload_digest` | canonical payload SHA-256 |
 | `fact_digest` | 仅由该事件稳定事实字段生成的 SHA-256，用于幂等冲突判断 |
@@ -262,6 +281,7 @@ Context Snapshot 仅保存“使用了哪些上下文”的 manifest，不保存
 | `run_id` | AgentRun 外键 |
 | `execution_segment_id` | 物理请求身份 |
 | `snapshot_key` | Run 内稳定去重身份 |
+| `manifest_schema_version` | Manifest 结构版本，首期固定为 1 |
 | `snapshot_kind` | `initial / confirmation_resume / model_input` |
 | `model_step` | 关联模型调用，可空 |
 | `model_call_id` | 关联模型调用 UUID，可空 |
@@ -269,6 +289,7 @@ Context Snapshot 仅保存“使用了哪些上下文”的 manifest，不保存
 | `manifest_digest` | canonical manifest SHA-256 |
 | `canonicalizer_version` | 逻辑输入规范化算法版本 |
 | `logical_input_fingerprint` | 逻辑 Provider 请求对象的 HMAC-SHA-256 |
+| `fingerprint_key_id` | 生成 fingerprint 的非秘密 Key Domain UUID |
 | `estimated_token_count` | 可空的确定性估算 |
 | `token_estimator_name / token_estimator_version` | Token 估算器身份，可空但必须成对出现 |
 | `created_at` | UTC 时间 |
@@ -285,6 +306,37 @@ model-input:{segment_id}:{model_call_id}
 
 每次调用 Agent 层 `model.complete` 或 `stream_complete` 前，都必须先生成一个 `model_input` Snapshot，再由 `model.requested` 引用其 ID。这里的“逻辑输入”严格指 OfferPilot Agent 层传给 Provider client 的规范化 messages + tools 对象，不承诺等于 Provider 最终网络字节。
 
+`manifest_schema_version=1` 使用有界集合摘要，不枚举完整长对话或完整资源集：
+
+```json
+{
+  "conversation": {
+    "message_count": 184,
+    "first_message_id": 1,
+    "last_message_id": 184,
+    "ordered_ids_digest": "sha256:...",
+    "included_recent_message_ids": [169, 170, 171, 172]
+  },
+  "tools": {
+    "count": 24,
+    "ordered_names_digest": "sha256:...",
+    "included_names": ["get_application", "save_application_jd_version"]
+  },
+  "attachments": {
+    "count": 4,
+    "ordered_refs_digest": "sha256:...",
+    "included_refs": [{"id": "validated-internal-id", "revision": 2}]
+  },
+  "domain_sources": {
+    "count": 3,
+    "ordered_refs_digest": "sha256:...",
+    "included_refs": [{"kind": "application", "id": 37, "revision": 5}]
+  }
+}
+```
+
+完整集合仅用 count、边界 ID 和有序集合摘要表达。`included_recent_message_ids` 固定最多 16 个；`included_names` 固定最多 32 个并保持实际 Provider tool 顺序；attachments 固定最多 16 个；domain sources 固定最多 32 个。所有代表性引用先经过 type-specific normalizer，每个字符串字段再应用独立字符集和长度上限。16 KiB 是异常防线，不是正常长 Conversation 的淘汰线。
+
 输入指纹使用独立的每安装 `journal_hmac_secret`，计算公式固定为：
 
 ```text
@@ -294,7 +346,19 @@ HMAC-SHA256(
 )
 ```
 
-该 Secret 首次加载配置时生成，只保存在权限为 `0600` 的本地配置中，设置更新必须保留原值，且绝不通过设置 API、备份、日志或报告返回。输入指纹属于敏感派生数据，也不得进入普通日志或发布报告。`payload_digest` 和 `manifest_digest` 的输入已经过白名单且不含正文，可以使用普通 SHA-256。
+Secret 不写入 `config.json`，而是与非秘密随机 UUID `journal_hmac_key_id` 一起原子写入数据目录下独立的 `agent-journal-key.json`。文件结构版本首期固定为 1，只包含 `schema_version`、`key_id` 与 base64url Secret。这样设置更新不接触该 Secret。POSIX 上 key file 设置为 `0600`；Windows 上继承当前用户数据目录 ACL，不放宽继承权限，也不宣称等价的 POSIX 权限语义。
+
+Key file 生成或原子持久化失败时：
+
+- Config 加载、应用启动和可正常落盘的设置更新继续；
+- 当前进程禁用 Durable Journal 并使用 `NullRunRecorder`；
+- 输出只含固定类别的 `journal_secret_unavailable` 安全诊断；
+- 禁止使用仅存在内存的临时 Secret 继续写 Journal；
+- 普通配置文件整体不可写时仍沿用现有设置 API 的失败语义，Journal 不伪造设置保存成功。
+
+`GET /api/settings`、`GET /api/settings/backup` 和 `GET /api/backups/export` 都不得包含 Journal key file、Secret 或 key ID；完整备份构建器必须按精确相对路径排除 `agent-journal-key.json`，不能只依赖对 `config.json` 脱敏。由于备份恢复不会携带 Key Domain，恢复后生成新的 key/ID；不同 `fingerprint_key_id` 下的 fingerprint 明确不可比较。若恢复后的业务仍引用旧 Journal Run，Recorder 不得用新 key 重算后与旧 fingerprint 判等，而是将该 Journal 路径标为 `fingerprint_key_domain_changed` 并 fail-open；业务确认、恢复或写入仍由既有事实源决定。
+
+输入 fingerprint 属于敏感派生数据，不得进入普通日志或发布报告。`payload_digest` 和 `manifest_digest` 的输入已经过白名单且不含正文，可以使用普通 SHA-256。`pending_identity_fingerprint` 和模型 ID fingerprint 都使用 Journal HMAC；不得将低熵参数或模型 ID 的裸 SHA-256 描述成匿名化。
 
 ### 5.4 数据约束与索引
 
@@ -304,6 +368,10 @@ HMAC-SHA256(
 seq > 0
 recording_error_count >= 0
 estimated_token_count >= 0（非空时）
+manifest_schema_version = 1
+AgentRun.fingerprint_key_id 为合法 UUID
+AgentContextSnapshot.fingerprint_key_id 为合法 UUID
+AgentEvent.fingerprint_key_id 为空或合法 UUID
 length(CAST(payload_json AS BLOB)) <= 4096
 length(CAST(manifest_json AS BLOB)) <= 16384
 UNIQUE(run_id, snapshot_key)
@@ -342,6 +410,8 @@ AgentContextSnapshot(run_id, execution_segment_id, model_step)
 
 创建 Run 本身失败时使用 `NullRunRecorder` 完成请求，并记录 `journal_run_create_failed`。`mark_degraded()` 不得递归调用自身；落库失败只输出经过分类的安全诊断，不得记录 `str(exc)`、SQL 参数或 payload。后续成功写入时可再次尝试同步 degraded latch。调用方不得直接操作 Journal 表或自行生成 seq。
 
+SafeRunRecorder 只捕获正常 Journal 异常（`Exception`），不得捕获 `BaseException`。请求取消、进程退出和键盘中断继续遵循现有运行语义。
+
 ### 6.2 窄接口
 
 ```python
@@ -364,6 +434,14 @@ OFFERPILOT_AGENT_JOURNAL_ENABLED=true
 ### 6.3 并发与原子序号
 
 seq 必须通过数据库原子 `UPDATE ... RETURNING` 或等价 CAS 循环取得，并与事件插入处于同一短事务。状态转换和对应状态事件也必须位于同一 Journal 事务。
+
+以下复合写入必须原子完成：
+
+- 创建 AgentRun、`run.started` 与初始 `segment.started`；
+- 按 `snapshot_key` 幂等创建 AgentContextSnapshot、分配 seq 并写入 `context.captured`；
+- 更新 Run 状态、更新/清理 `waiting_tool_call_id`、追加对应 Run 状态事件和 `segment.finished`。
+
+`capture_context()` 在单个事务中先查询 snapshot key；相同事实返回已有 Snapshot 与 Event，不同事实进入 degraded；不存在时同时插入 Snapshot 和 `context.captured`。禁止产生孤立 Snapshot 或指向不存在 Snapshot 的事件。
 
 优先使用：
 
@@ -391,10 +469,27 @@ RETURNING last_seq
 
 - 单次连接池 checkout 或 SQLite lock 等待预算最多 50 ms；
 - seq CAS 最多 2 次且不得无界退避；
-- 单个 Segment 的同步 Journal 累计等待预算最多 150 ms；
+- 单个 Segment 的同步 Journal 总耗时预算最多 150 ms，覆盖 schema 校验、canonical JSON、Manifest 归一化、HMAC、连接池等待、SQLite lock、事务和提交，而不只是数据库等待；
 - 超出预算立即设置内存 degraded latch，并跳过该 Segment 后续非终态记录；
-- Segment 结束时允许一次独立、最多 50 ms 的终态收敛尝试；
+- Segment 结束时允许一次独立、最多 50 ms 的 disposition convergence，覆盖 `waiting_confirmation` 和所有终态；
 - Journal 预算不得延长 Provider、工具、HTTP 或 SSE 的既有 timeout。
+
+Disposition convergence 使用一个有界事务补齐最低一致集合：
+
+```text
+suspended:
+    tool.proposed（此前缺失时）
+    approval.requested
+    waiting_tool_call_id
+    run.waiting_confirmation
+    segment.finished(suspended)
+
+terminal:
+    run.completed | run.failed | run.cancelled | run.timed_out
+    segment.finished(completed | failed | cancelled | timed_out)
+```
+
+若该尝试仍失败，业务结果不回滚，后续确认允许进入 `journal_run_missing` 路径。
 
 实现计划必须用受控 SQLite 写锁和连接池占用测试证明等待有界；不能只测试最终抛出异常。
 
@@ -443,6 +538,27 @@ run.timed_out
 ```
 
 `facts` 的字段由下表逐事件冻结，并用于 `fact_digest`。`telemetry` 只允许 `duration_ms`、`item_count`、`byte_count`、`retry_count` 和固定枚举的诊断计数；它参与 `payload_digest`，但不参与幂等事实冲突判断。
+
+两个 digest 的计算公式固定为：
+
+```text
+payload_digest = SHA-256(canonical_json(payload_json))
+
+fact_digest = SHA-256(
+    canonical_json({
+        "event_type": event_type,
+        "schema_version": schema_version,
+        "execution_segment_id": execution_segment_id,
+        "model_step": model_step,
+        "model_call_id": model_call_id,
+        "source_ref_type": source_ref_type,
+        "source_ref_id": normalized_source_ref_id,
+        "facts": payload_json["facts"]
+    })
+)
+```
+
+所有 envelope 引用在进入公式前必须完成类型归一化。`run.started` 归属于初始 Segment：先生成 `agent_run_id` 和初始 `execution_segment_id`，再在一个 Journal 事务中创建 AgentRun、`run.started` 与 `segment.started`。因此所有 AgentEvent 的 `execution_segment_id` 始终非空。
 
 示例：
 
@@ -511,7 +627,7 @@ deterministic_action_match
 pending_action_replay
 ```
 
-模型事件不得保存 Provider URL 或模型输出。`model.requested` 的 capability 摘要只允许 `provider_kind`、`model_id_hash`、`supports_tools`、`supports_json_schema`、`stream`、`tools_count` 和 `response_format_kind`；`model.completed` 只允许 `assistant_kind`、`tool_call_count` 和固定 `finish_category`；`model.failed` 只允许已有脱敏 failure category 和 provider outcome。
+模型事件不得保存 Provider URL 或模型输出。`model.requested` 的 capability 摘要只允许 `provider_kind`、`model_id_fingerprint`、`supports_tools`、`supports_json_schema`、`stream`、`tools_count` 和 `response_format_kind`；`model_id_fingerprint` 必须使用当前 Journal HMAC key，并由 Event 的 `fingerprint_key_id` 标明 Key Domain。`model.completed` 只允许 `assistant_kind`、`tool_call_count` 和固定 `finish_category`；`model.failed` 只允许已有脱敏 failure category 和 provider outcome。
 
 | 事件 | dedupe key | 参与 `fact_digest` 的字段 |
 |---|---|---|
@@ -527,7 +643,7 @@ pending_action_replay
 | `tool.started` | `tool.started:{segment_id}:{tool_call_id}` | tool name、result contract |
 | `tool.completed` | `tool.completed:{segment_id}:{tool_call_id}` | tool name、outcome、result shape digest |
 | `tool.failed` | `tool.failed:{segment_id}:{tool_call_id}` | tool name、failure category |
-| `approval.requested` | `approval.requested:{tool_call_id}` | tool call、confirmation mode、pending identity digest |
+| `approval.requested` | `approval.requested:{tool_call_id}` | tool call、confirmation mode、`pending_identity_fingerprint`（Journal HMAC） |
 | `approval.decided` | `approval.decided:{confirmation_attempt_id}` | decision、tool call、新旧输入 HMAC fingerprint |
 | `run.waiting_confirmation` | `run.waiting_confirmation:{tool_call_id}` | tool call ID |
 | `run.resumed` | `run.resumed:{confirmation_attempt_id}` | confirmation attempt、tool call ID |
@@ -717,12 +833,12 @@ seq 连续只证明已持久化事件没有数字缺口，不能证明所有现�
 ```text
 src/offerpilot/models.py
 src/offerpilot/db.py
-src/offerpilot/config.py
 src/offerpilot/repositories/agent_runs.py
 
 src/offerpilot/agent_runtime/__init__.py
 src/offerpilot/agent_runtime/events.py
 src/offerpilot/agent_runtime/journal.py
+src/offerpilot/agent_runtime/keyring.py
 src/offerpilot/agent_runtime/trace.py
 
 src/offerpilot/api.py
@@ -731,10 +847,10 @@ src/offerpilot/ai/agent.py
 tests/test_agent_run_migrations.py
 tests/test_agent_runs_repository.py
 tests/test_agent_run_journal.py
+tests/test_agent_run_keyring.py
 tests/test_agent_run_trace.py
 tests/test_ai_agent.py
 tests/test_chat_api.py
-tests/test_config.py
 tests/test_settings_api.py
 tests/test_smoke.py
 
@@ -764,17 +880,20 @@ README.md
 - 空库创建；
 - 当前 `0023` 数据库升级到 `0024`；
 - 重复迁移；
-- Conversation 与 Run 级联删除；
+- Conversation 删除时 Run/Event/Snapshot 级联删除，单条 input Message 删除时 `input_message_id` 置空且 Run 保留；
 - 双 SQLite 连接并发追加，seq 唯一且连续；
 - `UPDATE ... RETURNING` 与运行时不支持时的有限 CAS fallback；
 - 相同 dedupe key、相同事实幂等返回；
 - 相同 dedupe key、遥测不同但稳定事实相同时幂等返回；
-- 相同 dedupe key、稳定事实不同时进入 degraded；
+- 相同 dedupe key 下 Segment、Step、Model Call 或规范化 source ref 不同，即使 payload facts 相同也因 Event Envelope 不同进入 degraded；
+- `payload_digest` 覆盖 facts + telemetry，`fact_digest` 只覆盖已冻结的 stable envelope + facts；
 - 幂等终态重放先返回原事件，不被终态转换校验误拒绝；
 - 严格状态转换、降级终态收敛和终态不可变；
 - `conversation_id + waiting_tool_call_id` 部分唯一索引；
-- Snapshot key 唯一、每个 Model Call 对应一个 Snapshot；
-- 36 位小写 UUID、数值 Check 约束与 UTF-8 BLOB 长度约束；
+- Run + `run.started` + 初始 `segment.started` 同事务成功或回滚；
+- Snapshot + `context.captured` 同事务成功或回滚，Snapshot key 唯一、每个 Model Call 对应一个 Snapshot；
+- `manifest_schema_version=1`、36 位小写 UUID、Key Domain UUID、数值 Check 与 UTF-8 BLOB 长度约束；
+- 长 Conversation、长工具表、附件与领域来源按固定上限采样，同时保留完整 count、边界与 ordered digest；
 - 4 KiB payload 与 16 KiB manifest 的边界；
 - 非法 JSON、异常对象和敏感字段拒绝。
 
@@ -790,24 +909,31 @@ README.md
 - 确认、编辑确认、拒绝复用原 Run 并新增 Segment；
 - `approval.decided` 发生在合法 confirmation claim 之后、工具执行之前；
 - 等待确认和终态均产生正确的 `segment.finished`；
+- 同步预算耗尽后，最多 50 ms disposition convergence 可原子补齐 suspended 的 Tool/Approval/Run/Segment 最低集合；
 - 工具失败后模型继续并正常完成 Run；
 - 多轮工具与多次确认；
 - Provider、工具和消息持久化失败；
 - 客户端取消与服务端超时；
-- 模拟进程中断后，在无阈值时读取为 `open`，超过显式阈值后读取为 `stale_open`；
+- Event、Snapshot 和状态追加会推进 `updated_at`；模拟进程中断后，stale 使用 `max(updated_at, latest event created_at)`，在无阈值时读取为 `open`，超过显式阈值后读取为 `stale_open`；
 - 读取模型分别检测 lifecycle、completion、integrity 和 anomalies；
 - Message ID 不可直接取得时保持空，不做内容或时间反查；
-- Journal 创建、追加和状态更新分别故障时业务结果不变。
+- Journal 创建、追加和状态更新分别故障时业务结果不变；
 - 受控 SQLite 写锁与连接池占用下，单次与累计等待均在设计预算内；
+- 150 ms Segment 总预算覆盖 manifest 构造、schema、canonical JSON、HMAC、连接等待和事务提交，不允许预处理游离于预算之外；
+- Recorder 只捕获 `Exception`，取消信号、`KeyboardInterrupt` 和其他 `BaseException` 不被吞掉；
 - `run.resumed` 写入失败后仍能以 degraded 模式收敛到业务终态；
 - degraded 落库失败不递归，内存 latch 保留且诊断不包含异常正文。
 
 ### 13.3 隐私与行为等价
 
 - Journal 不包含 Prompt、用户原文、附件、JD/简历全文、模型正文、确认 token 或幂等 key 原文；
-- Context 只保存 manifest、稳定 ID、revision、计数、版本化估算器和 HMAC fingerprint；
-- `journal_hmac_secret` 自动生成、持久化但不通过设置 API、日志或报告暴露；
-- 输入 fingerprint 无法跨安装直接比对，并被视为敏感派生数据；
+- 任意自由 `Conversation.context_type/context_ref`、模型 ID 和非法 source ref 不原样持久化，只能进入 allowlist 内部 ID、HMAC fingerprint 或空值；
+- Context 只保存版本化、有界 manifest、稳定 ID、revision、计数、版本化估算器和 HMAC fingerprint；
+- `agent-journal-key.json` 原子生成；持久化失败时应用与设置仍可工作、Journal 禁用，且不使用临时内存 key；
+- POSIX key file 权限为 `0600`；Windows 测试验证位于当前用户数据目录、未放宽继承 ACL，并把平台差异记录为明确契约；
+- `/api/settings`、`/api/settings/backup` 与 `/api/backups/export` 均不包含 key file、Secret 或 key ID；设置更新不接触 key file；
+- 备份恢复生成新 `journal_hmac_key_id`；同一 Key Domain 内输入相同可比，不同 `fingerprint_key_id` 的 fingerprint 明确不可比较，旧 Run 进入 `fingerprint_key_domain_changed` fail-open 路径而不阻断业务；
+- 输入 fingerprint 被视为敏感派生数据，日志、普通诊断与发布报告不得包含；
 - 开启与关闭 Journal 时，HTTP 状态、响应体、SSE 序列、消息、业务写入以及 Provider/工具调用次数逐项一致；
 - 读取模型可以确定性还原因果顺序；
 - SSE seq 与 Journal seq 保持独立；
