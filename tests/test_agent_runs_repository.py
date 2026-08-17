@@ -1,0 +1,634 @@
+from __future__ import annotations
+
+import sqlite3
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError, TimeoutError
+
+from offerpilot.agent_runtime.events import EventDraft, PreparedSnapshot, prepare_event
+from offerpilot.db import init_database, journal_session_factory_for_data_dir
+from offerpilot.models import AgentContextSnapshot, AgentEvent, ChatMessage, Conversation
+from offerpilot.repositories.agent_runs import (
+    AgentRunRepository,
+    CaptureContextCommand,
+    DispositionCommand,
+    JournalConflictError,
+    StartRunCommand,
+    StartSegmentCommand,
+)
+
+
+KEY_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_KEY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+RUN_ID = "22222222-2222-4222-8222-222222222222"
+SEGMENT_ID = "33333333-3333-4333-8333-333333333333"
+SNAPSHOT_ID = "44444444-4444-4444-8444-444444444444"
+
+
+class SyntheticJournalFailure(RuntimeError):
+    pass
+
+
+def _seed_conversation(tmp_path: Path) -> tuple[int, int]:
+    factory = init_database(tmp_path / "data.db")
+    with factory() as session:
+        conversation = Conversation(title="journal repository")
+        session.add(conversation)
+        session.flush()
+        message = ChatMessage(conversation_id=conversation.id, role="user", content="private")
+        session.add(message)
+        session.commit()
+        return conversation.id, message.id
+
+
+def _run_started(conversation_id: int) -> EventDraft:
+    return prepare_event(
+        event_type="run.started",
+        execution_segment_id=SEGMENT_ID,
+        facts={
+            "agent_run_id": RUN_ID,
+            "origin_kind": "user_message",
+            "conversation_id": conversation_id,
+            "context_type": "workspace",
+            "transport_mode": "sync",
+        },
+    )
+
+
+def _segment_started(segment_id: str = SEGMENT_ID) -> EventDraft:
+    return prepare_event(
+        event_type="segment.started",
+        execution_segment_id=segment_id,
+        facts={
+            "request_kind": "initial",
+            "transport_mode": "sync",
+            "execution_path": "model_turn",
+            "transport_run_id": None,
+        },
+    )
+
+
+def _start_command(conversation_id: int, message_id: int | None = None) -> StartRunCommand:
+    return StartRunCommand(
+        run_id=RUN_ID,
+        conversation_id=conversation_id,
+        input_message_id=message_id,
+        origin_kind="user_message",
+        initial_context_type="workspace",
+        initial_context_entity_id=None,
+        initial_context_ref_fingerprint=None,
+        fingerprint_key_id=KEY_ID,
+        initial_transport_mode="sync",
+        initial_route_kind="model",
+        run_started=_run_started(conversation_id),
+        segment_started=_segment_started(),
+    )
+
+
+def _repository(tmp_path: Path, **kwargs: object) -> AgentRunRepository:
+    return AgentRunRepository(journal_session_factory_for_data_dir(tmp_path), **kwargs)
+
+
+def _create_run(tmp_path: Path) -> tuple[AgentRunRepository, int, int]:
+    conversation_id, message_id = _seed_conversation(tmp_path)
+    repository = _repository(tmp_path)
+    repository.create_run_and_initial_segment(_start_command(conversation_id))
+    return repository, conversation_id, message_id
+
+
+def _assistant_event(message_id: int, *, duration_ms: int = 10) -> EventDraft:
+    return prepare_event(
+        event_type="assistant.persisted",
+        execution_segment_id=SEGMENT_ID,
+        facts={"message_id": message_id, "message_kind": "assistant"},
+        telemetry={"duration_ms": duration_ms},
+        source_ref_type="message",
+        source_ref_id=message_id,
+    )
+
+
+def _snapshot_command() -> CaptureContextCommand:
+    prepared = PreparedSnapshot(
+        manifest_schema_version=1,
+        manifest_json='{"manifest_schema_version":1}',
+        manifest_digest="a" * 64,
+        logical_input_fingerprint="b" * 64,
+        fingerprint_key_id=KEY_ID,
+    )
+    return CaptureContextCommand(
+        snapshot_id=SNAPSHOT_ID,
+        execution_segment_id=SEGMENT_ID,
+        snapshot_key=f"model-input:{SEGMENT_ID}",
+        snapshot_kind="model_input",
+        model_step=1,
+        model_call_id="55555555-5555-4555-8555-555555555555",
+        prepared=prepared,
+        estimated_token_count=12,
+        token_estimator_name="chars",
+        token_estimator_version="1",
+    )
+
+
+def _waiting_events(
+    tool_call_id: str,
+    segment_id: str = SEGMENT_ID,
+) -> tuple[EventDraft, ...]:
+    proposed = prepare_event(
+        event_type="tool.proposed",
+        execution_segment_id=segment_id,
+        facts={
+            "tool_call_id": tool_call_id,
+            "tool_name": "create_application",
+            "tool_kind": "write",
+            "args_shape_digest": "sha256:" + "c" * 64,
+            "proposal_outcome": "confirmation_required",
+        },
+        source_ref_type="tool_call",
+        source_ref_id=tool_call_id,
+    )
+    requested = prepare_event(
+        event_type="approval.requested",
+        execution_segment_id=segment_id,
+        facts={
+            "tool_call_id": tool_call_id,
+            "confirmation_mode": "required",
+            "pending_identity_fingerprint": "d" * 64,
+        },
+        source_ref_type="tool_call",
+        source_ref_id=tool_call_id,
+        fingerprint_key_id=KEY_ID,
+    )
+    waiting = prepare_event(
+        event_type="run.waiting_confirmation",
+        execution_segment_id=segment_id,
+        facts={"tool_call_id": tool_call_id},
+        source_ref_type="tool_call",
+        source_ref_id=tool_call_id,
+    )
+    finished = prepare_event(
+        event_type="segment.finished",
+        execution_segment_id=segment_id,
+        facts={"outcome": "suspended", "terminal_run_status": None},
+    )
+    return proposed, requested, waiting, finished
+
+
+def _terminal_events(
+    status: str, segment_id: str = SEGMENT_ID
+) -> tuple[EventDraft, EventDraft]:
+    terminal = prepare_event(
+        event_type=f"run.{status}",
+        execution_segment_id=segment_id,
+        facts={"agent_run_id": RUN_ID, "status": status, "failure_code": None},
+    )
+    finished = prepare_event(
+        event_type="segment.finished",
+        execution_segment_id=segment_id,
+        facts={"outcome": status, "terminal_run_status": status},
+    )
+    return terminal, finished
+
+
+def _resumed_event(
+    tool_call_id: str,
+    segment_id: str,
+    confirmation_attempt_id: str,
+) -> EventDraft:
+    return prepare_event(
+        event_type="run.resumed",
+        execution_segment_id=segment_id,
+        facts={
+            "confirmation_attempt_id": confirmation_attempt_id,
+            "tool_call_id": tool_call_id,
+        },
+        source_ref_type="confirmation_attempt",
+        source_ref_id=confirmation_attempt_id,
+    )
+
+
+def test_create_run_atomically_creates_initial_events(tmp_path: Path) -> None:
+    conversation_id, message_id = _seed_conversation(tmp_path)
+    repository = _repository(tmp_path)
+
+    created = repository.create_run_and_initial_segment(
+        _start_command(conversation_id, message_id)
+    )
+
+    assert created.run.last_seq == 2
+    assert created.run.input_message_id == message_id
+    assert [(event.seq, event.event_type) for event in created.events] == [
+        (1, "run.started"),
+        (2, "segment.started"),
+    ]
+
+
+def test_create_run_is_idempotent_and_conflicts_on_changed_facts(tmp_path: Path) -> None:
+    conversation_id, _ = _seed_conversation(tmp_path)
+    repository = _repository(tmp_path)
+    command = _start_command(conversation_id)
+
+    first = repository.create_run_and_initial_segment(command)
+    second = repository.create_run_and_initial_segment(command)
+
+    assert second.run.id == first.run.id
+    assert [event.id for event in second.events] == [event.id for event in first.events]
+    changed = StartRunCommand(**{**command.__dict__, "initial_route_kind": "deterministic"})
+    with pytest.raises(JournalConflictError):
+        repository.create_run_and_initial_segment(changed)
+
+
+def test_attach_input_message_is_set_once_and_must_belong_to_conversation(tmp_path: Path) -> None:
+    repository, conversation_id, message_id = _create_run(tmp_path)
+
+    attached = repository.attach_input_message(RUN_ID, message_id)
+    assert attached.input_message_id == message_id
+    assert repository.attach_input_message(RUN_ID, message_id).input_message_id == message_id
+
+    main_factory = init_database(tmp_path / "data.db")
+    with main_factory() as session:
+        another = Conversation(title="other")
+        session.add(another)
+        session.flush()
+        foreign = ChatMessage(conversation_id=another.id, role="user", content="private")
+        session.add(foreign)
+        session.commit()
+        foreign_id = foreign.id
+    with pytest.raises(JournalConflictError):
+        repository.attach_input_message(RUN_ID, foreign_id)
+    assert repository.find_waiting_run(conversation_id, "missing") is None
+
+
+def test_capture_context_is_atomic_and_idempotent(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    command = _snapshot_command()
+
+    first = repository.capture_context(RUN_ID, command)
+    second = repository.capture_context(RUN_ID, command)
+
+    assert second.snapshot.id == first.snapshot.id
+    assert second.event.id == first.event.id
+    assert repository.get_run(RUN_ID).last_seq == 3  # type: ignore[union-attr]
+
+
+def test_capture_context_rolls_back_snapshot_when_event_insert_fails(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+
+    def fail(_event: AgentEvent) -> None:
+        raise SyntheticJournalFailure
+
+    failing = _repository(tmp_path, before_event_insert=fail)
+    with pytest.raises(SyntheticJournalFailure):
+        failing.capture_context(RUN_ID, _snapshot_command())
+
+    assert repository.list_snapshots(RUN_ID) == []
+    assert repository.get_run(RUN_ID).last_seq == 2  # type: ignore[union-attr]
+
+
+def test_same_dedupe_and_same_facts_ignores_telemetry_but_changed_facts_conflict(
+    tmp_path: Path,
+) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    first = repository.append_event(RUN_ID, _assistant_event(91, duration_ms=10))
+    second = repository.append_event(RUN_ID, _assistant_event(91, duration_ms=90))
+
+    assert second.id == first.id
+    assert repository.count_events(RUN_ID, first.dedupe_key) == 1
+    with pytest.raises(JournalConflictError):
+        repository.append_event(
+            RUN_ID,
+            prepare_event(
+                event_type="assistant.persisted",
+                execution_segment_id=SEGMENT_ID,
+                facts={"message_id": 91, "message_kind": "tool"},
+                source_ref_type="message",
+                source_ref_id=91,
+            ),
+        )
+
+
+def test_event_fingerprint_key_domain_must_match_run(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    mismatched = prepare_event(
+        event_type="approval.requested",
+        execution_segment_id=SEGMENT_ID,
+        facts={
+            "tool_call_id": "call-mismatched-key",
+            "confirmation_mode": "required",
+            "pending_identity_fingerprint": "e" * 64,
+        },
+        source_ref_type="tool_call",
+        source_ref_id="call-mismatched-key",
+        fingerprint_key_id=OTHER_KEY_ID,
+    )
+
+    with pytest.raises(JournalConflictError, match="key domain"):
+        repository.append_event(RUN_ID, mismatched)
+
+    assert repository.get_run(RUN_ID).last_seq == 2  # type: ignore[union-attr]
+
+
+def test_concurrent_seq_allocation_has_no_gaps_or_duplicates(tmp_path: Path) -> None:
+    _create_run(tmp_path)
+    repositories = [_repository(tmp_path), _repository(tmp_path)]
+    barrier = threading.Barrier(3)
+    errors: list[BaseException] = []
+
+    def append_batch(index: int) -> None:
+        try:
+            barrier.wait()
+            for offset in range(5):
+                repositories[index].append_event(
+                    RUN_ID, _assistant_event(100 + index * 10 + offset)
+                )
+        except BaseException as exc:  # test thread must report every failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=append_batch, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert [event.seq for event in repositories[0].list_events(RUN_ID)] == list(range(1, 13))
+
+
+def test_cas_fallback_stops_after_two_failed_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    fallback = _repository(tmp_path, supports_returning=lambda _session: False)
+    attempts: list[int] = []
+
+    def lose_cas(
+        _session: object,
+        _run_id: str,
+        _expected: int,
+        attempt: int,
+        _now: datetime,
+    ) -> int | None:
+        attempts.append(attempt)
+        return None
+
+    monkeypatch.setattr(fallback, "_cas_increment", lose_cas)
+    with pytest.raises(JournalConflictError, match="sequence allocation"):
+        fallback.append_event(RUN_ID, _assistant_event(201))
+
+    assert attempts == [1, 2]
+    assert repository.get_run(RUN_ID).last_seq == 2  # type: ignore[union-attr]
+    assert repository.count_events(RUN_ID, "assistant.persisted:201") == 0
+
+
+def test_suspended_and_terminal_dispositions_are_atomic_and_terminal_is_immutable(
+    tmp_path: Path,
+) -> None:
+    repository, conversation_id, _ = _create_run(tmp_path)
+    tool_call_id = "call-1"
+    waiting_events = _waiting_events(tool_call_id)
+
+    created = repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=waiting_events,
+            waiting_tool_call_id=tool_call_id,
+        ),
+    )
+
+    assert len(created) == 4
+    waiting = repository.find_waiting_run(conversation_id, tool_call_id)
+    assert waiting is not None and waiting.status == "waiting_confirmation"
+
+    confirmation_segment = "99999999-9999-4999-8999-999999999999"
+    repository.start_segment(
+        StartSegmentCommand(
+            run_id=RUN_ID,
+            segment_started=_segment_started(confirmation_segment),
+        )
+    )
+    confirmation_attempt_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"
+    resumed = repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="running",
+            events=(
+                _resumed_event(tool_call_id, confirmation_segment, confirmation_attempt_id),
+            ),
+        ),
+    )
+    assert [event.event_type for event in resumed] == ["run.resumed"]
+    assert repository.find_waiting_run(conversation_id, tool_call_id) is None
+    terminal = repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="failed",
+            events=_terminal_events("failed", confirmation_segment),
+        ),
+    )
+    assert [event.event_type for event in terminal] == ["run.failed", "segment.finished"]
+    run = repository.get_run(RUN_ID)
+    assert run is not None and run.status == "failed" and run.waiting_tool_call_id is None
+    assert run.finished_at is not None
+    with pytest.raises(JournalConflictError):
+        repository.converge_disposition(
+            RUN_ID,
+            DispositionCommand(target_status="cancelled", events=_terminal_events("cancelled")),
+        )
+
+
+def test_waiting_disposition_converges_when_some_events_already_exist(tmp_path: Path) -> None:
+    repository, conversation_id, _ = _create_run(tmp_path)
+    tool_call_id = "call-partial"
+    events = _waiting_events(tool_call_id)
+    proposed = repository.append_event(RUN_ID, events[0])
+    requested = repository.append_event(RUN_ID, events[1])
+
+    converged = repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=events,
+            waiting_tool_call_id=tool_call_id,
+        ),
+    )
+
+    assert [event.id for event in converged[:2]] == [proposed.id, requested.id]
+    assert [event.seq for event in converged] == [3, 4, 5, 6]
+    assert repository.find_waiting_run(conversation_id, tool_call_id) is not None
+
+
+def test_waiting_disposition_requires_complete_minimum_event_set(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    events = _waiting_events("call-incomplete")
+
+    with pytest.raises(JournalConflictError, match="missing required events"):
+        repository.converge_disposition(
+            RUN_ID,
+            DispositionCommand(
+                target_status="waiting_confirmation",
+                events=events[2:],
+                waiting_tool_call_id="call-incomplete",
+            ),
+        )
+
+    run = repository.get_run(RUN_ID)
+    assert run is not None and run.status == "running" and run.last_seq == 2
+
+
+def test_disposition_replay_queries_existing_events_before_terminal_transition_check(
+    tmp_path: Path,
+) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    command = DispositionCommand(target_status="completed", events=_terminal_events("completed"))
+    first = repository.converge_disposition(RUN_ID, command)
+    second = repository.converge_disposition(RUN_ID, command)
+    assert [event.id for event in second] == [event.id for event in first]
+
+
+def test_waiting_tool_call_partial_unique_index_is_enforced(tmp_path: Path) -> None:
+    repository, conversation_id, _ = _create_run(tmp_path)
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=_waiting_events("same-call"),
+            waiting_tool_call_id="same-call",
+        ),
+    )
+    second_run = str(uuid4())
+    second_segment = str(uuid4())
+    second = StartRunCommand(
+        **{
+            **_start_command(conversation_id).__dict__,
+            "run_id": second_run,
+            "run_started": prepare_event(
+                event_type="run.started",
+                execution_segment_id=second_segment,
+                facts={
+                    "agent_run_id": second_run,
+                    "origin_kind": "user_message",
+                    "conversation_id": conversation_id,
+                    "context_type": "workspace",
+                    "transport_mode": "sync",
+                },
+            ),
+            "segment_started": _segment_started(second_segment),
+        }
+    )
+    repository.create_run_and_initial_segment(second)
+    with pytest.raises(JournalConflictError):
+        repository.converge_disposition(
+            second_run,
+            DispositionCommand(
+                target_status="waiting_confirmation",
+                events=_waiting_events("same-call", second_segment),
+                waiting_tool_call_id="same-call",
+            ),
+        )
+
+
+def test_successful_event_snapshot_and_state_writes_advance_updated_at(tmp_path: Path) -> None:
+    ticks = iter(
+        [
+            datetime(2026, 8, 17, 1, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 17, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 8, 17, 1, 2, tzinfo=timezone.utc),
+            datetime(2026, 8, 17, 1, 3, tzinfo=timezone.utc),
+        ]
+    )
+    conversation_id, _ = _seed_conversation(tmp_path)
+    repository = _repository(tmp_path, now_factory=lambda: next(ticks))
+    created = repository.create_run_and_initial_segment(_start_command(conversation_id))
+    first = created.run.updated_at
+    repository.append_event(RUN_ID, _assistant_event(501))
+    second = repository.get_run(RUN_ID).updated_at  # type: ignore[union-attr]
+    repository.capture_context(RUN_ID, _snapshot_command())
+    third = repository.get_run(RUN_ID).updated_at  # type: ignore[union-attr]
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(target_status="completed", events=_terminal_events("completed")),
+    )
+    fourth = repository.get_run(RUN_ID).updated_at  # type: ignore[union-attr]
+    assert first < second < third < fourth
+
+
+def test_sqlite_write_lock_fails_within_budget(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    blocker = sqlite3.connect(tmp_path / "data.db", timeout=1)
+    blocker.execute("BEGIN IMMEDIATE")
+    acquired = threading.Event()
+    acquired.set()
+    assert acquired.wait(timeout=0.01)
+    started = time.monotonic()
+    try:
+        with pytest.raises(OperationalError):
+            repository.append_event(RUN_ID, _assistant_event(601))
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert time.monotonic() - started < 0.25
+
+
+def test_journal_pool_checkout_fails_within_budget(tmp_path: Path) -> None:
+    _create_run(tmp_path)
+    factory = journal_session_factory_for_data_dir(tmp_path)
+    repository = AgentRunRepository(factory)
+    engine = factory.kw["bind"]
+    held = engine.connect()
+    acquired = threading.Event()
+    acquired.set()
+    assert acquired.wait(timeout=0.01)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            repository.get_run(RUN_ID)
+    finally:
+        held.close()
+    assert time.monotonic() - started < 0.25
+
+
+def test_context_conflict_does_not_modify_existing_snapshot(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    command = _snapshot_command()
+    repository.capture_context(RUN_ID, command)
+    changed = CaptureContextCommand(
+        **{
+            **command.__dict__,
+            "prepared": PreparedSnapshot(
+                **{**command.prepared.__dict__, "logical_input_fingerprint": "f" * 64}
+            ),
+        }
+    )
+    with pytest.raises(JournalConflictError):
+        repository.capture_context(RUN_ID, changed)
+    with repository.session_factory() as session:
+        snapshots = list(session.scalars(select(AgentContextSnapshot)))
+    assert len(snapshots) == 1
+    assert snapshots[0].logical_input_fingerprint == "b" * 64
+
+
+def test_start_segment_is_idempotent_and_requires_live_run(tmp_path: Path) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    segment_id = "77777777-7777-4777-8777-777777777777"
+    command = StartSegmentCommand(run_id=RUN_ID, segment_started=_segment_started(segment_id))
+    first = repository.start_segment(command)
+    second = repository.start_segment(command)
+    assert second.id == first.id
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(target_status="completed", events=_terminal_events("completed")),
+    )
+    with pytest.raises(JournalConflictError):
+        repository.start_segment(
+            StartSegmentCommand(
+                run_id=RUN_ID,
+                segment_started=_segment_started("88888888-8888-4888-8888-888888888888"),
+            )
+        )
