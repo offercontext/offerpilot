@@ -270,3 +270,80 @@ def test_event_draft_is_immutable() -> None:
     changed = replace(event, execution_segment_id=SEGMENT_B)
     assert event.execution_segment_id == SEGMENT_A
     assert changed.execution_segment_id == SEGMENT_B
+
+
+def test_context_captured_accepts_versioned_snapshot_key() -> None:
+    snapshot_id = "66666666-6666-4666-8666-666666666666"
+    event = prepare_event(
+        event_type="context.captured",
+        execution_segment_id=SEGMENT_A,
+        facts={
+            "snapshot_id": snapshot_id,
+            "snapshot_key": f"model-input:{SEGMENT_A}:{CALL_A}",
+            "manifest_digest": "a" * 64,
+            "logical_input_fingerprint": "b" * 64,
+        },
+        fingerprint_key_id=KEY.key_id,
+    )
+
+    assert event.dedupe_key == f"context.captured:{snapshot_id}"
+
+
+def test_sync_segment_has_no_transport_run_id() -> None:
+    event = prepare_event(
+        event_type="segment.started",
+        execution_segment_id=SEGMENT_A,
+        facts={
+            "request_kind": "initial",
+            "transport_mode": "sync",
+            "execution_path": "model_turn",
+            "transport_run_id": None,
+        },
+    )
+
+    assert json.loads(event.payload_json)["facts"]["transport_run_id"] is None
+
+
+def test_event_fixed_enums_reject_safe_looking_private_canary() -> None:
+    with pytest.raises(JournalEventValidationError):
+        _model_completed(
+            facts={
+                "assistant_kind": "private-canary",
+                "tool_call_count": 0,
+                "finish_category": "stop",
+            }
+        )
+
+
+def test_hmac_facts_require_key_domain_id() -> None:
+    with pytest.raises(JournalEventValidationError):
+        prepare_event(
+            event_type="model.requested",
+            execution_segment_id=SEGMENT_A,
+            model_step=1,
+            model_call_id=CALL_A,
+            facts={
+                "snapshot_id": "66666666-6666-4666-8666-666666666666",
+                "provider_kind": "openai_compatible",
+                "model_id_fingerprint": "a" * 64,
+                "supports_tools": True,
+                "supports_json_schema": False,
+                "stream": False,
+                "tools_count": 3,
+                "response_format_kind": "text",
+            },
+        )
+
+
+def test_canonical_json_rejects_str_subclass_keys_without_comparing_them() -> None:
+    called = False
+
+    class EvilKey(str):
+        def __lt__(self, _other: object) -> bool:
+            nonlocal called
+            called = True
+            raise AssertionError("untrusted key comparison executed")
+
+    with pytest.raises(JournalEventValidationError):
+        canonical_json({EvilKey("a"): 1, EvilKey("b"): 2})
+    assert called is False

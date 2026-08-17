@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,17 +62,28 @@ def load_or_create_journal_key(
                 chmod_file(key_path, 0o600)
             return _read_key(key_path)
 
-        try:
-            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            if key_path.exists():
-                if platform_name != "nt":
-                    chmod_file(key_path, 0o600)
-                return _read_key(key_path)
+        for lock_attempt in range(2):
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                if key_path.exists():
+                    if platform_name != "nt":
+                        chmod_file(key_path, 0o600)
+                    return _read_key(key_path)
+                try:
+                    stale = time.time() - lock_path.stat().st_mtime > 30.0
+                except OSError:
+                    stale = False
+                if stale and lock_attempt == 0:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+                return None
+            else:
+                os.close(lock_fd)
+                owns_lock = True
+                break
+        if not owns_lock:
             return None
-        else:
-            os.close(lock_fd)
-            owns_lock = True
 
         domain = JournalKeyDomain(key_id=str(uuid4()), secret=secrets.token_bytes(32))
         payload = {

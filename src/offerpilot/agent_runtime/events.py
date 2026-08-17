@@ -29,6 +29,7 @@ _UUID_REFERENCE_TYPES = {
     "transport_run",
 }
 _SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9_.:-]{1,256}")
 _OPERATION_ID = re.compile(r"[0-9a-f]{32}")
 _FORBIDDEN_KEYS = {
     "answer",
@@ -94,6 +95,101 @@ _FACT_KEYS: dict[str, set[str]] = {
 _TELEMETRY_KEYS = {"duration_ms", "retry_count", "item_count", "byte_count"}
 _HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
 _MAX_CANONICAL_STRING_BYTES = 1_048_576
+_TOOL_NAMES = {
+    "add_note",
+    "compare_offers",
+    "create_application",
+    "create_application_event",
+    "create_application_submission_snapshot",
+    "delete_application_event",
+    "delete_note",
+    "get_application",
+    "get_application_event",
+    "get_jd_analysis",
+    "get_offer",
+    "get_resume",
+    "list_application_events",
+    "list_applications",
+    "list_jd_analyses",
+    "list_notes",
+    "list_offers",
+    "list_resume_matches",
+    "list_resumes",
+    "record_application_outcome",
+    "resume_rewrite_highlight",
+    "resume_update_career_intent",
+    "save_application_jd_version",
+    "save_offer_assessment",
+    "update_application_event",
+    "update_application_status",
+    "update_note",
+    "update_offer",
+}
+_FAILURE_CATEGORIES = {
+    "cancelled",
+    "invalid_response",
+    "network_error",
+    "provider_error",
+    "response_lost",
+    "timeout",
+    "tool_error",
+    "unknown",
+}
+_EVENT_ENUM_VALUES: dict[str, dict[str, set[object]]] = {
+    "run.started": {
+        "origin_kind": {"user_message", "pilot_action", "system"},
+        "context_type": {"workspace", "global", "application", "mode", "unknown"},
+        "transport_mode": {"sync", "stream"},
+    },
+    "segment.started": {
+        "request_kind": {"initial", "confirmation", "pending_replay"},
+        "transport_mode": {"sync", "stream"},
+        "execution_path": {
+            "model_turn",
+            "deterministic_action",
+            "agent_resume",
+            "deterministic_confirmation",
+        },
+    },
+    "segment.finished": {
+        "outcome": {"completed", "suspended", "failed", "cancelled", "timed_out", "noop"},
+        "terminal_run_status": {"completed", "failed", "cancelled", "timed_out", None},
+    },
+    "route.selected": {
+        "route_kind": {"model", "deterministic"},
+        "route_reason_code": {
+            "model_default",
+            "deterministic_action_match",
+            "pending_action_replay",
+        },
+    },
+    "model.requested": {
+        "provider_kind": {"openai", "openai_compatible", "litellm_proxy", "anthropic"},
+        "response_format_kind": {"text", "json_object", "json_schema", "unknown"},
+    },
+    "model.completed": {
+        "assistant_kind": {"empty", "mixed", "text", "tool_calls"},
+        "finish_category": {"content_filter", "length", "stop", "tool_calls", "unknown"},
+    },
+    "model.failed": {
+        "failure_category": set(_FAILURE_CATEGORIES),
+        "provider_outcome": {"cancelled", "error", "network_error", "timeout", "unknown"},
+    },
+    "tool.proposed": {
+        "tool_kind": {"read", "write"},
+        "proposal_outcome": {"confirmation_required", "execution_allowed"},
+    },
+    "tool.started": {"result_contract": {"legacy_string_v1"}},
+    "tool.completed": {"outcome": {"completed"}},
+    "tool.failed": {"failure_category": set(_FAILURE_CATEGORIES)},
+    "approval.requested": {"confirmation_mode": {"required"}},
+    "approval.decided": {"decision": {"approved", "edited", "rejected"}},
+    "assistant.persisted": {"message_kind": {"assistant", "tool"}},
+    "run.completed": {"status": {"completed"}},
+    "run.failed": {"status": {"failed"}},
+    "run.cancelled": {"status": {"cancelled"}},
+    "run.timed_out": {"status": {"timed_out"}},
+}
 
 
 class JournalEventValidationError(ValueError):
@@ -169,12 +265,13 @@ def _canonical_value(
     try:
         if type(value) is dict:
             object_value = cast(dict[object, object], value)
+            if any(type(key) is not str for key in object_value):
+                raise JournalEventValidationError("journal JSON object keys must be plain strings")
+            string_object = cast(dict[str, object], object_value)
             result: dict[str, object] = {}
-            for key in sorted(object_value, key=lambda item: item if isinstance(item, str) else ""):
-                if type(key) is not str:
-                    raise JournalEventValidationError("journal JSON object keys must be strings")
+            for key in sorted(string_object):
                 result[key] = _canonical_value(
-                    object_value[key], active=active, depth=depth + 1, nodes=nodes
+                    string_object[key], active=active, depth=depth + 1, nodes=nodes
                 )
             return result
         sequence_value = cast(list[object] | tuple[object, ...], value)
@@ -414,7 +511,7 @@ def prepare_event(
     if type(telemetry) is not dict or not set(telemetry).issubset(_TELEMETRY_KEYS):
         raise JournalEventValidationError("journal event contains unknown telemetry")
     for field, value in facts.items():
-        _validate_fact_value(field, value)
+        _validate_fact_value(event_type, field, value)
     for value in telemetry.values():
         if type(value) not in {int, float}:
             raise JournalEventValidationError("invalid journal telemetry value")
@@ -431,6 +528,16 @@ def prepare_event(
         raise JournalEventValidationError("invalid model call id")
     if fingerprint_key_id is not None and _canonical_uuid(fingerprint_key_id) is None:
         raise JournalEventValidationError("invalid fingerprint key id")
+    contains_hmac = any(field.endswith("_fingerprint") for field in facts)
+    if contains_hmac != (fingerprint_key_id is not None):
+        raise JournalEventValidationError("journal HMAC facts require exactly one key domain id")
+    if event_type == "segment.started":
+        transport_mode = facts["transport_mode"]
+        transport_run_id = facts["transport_run_id"]
+        if transport_mode == "sync" and transport_run_id is not None:
+            raise JournalEventValidationError("sync segment cannot carry transport run id")
+        if transport_mode == "stream" and _canonical_uuid(transport_run_id) is None:
+            raise JournalEventValidationError("stream segment requires transport run id")
     normalized_type: str | None = None
     normalized_id: str | None = None
     if source_ref_type is not None or source_ref_id is not None:
@@ -467,10 +574,23 @@ def prepare_event(
     )
 
 
-def _validate_fact_value(field: str, value: object) -> None:
-    if field in {"agent_run_id", "snapshot_id", "transport_run_id"}:
+def _validate_fact_value(event_type: str, field: str, value: object) -> None:
+    enum_values = _EVENT_ENUM_VALUES.get(event_type, {}).get(field)
+    if enum_values is not None:
+        if type(value) not in {str, type(None)} or value not in enum_values:
+            raise JournalEventValidationError("invalid journal enum fact")
+        return
+    if field in {"agent_run_id", "snapshot_id"}:
         if _canonical_uuid(value) is None:
             raise JournalEventValidationError("invalid journal UUID fact")
+        return
+    if field == "transport_run_id":
+        if value is not None and _canonical_uuid(value) is None:
+            raise JournalEventValidationError("invalid journal transport UUID fact")
+        return
+    if field == "confirmation_attempt_id":
+        if _canonical_uuid(value) is None:
+            raise JournalEventValidationError("invalid confirmation attempt id")
         return
     if field in {"conversation_id", "message_id"}:
         if type(value) is not int or value <= 0:
@@ -488,7 +608,20 @@ def _validate_fact_value(field: str, value: object) -> None:
         if type(value) is not str or _HEX_DIGEST.fullmatch(value) is None:
             raise JournalEventValidationError("invalid journal digest fact")
         return
-    if field in {"failure_code", "terminal_run_status"} and value is None:
+    if field == "snapshot_key":
+        if type(value) is not str or _SAFE_IDENTIFIER.fullmatch(value) is None:
+            raise JournalEventValidationError("invalid snapshot key")
         return
-    if type(value) is not str or _SAFE_NAME.fullmatch(value) is None:
-        raise JournalEventValidationError("invalid journal token fact")
+    if field == "tool_name":
+        if value not in _TOOL_NAMES:
+            raise JournalEventValidationError("unknown tool name")
+        return
+    if field == "tool_call_id":
+        if type(value) is not str or _SAFE_IDENTIFIER.fullmatch(value) is None:
+            raise JournalEventValidationError("invalid tool call id")
+        return
+    if field in {"failure_category", "failure_code"}:
+        if value is not None and value not in _FAILURE_CATEGORIES:
+            raise JournalEventValidationError("invalid failure category")
+        return
+    raise JournalEventValidationError("journal fact has no strict validator")
