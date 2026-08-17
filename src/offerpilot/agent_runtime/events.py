@@ -94,6 +94,7 @@ _FACT_KEYS: dict[str, set[str]] = {
 }
 _TELEMETRY_KEYS = {"duration_ms", "retry_count", "item_count", "byte_count"}
 _HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MAX_CANONICAL_STRING_BYTES = 1_048_576
 _TOOL_NAMES = {
     "add_note",
@@ -455,6 +456,100 @@ def prepare_context_snapshot(
     )
 
 
+def validate_context_manifest_json(manifest_json: str) -> dict[str, object]:
+    """Return a canonical, privacy-bounded v1 manifest or raise a safe validation error."""
+
+    try:
+        manifest = json.loads(manifest_json)
+    except (json.JSONDecodeError, TypeError):
+        raise JournalEventValidationError("invalid context manifest") from None
+    if type(manifest) is not dict or set(manifest) != {
+        "manifest_schema_version",
+        "conversation",
+        "tools",
+        "attachments",
+        "domain_sources",
+    }:
+        raise JournalEventValidationError("invalid context manifest shape")
+    if manifest["manifest_schema_version"] != 1 or canonical_json(manifest) != manifest_json:
+        raise JournalEventValidationError("context manifest is not canonical")
+    if len(manifest_json.encode("utf-8")) > 16_384:
+        raise JournalEventValidationError("manifest exceeds 16 KiB")
+
+    conversation = manifest["conversation"]
+    if type(conversation) is not dict or set(conversation) != {
+        "message_count",
+        "first_message_id",
+        "last_message_id",
+        "ordered_ids_digest",
+        "included_recent_message_ids",
+    }:
+        raise JournalEventValidationError("invalid conversation manifest")
+    message_count = conversation["message_count"]
+    included_messages = conversation["included_recent_message_ids"]
+    if type(message_count) is not int or message_count < 0 or type(included_messages) is not list:
+        raise JournalEventValidationError("invalid conversation manifest count")
+    if len(included_messages) > 16 or len(included_messages) > message_count:
+        raise JournalEventValidationError("invalid conversation manifest sample")
+    if any(type(item) is not int or item <= 0 for item in included_messages):
+        raise JournalEventValidationError("invalid conversation manifest message")
+    for field in ("first_message_id", "last_message_id"):
+        value = conversation[field]
+        if value is not None and (type(value) is not int or value <= 0):
+            raise JournalEventValidationError("invalid conversation manifest boundary")
+    if message_count == 0 and (
+        conversation["first_message_id"] is not None
+        or conversation["last_message_id"] is not None
+        or included_messages
+    ):
+        raise JournalEventValidationError("invalid empty conversation manifest")
+    if message_count > 0 and (
+        conversation["first_message_id"] is None or conversation["last_message_id"] is None
+    ):
+        raise JournalEventValidationError("missing conversation manifest boundary")
+    _validate_ordered_digest(conversation["ordered_ids_digest"])
+
+    tools = manifest["tools"]
+    if type(tools) is not dict or set(tools) != {
+        "count",
+        "ordered_names_digest",
+        "included_names",
+    }:
+        raise JournalEventValidationError("invalid tools manifest")
+    included_names = tools["included_names"]
+    _validate_manifest_count(tools["count"], included_names, maximum=32)
+    if any(type(item) is not str or _SAFE_NAME.fullmatch(item) is None for item in included_names):
+        raise JournalEventValidationError("invalid tools manifest name")
+    _validate_ordered_digest(tools["ordered_names_digest"])
+
+    for section_name, maximum in (("attachments", 16), ("domain_sources", 32)):
+        section = manifest[section_name]
+        if type(section) is not dict or set(section) != {
+            "count",
+            "ordered_refs_digest",
+            "included_refs",
+        }:
+            raise JournalEventValidationError("invalid reference manifest")
+        included_refs = section["included_refs"]
+        _validate_manifest_count(section["count"], included_refs, maximum=maximum)
+        if any(type(item) is not dict or _normalize_manifest_ref(item) != item for item in included_refs):
+            raise JournalEventValidationError("invalid reference manifest item")
+        _validate_ordered_digest(section["ordered_refs_digest"])
+    return cast(dict[str, object], manifest)
+
+
+def _validate_manifest_count(count: object, included: object, *, maximum: int) -> None:
+    if type(count) is not int or count < 0 or type(included) is not list:
+        raise JournalEventValidationError("invalid manifest count")
+    if len(included) > maximum or len(included) > count:
+        raise JournalEventValidationError("invalid manifest sample size")
+
+
+def _validate_ordered_digest(value: object) -> None:
+    if type(value) is not str or _SHA256_DIGEST.fullmatch(value) is None:
+        raise JournalEventValidationError("invalid ordered manifest digest")
+
+
 def _dedupe_key(
     event_type: str,
     segment_id: str,
@@ -572,6 +667,40 @@ def prepare_event(
         fact_digest=hashlib.sha256(canonical_json(fact_envelope).encode("utf-8")).hexdigest(),
         dedupe_key=_dedupe_key(event_type, segment, call, facts),
     )
+
+
+def validate_event_draft(draft: EventDraft) -> EventDraft:
+    """Revalidate a prepared event before it crosses the Repository boundary."""
+
+    try:
+        payload = json.loads(draft.payload_json)
+        if type(payload) is not dict or set(payload) != {"facts", "telemetry"}:
+            raise JournalEventValidationError("invalid prepared journal event payload")
+        facts = payload["facts"]
+        telemetry = payload["telemetry"]
+        if type(facts) is not dict or type(telemetry) is not dict:
+            raise JournalEventValidationError("invalid prepared journal event payload")
+        source_ref_id: object = draft.source_ref_id
+        if draft.source_ref_type in _INTEGER_REFERENCE_TYPES:
+            if type(source_ref_id) is not str or not source_ref_id.isascii() or not source_ref_id.isdigit():
+                raise JournalEventValidationError("invalid prepared integer reference")
+            source_ref_id = int(source_ref_id)
+        rebuilt = prepare_event(
+            event_type=draft.event_type,
+            execution_segment_id=draft.execution_segment_id,
+            facts=facts,
+            telemetry=telemetry,
+            model_step=draft.model_step,
+            model_call_id=draft.model_call_id,
+            source_ref_type=draft.source_ref_type,
+            source_ref_id=source_ref_id,
+            fingerprint_key_id=draft.fingerprint_key_id,
+        )
+    except (JournalEventValidationError, KeyError, TypeError, ValueError):
+        raise JournalEventValidationError("invalid prepared journal event") from None
+    if rebuilt != draft:
+        raise JournalEventValidationError("prepared journal event fields differ")
+    return draft
 
 
 def _validate_fact_value(event_type: str, field: str, value: object) -> None:

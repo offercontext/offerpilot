@@ -38,6 +38,13 @@ def test_fresh_database_has_durable_journal_schema(tmp_path: Path) -> None:
         "fingerprint_key_id",
         "logical_input_fingerprint",
     }
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("agent_context_snapshots")
+    } >= {
+        "uq_agent_context_run_snapshot",
+        "uq_agent_context_run_model_call",
+    }
 
 
 def test_migration_0024_is_recorded_once_from_0023_database(tmp_path: Path) -> None:

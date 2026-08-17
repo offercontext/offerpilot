@@ -75,21 +75,25 @@ def load_or_create_journal_key(
                     stale = time.time() - lock_path.stat().st_mtime > 30.0
                 except OSError:
                     stale = False
-                if stale and not _lock_owner_alive(
+                if stale and _lock_owner_alive(
                     lock_path,
                     platform_name=platform_name,
-                ) and lock_attempt == 0:
+                ) is False and lock_attempt == 0:
                     lock_path.unlink(missing_ok=True)
                     continue
                 return None
             else:
-                os.write(
-                    lock_fd,
-                    json.dumps({"pid": os.getpid()}, separators=(",", ":")).encode("ascii"),
-                )
-                os.fsync(lock_fd)
-                os.close(lock_fd)
                 owns_lock = True
+                try:
+                    os.write(
+                        lock_fd,
+                        json.dumps({"pid": os.getpid()}, separators=(",", ":")).encode(
+                            "ascii"
+                        ),
+                    )
+                    os.fsync(lock_fd)
+                finally:
+                    os.close(lock_fd)
                 break
         if not owns_lock:
             return None
@@ -129,32 +133,35 @@ def load_or_create_journal_key(
                 pass
 
 
-def _lock_owner_alive(lock_path: Path, *, platform_name: str) -> bool:
+def _lock_owner_alive(lock_path: Path, *, platform_name: str) -> bool | None:
     try:
         value = json.loads(lock_path.read_text(encoding="ascii"))
         pid = value.get("pid") if type(value) is dict else None
         if type(pid) is not int or pid <= 0:
-            return False
-    except (OSError, ValueError, json.JSONDecodeError):
-        return False
+            return None
+    except (OSError, ValueError):
+        return None
     return _process_is_alive(pid, platform_name=platform_name)
 
 
-def _process_is_alive(pid: int, *, platform_name: str) -> bool:
+def _process_is_alive(pid: int, *, platform_name: str) -> bool | None:
     if platform_name == "nt":
         return _windows_process_is_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except OSError:
+    except PermissionError:
         return True
+    except OSError:
+        return None
     return True
 
 
-def _windows_process_is_alive(pid: int) -> bool:
+def _windows_process_is_alive(pid: int) -> bool | None:
     process_synchronize = 0x00100000
     wait_object_0 = 0x00000000
+    wait_timeout = 0x00000102
     error_invalid_parameter = 87
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -163,7 +170,7 @@ def _windows_process_is_alive(pid: int) -> bool:
     open_process.restype = ctypes.c_void_p
     handle = open_process(process_synchronize, 0, pid)
     if not handle:
-        return ctypes.get_last_error() != error_invalid_parameter
+        return False if ctypes.get_last_error() == error_invalid_parameter else None
 
     wait_for_single_object = kernel32.WaitForSingleObject
     wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
@@ -172,6 +179,11 @@ def _windows_process_is_alive(pid: int) -> bool:
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
     try:
-        return wait_for_single_object(handle, 0) != wait_object_0
+        wait_result = wait_for_single_object(handle, 0)
+        if wait_result == wait_object_0:
+            return False
+        if wait_result == wait_timeout:
+            return True
+        return None
     finally:
         close_handle(handle)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,7 +13,14 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.agent_runtime.events import EventDraft, PreparedSnapshot, prepare_event
+from offerpilot.agent_runtime.events import (
+    EventDraft,
+    JournalEventValidationError,
+    PreparedSnapshot,
+    prepare_event,
+    validate_context_manifest_json,
+    validate_event_draft,
+)
 from offerpilot.models import AgentContextSnapshot, AgentEvent, AgentRun, ChatMessage
 
 RunStatus = Literal[
@@ -25,6 +34,19 @@ RunStatus = Literal[
 TerminalRunStatus = Literal["completed", "failed", "cancelled", "timed_out"]
 
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled", "timed_out"}
+_DISPOSITION_EVENT_TYPES = {
+    "context.captured",
+    "run.started",
+    "run.waiting_confirmation",
+    "run.resumed",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "run.timed_out",
+    "segment.started",
+    "segment.finished",
+}
+_HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
 _ModelT = TypeVar("_ModelT")
 
 
@@ -108,6 +130,11 @@ class AgentRunRepository:
         self._validate_initial_command(command)
         try:
             with self.session_factory() as session, session.begin():
+                self._assert_input_message_belongs(
+                    session,
+                    command.conversation_id,
+                    command.input_message_id,
+                )
                 existing = session.get(AgentRun, command.run_id)
                 if existing is not None:
                     self._assert_run_matches(existing, command)
@@ -148,8 +175,11 @@ class AgentRunRepository:
                     self._detach(session, run),
                     (self._detach(session, first), self._detach(session, second)),
                 )
-        except IntegrityError as exc:
-            raise JournalConflictError("run creation conflicts with persisted journal state") from exc
+        except IntegrityError:
+            replayed = self._replay_created_run(command)
+            if replayed is not None:
+                return replayed
+            raise JournalConflictError("run creation conflicts with persisted journal state") from None
 
     def attach_input_message(self, run_id: str, message_id: int) -> AgentRun:
         try:
@@ -159,18 +189,32 @@ class AgentRunRepository:
                     return self._detach(session, run)
                 if run.input_message_id is not None:
                     raise JournalConflictError("run already has a different input message")
+                if run.status in _TERMINAL_STATUSES:
+                    raise JournalConflictError("terminal run cannot attach an input message")
                 message = session.get(ChatMessage, message_id)
                 if message is None or message.conversation_id != run.conversation_id:
                     raise JournalConflictError("input message does not belong to the run conversation")
                 now = self._utc_now()
-                run.input_message_id = message_id
-                run.updated_at = now
-                session.flush()
+                result = session.execute(
+                    update(AgentRun)
+                    .where(AgentRun.id == run_id, AgentRun.input_message_id.is_(None))
+                    .values(input_message_id=message_id, updated_at=now)
+                )
+                if getattr(result, "rowcount", 0) != 1:
+                    session.expire(run)
+                    if run.input_message_id != message_id:
+                        raise JournalConflictError("run already has a different input message")
+                else:
+                    session.refresh(run)
                 return self._detach(session, run)
-        except IntegrityError as exc:
-            raise JournalConflictError("input message attachment conflicts") from exc
+        except IntegrityError:
+            replayed = self._replay_input_attachment(run_id, message_id)
+            if replayed is not None:
+                return replayed
+            raise JournalConflictError("input message attachment conflicts") from None
 
     def start_segment(self, command: StartSegmentCommand) -> AgentEvent:
+        self._validate_event_draft(command.segment_started)
         if command.segment_started.event_type != "segment.started":
             raise JournalConflictError("segment command requires segment.started")
         try:
@@ -181,14 +225,29 @@ class AgentRunRepository:
                 run = self._required_run(session, command.run_id)
                 if run.status in _TERMINAL_STATUSES:
                     raise JournalConflictError("terminal run cannot start a segment")
+                segment_facts = json.loads(command.segment_started.payload_json)["facts"]
+                if segment_facts["request_kind"] not in {"confirmation", "pending_replay"}:
+                    raise JournalConflictError("segment request kind requires atomic run creation")
+                if run.status != "waiting_confirmation":
+                    raise JournalConflictError("new segment requires a waiting run")
                 event = self._insert_event(
                     session, command.run_id, command.segment_started, self._utc_now()
                 )
                 return self._detach(session, event)
-        except IntegrityError as exc:
-            raise JournalConflictError("segment start conflicts with persisted journal state") from exc
+        except IntegrityError:
+            replayed = self._replay_event(command.run_id, command.segment_started)
+            if replayed is not None:
+                return replayed
+            raise JournalConflictError("segment start conflicts with persisted journal state") from None
 
     def append_event(self, run_id: str, draft: EventDraft) -> AgentEvent:
+        self._validate_event_draft(draft)
+        is_noop_finish = False
+        if draft.event_type == "segment.finished":
+            facts = json.loads(draft.payload_json)["facts"]
+            is_noop_finish = facts == {"outcome": "noop", "terminal_run_status": None}
+        if draft.event_type in _DISPOSITION_EVENT_TYPES and not is_noop_finish:
+            raise JournalConflictError("disposition event requires its atomic repository method")
         try:
             with self.session_factory() as session, session.begin():
                 existing = self._existing_event(session, run_id, draft)
@@ -197,27 +256,47 @@ class AgentRunRepository:
                 run = self._required_run(session, run_id)
                 if run.status in _TERMINAL_STATUSES:
                     raise JournalConflictError("terminal run cannot accept a new event")
+                if is_noop_finish:
+                    segment_start = session.scalar(
+                        select(AgentEvent).where(
+                            AgentEvent.run_id == run_id,
+                            AgentEvent.event_type == "segment.started",
+                            AgentEvent.execution_segment_id == draft.execution_segment_id,
+                        )
+                    )
+                    if run.status != "waiting_confirmation" or segment_start is None:
+                        raise JournalConflictError("noop finish requires a pending replay segment")
+                    started_facts = json.loads(segment_start.payload_json)["facts"]
+                    if started_facts["request_kind"] != "pending_replay":
+                        raise JournalConflictError("noop finish requires a pending replay segment")
                 event = self._insert_event(session, run_id, draft, self._utc_now())
                 return self._detach(session, event)
-        except IntegrityError as exc:
-            raise JournalConflictError("event conflicts with persisted journal state") from exc
+        except IntegrityError:
+            replayed = self._replay_event(run_id, draft)
+            if replayed is not None:
+                return replayed
+            raise JournalConflictError("event conflicts with persisted journal state") from None
 
     def capture_context(self, run_id: str, command: CaptureContextCommand) -> CapturedContext:
-        event_draft = prepare_event(
-            event_type="context.captured",
-            execution_segment_id=command.execution_segment_id,
-            model_step=command.model_step,
-            model_call_id=command.model_call_id,
-            facts={
-                "snapshot_id": command.snapshot_id,
-                "snapshot_key": command.snapshot_key,
-                "manifest_digest": command.prepared.manifest_digest,
-                "logical_input_fingerprint": command.prepared.logical_input_fingerprint,
-            },
-            fingerprint_key_id=command.prepared.fingerprint_key_id,
-            source_ref_type="context_snapshot",
-            source_ref_id=command.snapshot_id,
-        )
+        self._validate_snapshot_command(command)
+        try:
+            event_draft = prepare_event(
+                event_type="context.captured",
+                execution_segment_id=command.execution_segment_id,
+                model_step=command.model_step,
+                model_call_id=command.model_call_id,
+                facts={
+                    "snapshot_id": command.snapshot_id,
+                    "snapshot_key": command.snapshot_key,
+                    "manifest_digest": command.prepared.manifest_digest,
+                    "logical_input_fingerprint": command.prepared.logical_input_fingerprint,
+                },
+                fingerprint_key_id=command.prepared.fingerprint_key_id,
+                source_ref_type="context_snapshot",
+                source_ref_id=command.snapshot_id,
+            )
+        except JournalEventValidationError:
+            raise JournalConflictError("context event identity is invalid") from None
         try:
             with self.session_factory() as session, session.begin():
                 existing = session.scalar(
@@ -239,6 +318,15 @@ class AgentRunRepository:
                     raise JournalConflictError("terminal run cannot capture context")
                 if run.fingerprint_key_id != command.prepared.fingerprint_key_id:
                     raise JournalConflictError("snapshot key domain differs from run key domain")
+                if command.model_call_id is not None:
+                    existing_model_call = session.scalar(
+                        select(AgentContextSnapshot).where(
+                            AgentContextSnapshot.run_id == run_id,
+                            AgentContextSnapshot.model_call_id == command.model_call_id,
+                        )
+                    )
+                    if existing_model_call is not None:
+                        raise JournalConflictError("model call already has a context snapshot")
                 snapshot = AgentContextSnapshot(
                     id=command.snapshot_id,
                     run_id=run_id,
@@ -263,8 +351,11 @@ class AgentRunRepository:
                 return CapturedContext(
                     self._detach(session, snapshot), self._detach(session, event)
                 )
-        except IntegrityError as exc:
-            raise JournalConflictError("context capture conflicts with persisted journal state") from exc
+        except IntegrityError:
+            replayed = self._replay_captured_context(run_id, command, event_draft)
+            if replayed is not None:
+                return replayed
+            raise JournalConflictError("context capture conflicts with persisted journal state") from None
 
     def converge_disposition(
         self, run_id: str, command: DispositionCommand
@@ -275,6 +366,12 @@ class AgentRunRepository:
                 existing: list[AgentEvent | None] = [
                     self._existing_event(session, run_id, draft) for draft in command.events
                 ]
+                existing_positions = [
+                    index for index, event in enumerate(existing) if event is not None
+                ]
+                if existing_positions != list(range(len(existing_positions))):
+                    raise JournalConflictError("existing disposition events are not a prefix")
+                self._assert_existing_disposition_order(existing)
                 run = self._required_run(session, run_id)
                 if all(item is not None for item in existing):
                     self._assert_disposition_projection(run, command)
@@ -304,8 +401,11 @@ class AgentRunRepository:
                     created.append(item or self._insert_event(session, run_id, draft, now))
                 session.flush()
                 return tuple(self._detach(session, event) for event in created)
-        except IntegrityError as exc:
-            raise JournalConflictError("disposition conflicts with persisted journal state") from exc
+        except IntegrityError:
+            replayed = self._replay_disposition(run_id, command)
+            if replayed is not None:
+                return replayed
+            raise JournalConflictError("disposition conflicts with persisted journal state") from None
 
     def find_waiting_run(self, conversation_id: int, tool_call_id: str) -> AgentRun | None:
         with self.session_factory() as session:
@@ -464,6 +564,75 @@ class AgentRunRepository:
             raise JournalConflictError("event dedupe identity has different stable facts")
         return event
 
+    def _replay_created_run(self, command: StartRunCommand) -> StartedRun | None:
+        with self.session_factory() as session:
+            run = session.get(AgentRun, command.run_id)
+            if run is None:
+                return None
+            self._assert_run_matches(run, command)
+            first = self._existing_event(session, command.run_id, command.run_started)
+            second = self._existing_event(session, command.run_id, command.segment_started)
+            if first is None or second is None:
+                return None
+            return StartedRun(
+                self._detach(session, run),
+                (self._detach(session, first), self._detach(session, second)),
+            )
+
+    def _replay_input_attachment(self, run_id: str, message_id: int) -> AgentRun | None:
+        with self.session_factory() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None or run.input_message_id != message_id:
+                return None
+            return self._detach(session, run)
+
+    def _replay_event(self, run_id: str, draft: EventDraft) -> AgentEvent | None:
+        with self.session_factory() as session:
+            event = self._existing_event(session, run_id, draft)
+            return None if event is None else self._detach(session, event)
+
+    def _replay_captured_context(
+        self,
+        run_id: str,
+        command: CaptureContextCommand,
+        event_draft: EventDraft,
+    ) -> CapturedContext | None:
+        with self.session_factory() as session:
+            snapshot = session.scalar(
+                select(AgentContextSnapshot).where(
+                    AgentContextSnapshot.run_id == run_id,
+                    AgentContextSnapshot.snapshot_key == command.snapshot_key,
+                )
+            )
+            if snapshot is None:
+                return None
+            self._assert_snapshot_matches(snapshot, command)
+            event = self._existing_event(session, run_id, event_draft)
+            if event is None:
+                return None
+            return CapturedContext(
+                self._detach(session, snapshot),
+                self._detach(session, event),
+            )
+
+    def _replay_disposition(
+        self,
+        run_id: str,
+        command: DispositionCommand,
+    ) -> tuple[AgentEvent, ...] | None:
+        with self.session_factory() as session:
+            events = [self._existing_event(session, run_id, draft) for draft in command.events]
+            if any(event is None for event in events):
+                return None
+            self._assert_existing_disposition_order(events)
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                return None
+            self._assert_disposition_projection(run, command)
+            return tuple(
+                self._detach(session, cast(AgentEvent, event)) for event in events
+            )
+
     @staticmethod
     def _required_run(session: Session, run_id: str) -> AgentRun:
         run = session.get(AgentRun, run_id)
@@ -471,17 +640,111 @@ class AgentRunRepository:
             raise JournalConflictError("agent run does not exist")
         return run
 
-    @staticmethod
-    def _validate_initial_command(command: StartRunCommand) -> None:
+    def _validate_initial_command(self, command: StartRunCommand) -> None:
+        self._validate_event_draft(command.run_started)
+        self._validate_event_draft(command.segment_started)
+        if command.initial_route_kind not in {"model", "deterministic", "unknown"}:
+            raise JournalConflictError("unsupported initial route kind")
+        if command.initial_context_type in {"workspace", "global"}:
+            if (
+                command.initial_context_entity_id is not None
+                or command.initial_context_ref_fingerprint is not None
+            ):
+                raise JournalConflictError("context identity is not normalized")
+        elif command.initial_context_type == "application":
+            entity_id = command.initial_context_entity_id
+            if entity_id is not None and (
+                not entity_id.isascii() or not entity_id.isdigit() or entity_id.startswith("0")
+            ):
+                raise JournalConflictError("application context identity is invalid")
+            if command.initial_context_ref_fingerprint is not None:
+                raise JournalConflictError("application context cannot retain raw reference")
+        elif command.initial_context_type in {"mode", "unknown"}:
+            if command.initial_context_entity_id is not None or (
+                command.initial_context_ref_fingerprint is None
+                or _HEX_DIGEST.fullmatch(command.initial_context_ref_fingerprint) is None
+            ):
+                raise JournalConflictError("private context identity is not fingerprinted")
+        else:
+            raise JournalConflictError("unsupported initial context type")
         if command.run_started.event_type != "run.started":
             raise JournalConflictError("initial command requires run.started")
         if command.segment_started.event_type != "segment.started":
             raise JournalConflictError("initial command requires segment.started")
         run_facts = json.loads(command.run_started.payload_json)["facts"]
-        if run_facts["agent_run_id"] != command.run_id:
-            raise JournalConflictError("run.started identity differs from command")
+        if run_facts != {
+            "agent_run_id": command.run_id,
+            "context_type": command.initial_context_type,
+            "conversation_id": command.conversation_id,
+            "origin_kind": command.origin_kind,
+            "transport_mode": command.initial_transport_mode,
+        }:
+            raise JournalConflictError("run.started facts differ from command")
         if command.run_started.execution_segment_id != command.segment_started.execution_segment_id:
             raise JournalConflictError("initial events use different segments")
+        segment_facts = json.loads(command.segment_started.payload_json)["facts"]
+        if segment_facts["request_kind"] != "initial":
+            raise JournalConflictError("initial segment has a different request kind")
+        if segment_facts["transport_mode"] != command.initial_transport_mode:
+            raise JournalConflictError("initial segment transport differs from command")
+
+    @staticmethod
+    def _validate_event_draft(draft: EventDraft) -> None:
+        try:
+            validate_event_draft(draft)
+        except JournalEventValidationError:
+            raise JournalConflictError("event draft is not canonical") from None
+
+    @staticmethod
+    def _assert_input_message_belongs(
+        session: Session,
+        conversation_id: int,
+        message_id: int | None,
+    ) -> None:
+        if message_id is None:
+            return
+        message = session.get(ChatMessage, message_id)
+        if message is None or message.conversation_id != conversation_id:
+            raise JournalConflictError("input message does not belong to the run conversation")
+
+    @staticmethod
+    def _validate_snapshot_command(command: CaptureContextCommand) -> None:
+        prepared = command.prepared
+        try:
+            validate_context_manifest_json(prepared.manifest_json)
+        except JournalEventValidationError:
+            raise JournalConflictError("context manifest is not canonical") from None
+        if prepared.manifest_schema_version != 1:
+            raise JournalConflictError("unsupported context manifest schema")
+        expected_digest = hashlib.sha256(prepared.manifest_json.encode("utf-8")).hexdigest()
+        if prepared.manifest_digest != expected_digest:
+            raise JournalConflictError("context manifest digest differs")
+        if _HEX_DIGEST.fullmatch(prepared.logical_input_fingerprint) is None:
+            raise JournalConflictError("logical input fingerprint is invalid")
+        if command.snapshot_kind == "model_input":
+            if command.model_call_id is None or command.model_step is None:
+                raise JournalConflictError("model input snapshot requires model identity")
+            expected_key = (
+                f"model-input:{command.execution_segment_id}:{command.model_call_id}"
+            )
+        elif command.snapshot_kind == "initial":
+            if command.model_call_id is not None or command.model_step is not None:
+                raise JournalConflictError("initial snapshot cannot use model identity")
+            expected_key = f"initial:{command.execution_segment_id}"
+        elif command.snapshot_kind == "confirmation_resume":
+            if command.model_call_id is not None or command.model_step is not None:
+                raise JournalConflictError("confirmation snapshot cannot use model identity")
+            expected_key = f"confirmation-resume:{command.execution_segment_id}"
+        else:
+            raise JournalConflictError("unsupported context snapshot kind")
+        if command.snapshot_key != expected_key:
+            raise JournalConflictError("context snapshot key differs from identity")
+        if command.estimated_token_count is not None and (
+            type(command.estimated_token_count) is not int or command.estimated_token_count < 0
+        ):
+            raise JournalConflictError("estimated token count is invalid")
+        if (command.token_estimator_name is None) != (command.token_estimator_version is None):
+            raise JournalConflictError("token estimator identity must be paired")
 
     @staticmethod
     def _assert_run_matches(run: AgentRun, command: StartRunCommand) -> None:
@@ -523,6 +786,7 @@ class AgentRunRepository:
             snapshot.manifest_schema_version,
             snapshot.manifest_json,
             snapshot.manifest_digest,
+            snapshot.canonicalizer_version,
             snapshot.logical_input_fingerprint,
             snapshot.fingerprint_key_id,
             snapshot.estimated_token_count,
@@ -538,6 +802,7 @@ class AgentRunRepository:
             command.prepared.manifest_schema_version,
             command.prepared.manifest_json,
             command.prepared.manifest_digest,
+            "1",
             command.prepared.logical_input_fingerprint,
             command.prepared.fingerprint_key_id,
             command.estimated_token_count,
@@ -550,6 +815,8 @@ class AgentRunRepository:
     @staticmethod
     def _validate_disposition_shape(run_id: str, command: DispositionCommand) -> None:
         types = [draft.event_type for draft in command.events]
+        for draft in command.events:
+            AgentRunRepository._validate_event_draft(draft)
         if len(types) != len(set(draft.dedupe_key for draft in command.events)):
             raise JournalConflictError("disposition contains duplicate event identities")
         if len({draft.execution_segment_id for draft in command.events}) != 1:
@@ -566,7 +833,13 @@ class AgentRunRepository:
                 "run.waiting_confirmation",
                 "segment.finished",
             }
-            if len(types) != len(required) or set(types) != required:
+            expected_order = [
+                "tool.proposed",
+                "approval.requested",
+                "run.waiting_confirmation",
+                "segment.finished",
+            ]
+            if types != expected_order:
                 raise JournalConflictError("waiting disposition is missing required events")
             for event_type in required - {"segment.finished"}:
                 if facts_by_type[event_type]["tool_call_id"] != command.waiting_tool_call_id:
@@ -583,7 +856,7 @@ class AgentRunRepository:
             if command.waiting_tool_call_id is not None:
                 raise JournalConflictError("terminal disposition cannot retain waiting identity")
             terminal_type = f"run.{command.target_status}"
-            if len(types) != 2 or set(types) != {terminal_type, "segment.finished"}:
+            if types != [terminal_type, "segment.finished"]:
                 raise JournalConflictError("terminal disposition is missing required events")
             if facts_by_type[terminal_type] != {
                 "agent_run_id": run_id,
@@ -605,6 +878,12 @@ class AgentRunRepository:
         facts = json.loads(resumed.payload_json)["facts"]
         if facts["tool_call_id"] != run.waiting_tool_call_id:
             raise JournalConflictError("resume disposition tool identity differs")
+
+    @staticmethod
+    def _assert_existing_disposition_order(events: list[AgentEvent | None]) -> None:
+        sequences = [event.seq for event in events if event is not None]
+        if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+            raise JournalConflictError("existing disposition event order differs")
 
     @staticmethod
     def _assert_status_transition(run: AgentRun, target: RunStatus) -> None:
@@ -630,6 +909,13 @@ class AgentRunRepository:
         )
         if run.waiting_tool_call_id != expected_waiting:
             raise JournalConflictError("events exist but waiting projection differs")
+        expected_failure = (
+            command.failure_code if command.target_status in _TERMINAL_STATUSES else None
+        )
+        if run.failure_code != expected_failure:
+            raise JournalConflictError("events exist but failure projection differs")
+        if (run.finished_at is not None) != (command.target_status in _TERMINAL_STATUSES):
+            raise JournalConflictError("events exist but finish projection differs")
 
     def _utc_now(self) -> datetime:
         value = self._now_factory()

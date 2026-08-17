@@ -112,17 +112,35 @@ def test_concurrent_creation_never_returns_two_different_key_domains(tmp_path: P
     assert {item.key_id for item in non_null} == {persisted.key_id}  # type: ignore[attr-defined]
 
 
-def test_stale_creation_lock_does_not_permanently_disable_journal(tmp_path: Path) -> None:
+def test_stale_creation_lock_with_confirmed_dead_owner_is_reclaimed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     lock_path = tmp_path / f".{JOURNAL_KEY_FILENAME}.lock"
-    lock_path.write_bytes(b"")
+    lock_path.write_text(json.dumps({"pid": 424242}), encoding="ascii")
     old = time.time() - 120
     os.utime(lock_path, (old, old))
+    monkeypatch.setattr(
+        journal_keyring,
+        "_process_is_alive",
+        lambda _pid, *, platform_name: False,
+    )
 
     created = load_or_create_journal_key(tmp_path)
 
     assert created is not None
     assert (tmp_path / JOURNAL_KEY_FILENAME).exists()
     assert not lock_path.exists()
+
+
+def test_stale_lock_without_valid_owner_metadata_is_not_deleted(tmp_path: Path) -> None:
+    lock_path = tmp_path / f".{JOURNAL_KEY_FILENAME}.lock"
+    lock_path.write_bytes(b"")
+    old = time.time() - 120
+    os.utime(lock_path, (old, old))
+
+    assert load_or_create_journal_key(tmp_path) is None
+    assert lock_path.exists()
 
 
 def test_old_lock_owned_by_live_process_is_not_deleted(

@@ -1560,6 +1560,7 @@ class AgentContextSnapshot(Base):
     __tablename__ = "agent_context_snapshots"
     __table_args__ = (
         UniqueConstraint("run_id", "snapshot_key", name="uq_agent_context_run_snapshot"),
+        UniqueConstraint("run_id", "model_call_id", name="uq_agent_context_run_model_call"),
         CheckConstraint(_sqlite_uuid_check("id"), name="ck_agent_context_id_uuid"),
         CheckConstraint(
             _sqlite_uuid_check("execution_segment_id"),
