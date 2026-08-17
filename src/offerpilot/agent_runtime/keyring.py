@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import secrets
@@ -74,11 +75,19 @@ def load_or_create_journal_key(
                     stale = time.time() - lock_path.stat().st_mtime > 30.0
                 except OSError:
                     stale = False
-                if stale and lock_attempt == 0:
+                if stale and not _lock_owner_alive(
+                    lock_path,
+                    platform_name=platform_name,
+                ) and lock_attempt == 0:
                     lock_path.unlink(missing_ok=True)
                     continue
                 return None
             else:
+                os.write(
+                    lock_fd,
+                    json.dumps({"pid": os.getpid()}, separators=(",", ":")).encode("ascii"),
+                )
+                os.fsync(lock_fd)
                 os.close(lock_fd)
                 owns_lock = True
                 break
@@ -118,3 +127,51 @@ def load_or_create_journal_key(
                 lock_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _lock_owner_alive(lock_path: Path, *, platform_name: str) -> bool:
+    try:
+        value = json.loads(lock_path.read_text(encoding="ascii"))
+        pid = value.get("pid") if type(value) is dict else None
+        if type(pid) is not int or pid <= 0:
+            return False
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return _process_is_alive(pid, platform_name=platform_name)
+
+
+def _process_is_alive(pid: int, *, platform_name: str) -> bool:
+    if platform_name == "nt":
+        return _windows_process_is_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    process_synchronize = 0x00100000
+    wait_object_0 = 0x00000000
+    error_invalid_parameter = 87
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    open_process.restype = ctypes.c_void_p
+    handle = open_process(process_synchronize, 0, pid)
+    if not handle:
+        return ctypes.get_last_error() != error_invalid_parameter
+
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    wait_for_single_object.restype = ctypes.c_uint32
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    try:
+        return wait_for_single_object(handle, 0) != wait_object_0
+    finally:
+        close_handle(handle)

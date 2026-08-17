@@ -335,6 +335,37 @@ def test_hmac_facts_require_key_domain_id() -> None:
         )
 
 
+def test_tool_shape_digests_use_explicit_sha256_prefix() -> None:
+    event = prepare_event(
+        event_type="tool.proposed",
+        execution_segment_id=SEGMENT_A,
+        facts={
+            "tool_call_id": "call-1",
+            "tool_name": "create_application",
+            "tool_kind": "write",
+            "args_shape_digest": "sha256:" + "a" * 64,
+            "proposal_outcome": "confirmation_required",
+        },
+        source_ref_type="tool_call",
+        source_ref_id="call-1",
+    )
+    assert event.event_type == "tool.proposed"
+    with pytest.raises(JournalEventValidationError):
+        prepare_event(
+            event_type="tool.proposed",
+            execution_segment_id=SEGMENT_A,
+            facts={
+                "tool_call_id": "call-1",
+                "tool_name": "create_application",
+                "tool_kind": "write",
+                "args_shape_digest": "a" * 64,
+                "proposal_outcome": "confirmation_required",
+            },
+            source_ref_type="tool_call",
+            source_ref_id="call-1",
+        )
+
+
 def test_canonical_json_rejects_str_subclass_keys_without_comparing_them() -> None:
     called = False
 

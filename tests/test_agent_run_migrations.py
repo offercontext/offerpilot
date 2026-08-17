@@ -172,3 +172,54 @@ def test_database_rejects_malformed_uuid_strings(tmp_path: Path) -> None:
         )
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+@pytest.mark.parametrize("model", [AgentEvent, AgentContextSnapshot])
+def test_database_rejects_malformed_model_call_uuid(tmp_path: Path, model: type[object]) -> None:
+    session_factory = init_database(tmp_path / "data.db")
+    with session_factory() as session:
+        conversation = Conversation(title="model-call-uuid-check")
+        session.add(conversation)
+        session.flush()
+        run = AgentRun(
+            id="11111111-1111-4111-8111-111111111111",
+            conversation_id=conversation.id,
+            origin_kind="system",
+            initial_context_type="workspace",
+            fingerprint_key_id="22222222-2222-4222-8222-222222222222",
+            initial_transport_mode="sync",
+            initial_route_kind="deterministic",
+            status="running",
+        )
+        session.add(run)
+        session.flush()
+        if model is AgentEvent:
+            row = AgentEvent(
+                id="33333333-3333-4333-8333-333333333333",
+                run_id=run.id,
+                seq=1,
+                dedupe_key="model.requested:bad",
+                event_type="model.requested",
+                execution_segment_id="44444444-4444-4444-8444-444444444444",
+                model_call_id="bad",
+                payload_json='{"facts":{},"telemetry":{}}',
+                payload_digest="a" * 64,
+                fact_digest="b" * 64,
+            )
+        else:
+            row = AgentContextSnapshot(
+                id="55555555-5555-4555-8555-555555555555",
+                run_id=run.id,
+                execution_segment_id="44444444-4444-4444-8444-444444444444",
+                snapshot_key="model-input:test",
+                snapshot_kind="model_input",
+                model_call_id="bad",
+                manifest_json="{}",
+                manifest_digest="c" * 64,
+                canonicalizer_version="1",
+                logical_input_fingerprint="d" * 64,
+                fingerprint_key_id="22222222-2222-4222-8222-222222222222",
+            )
+        session.add(row)
+        with pytest.raises(IntegrityError):
+            session.commit()

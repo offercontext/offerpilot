@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+import offerpilot.agent_runtime.keyring as journal_keyring
 from offerpilot.agent_runtime.keyring import JOURNAL_KEY_FILENAME, load_or_create_journal_key
 
 
@@ -122,6 +123,25 @@ def test_stale_creation_lock_does_not_permanently_disable_journal(tmp_path: Path
     assert created is not None
     assert (tmp_path / JOURNAL_KEY_FILENAME).exists()
     assert not lock_path.exists()
+
+
+def test_old_lock_owned_by_live_process_is_not_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name == "nt":
+
+        def fail_if_posix_probe_is_used(_pid: int, _signal: int) -> None:
+            raise AssertionError("os.kill(pid, 0) terminates the target process on Windows")
+
+        monkeypatch.setattr(journal_keyring.os, "kill", fail_if_posix_probe_is_used)
+    lock_path = tmp_path / f".{JOURNAL_KEY_FILENAME}.lock"
+    lock_path.write_text(json.dumps({"pid": os.getpid()}), encoding="ascii")
+    old = time.time() - 120
+    os.utime(lock_path, (old, old))
+
+    assert load_or_create_journal_key(tmp_path) is None
+    assert lock_path.exists()
 
 
 def test_journal_key_does_not_swallow_base_exception(tmp_path: Path) -> None:

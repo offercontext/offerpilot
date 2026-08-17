@@ -604,6 +604,10 @@ def _validate_fact_value(event_type: str, field: str, value: object) -> None:
         if type(value) is not bool:
             raise JournalEventValidationError("invalid journal boolean fact")
         return
+    if field in {"args_shape_digest", "result_shape_digest"}:
+        if type(value) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+            raise JournalEventValidationError("invalid journal shape digest fact")
+        return
     if field.endswith("_digest") or field.endswith("_fingerprint"):
         if type(value) is not str or _HEX_DIGEST.fullmatch(value) is None:
             raise JournalEventValidationError("invalid journal digest fact")

@@ -1518,6 +1518,10 @@ class AgentEvent(Base):
             _sqlite_uuid_check("execution_segment_id"),
             name="ck_agent_events_segment_uuid",
         ),
+        CheckConstraint(
+            f"model_call_id IS NULL OR ({_sqlite_uuid_check('model_call_id')})",
+            name="ck_agent_events_model_call_uuid",
+        ),
         CheckConstraint("seq > 0", name="ck_agent_events_seq"),
         CheckConstraint(
             f"fingerprint_key_id IS NULL OR ({_sqlite_uuid_check('fingerprint_key_id')})",
@@ -1560,6 +1564,10 @@ class AgentContextSnapshot(Base):
         CheckConstraint(
             _sqlite_uuid_check("execution_segment_id"),
             name="ck_agent_context_segment_uuid",
+        ),
+        CheckConstraint(
+            f"model_call_id IS NULL OR ({_sqlite_uuid_check('model_call_id')})",
+            name="ck_agent_context_model_call_uuid",
         ),
         CheckConstraint(
             _sqlite_uuid_check("fingerprint_key_id"),
