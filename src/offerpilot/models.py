@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -1428,6 +1429,177 @@ class ChatMessage(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.current_timestamp(),
+    )
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        CheckConstraint("length(id) = 36 AND lower(id) = id", name="ck_agent_runs_id_uuid"),
+        CheckConstraint(
+            "length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id",
+            name="ck_agent_runs_key_uuid",
+        ),
+        CheckConstraint("last_seq >= 0", name="ck_agent_runs_last_seq"),
+        CheckConstraint(
+            "recording_error_count >= 0", name="ck_agent_runs_recording_error_count"
+        ),
+        CheckConstraint(
+            "status IN ('running','waiting_confirmation','completed','failed','cancelled','timed_out')",
+            name="ck_agent_runs_status",
+        ),
+        CheckConstraint(
+            "recording_status IN ('healthy','degraded')",
+            name="ck_agent_runs_recording_status",
+        ),
+        Index("idx_agent_runs_conversation_waiting", "conversation_id", "waiting_tool_call_id"),
+        Index(
+            "uq_agent_runs_waiting_tool_call",
+            "conversation_id",
+            "waiting_tool_call_id",
+            unique=True,
+            sqlite_where=text("waiting_tool_call_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    input_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    origin_kind: Mapped[str] = mapped_column(String, nullable=False)
+    initial_context_type: Mapped[str] = mapped_column(String, nullable=False)
+    initial_context_entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    initial_context_ref_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fingerprint_key_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    initial_transport_mode: Mapped[str] = mapped_column(String, nullable=False)
+    initial_route_kind: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="running")
+    waiting_tool_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    recording_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="healthy", server_default="healthy"
+    )
+    recording_error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    failure_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentEvent(Base):
+    __tablename__ = "agent_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_agent_events_run_seq"),
+        UniqueConstraint("run_id", "dedupe_key", name="uq_agent_events_run_dedupe"),
+        CheckConstraint("length(id) = 36 AND lower(id) = id", name="ck_agent_events_id_uuid"),
+        CheckConstraint(
+            "length(execution_segment_id) = 36 AND lower(execution_segment_id) = execution_segment_id",
+            name="ck_agent_events_segment_uuid",
+        ),
+        CheckConstraint("seq > 0", name="ck_agent_events_seq"),
+        CheckConstraint(
+            "fingerprint_key_id IS NULL OR "
+            "(length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id)",
+            name="ck_agent_events_key_uuid",
+        ),
+        CheckConstraint(
+            "length(CAST(payload_json AS BLOB)) <= 4096", name="ck_agent_events_payload_size"
+        ),
+        Index("idx_agent_events_type", "run_id", "event_type", "seq"),
+        Index("idx_agent_events_segment", "run_id", "execution_segment_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    execution_segment_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    model_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model_call_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_ref_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    fingerprint_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    fact_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class AgentContextSnapshot(Base):
+    __tablename__ = "agent_context_snapshots"
+    __table_args__ = (
+        UniqueConstraint("run_id", "snapshot_key", name="uq_agent_context_run_snapshot"),
+        CheckConstraint("length(id) = 36 AND lower(id) = id", name="ck_agent_context_id_uuid"),
+        CheckConstraint(
+            "length(execution_segment_id) = 36 AND lower(execution_segment_id) = execution_segment_id",
+            name="ck_agent_context_segment_uuid",
+        ),
+        CheckConstraint(
+            "length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id",
+            name="ck_agent_context_key_uuid",
+        ),
+        CheckConstraint("manifest_schema_version = 1", name="ck_agent_context_manifest_schema"),
+        CheckConstraint(
+            "length(CAST(manifest_json AS BLOB)) <= 16384",
+            name="ck_agent_context_manifest_size",
+        ),
+        CheckConstraint(
+            "estimated_token_count IS NULL OR estimated_token_count >= 0",
+            name="ck_agent_context_token_count",
+        ),
+        CheckConstraint(
+            "(token_estimator_name IS NULL AND token_estimator_version IS NULL) OR "
+            "(token_estimator_name IS NOT NULL AND token_estimator_version IS NOT NULL)",
+            name="ck_agent_context_token_estimator_pair",
+        ),
+        Index(
+            "idx_agent_context_segment_step",
+            "run_id",
+            "execution_segment_id",
+            "model_step",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_segment_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    snapshot_key: Mapped[str] = mapped_column(String, nullable=False)
+    manifest_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    snapshot_kind: Mapped[str] = mapped_column(String, nullable=False)
+    model_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model_call_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonicalizer_version: Mapped[str] = mapped_column(String, nullable=False)
+    logical_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint_key_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    estimated_token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    token_estimator_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    token_estimator_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
 
 

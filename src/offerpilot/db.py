@@ -64,6 +64,11 @@ def init_database(db_path: Path) -> SessionFactory:
     mock_interview_migration_needed = _prepare_event_bound_mock_interview_migration(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    _record_migration(
+        engine,
+        "0024_durable_execution_journal",
+        "Add fail-open durable Agent Run journal tables",
+    )
     if mock_interview_migration_needed:
         _record_migration(
             engine,
@@ -805,6 +810,26 @@ def _reset_knowledge_legacy_tables(engine, data_dir: Path) -> None:  # type: ign
 
 def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
     return init_database(data_dir / "data.db")
+
+
+def journal_session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
+    """Open the existing database through an independent, low-wait Journal pool."""
+
+    engine = create_engine(
+        f"sqlite:///{data_dir / 'data.db'}",
+        connect_args={"check_same_thread": False, "timeout": 0.05},
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.05,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_journal_foreign_keys(dbapi_connection, _connection_record) -> None:  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.close()
+
+    return sessionmaker(bind=engine)
 
 
 def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
