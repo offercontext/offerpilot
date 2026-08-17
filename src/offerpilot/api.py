@@ -75,6 +75,7 @@ from offerpilot.reliability.trace import (
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
+from offerpilot.agent_runtime.keyring import JOURNAL_KEY_FILENAME
 from offerpilot.application_status import application_status_options, normalize_application_status
 from offerpilot.config import (
     AIProviderProfile,
@@ -10019,6 +10020,8 @@ def _build_backup_archive(data_dir: Path) -> bytes:
             if not path.is_file() or path.is_symlink():
                 continue
             archive_path = path.relative_to(data_dir).as_posix()
+            if archive_path == JOURNAL_KEY_FILENAME:
+                continue
             if archive_path == "config.json":
                 archive.writestr(archive_path, _redacted_backup_config(data_dir))
                 continue

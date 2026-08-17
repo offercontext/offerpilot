@@ -1,3 +1,4 @@
+import base64
 import json
 from io import BytesIO
 from zipfile import ZipFile
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from offerpilot.ai import client as ai_client
 from offerpilot.api import create_app
+from offerpilot.agent_runtime.keyring import JOURNAL_KEY_FILENAME, load_or_create_journal_key
 from offerpilot.config import AIProviderProfile, Config, load_config, save_config
 from offerpilot.diagnostics import read_recent_log_entries
 
@@ -544,6 +546,33 @@ def test_backup_export_returns_local_data_archive_without_credentials(tmp_path):
         assert "local-secret" not in config
         assert json.loads(config)["api_key"] == ""
         assert json.loads(config)["auth_token"] == ""
+
+
+def test_settings_and_backup_exports_exclude_journal_key_domain(tmp_path):
+    domain = load_or_create_journal_key(tmp_path)
+    assert domain is not None
+    key_path = tmp_path / JOURNAL_KEY_FILENAME
+    original_key_bytes = key_path.read_bytes()
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    settings = client.get("/api/settings")
+    settings_backup = client.get("/api/settings/backup")
+    archive_response = client.get("/api/backups/export")
+
+    assert settings.status_code == 200
+    assert settings_backup.status_code == 200
+    for response in (settings, settings_backup):
+        assert JOURNAL_KEY_FILENAME not in response.text
+        assert domain.key_id not in response.text
+        assert base64.urlsafe_b64encode(domain.secret).decode("ascii").rstrip("=") not in response.text
+    with ZipFile(BytesIO(archive_response.content)) as archive:
+        assert JOURNAL_KEY_FILENAME not in archive.namelist()
+        assert domain.key_id not in "\n".join(
+            archive.read(name).decode("utf-8", errors="ignore")
+            for name in archive.namelist()
+            if name != "data.db"
+        )
+    assert key_path.read_bytes() == original_key_bytes
 
 
 def test_settings_reports_a_keyed_enabled_fallback_as_available(tmp_path):
