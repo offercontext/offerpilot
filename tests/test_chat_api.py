@@ -4793,11 +4793,13 @@ def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
     original_update = ApplicationsRepository.update_full
 
     def slow_update(self, app_id, data):
-        time.sleep(0.4)
+        time.sleep(1.0)
         return original_update(self, app_id, data)
 
     monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.15)
+    # Leave enough headroom for prepare/claim work under the full serial gate;
+    # the executor itself remains slower than the timeout by construction.
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
     response = client.post(
         endpoint,
@@ -4870,7 +4872,7 @@ def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
     original_update = ApplicationsRepository.update_full
 
     def slow_update(self, app_id, data):
-        time.sleep(0.4)
+        time.sleep(1.0)
         return original_update(self, app_id, data)
 
     def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
@@ -4879,7 +4881,9 @@ def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
 
     monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.15)
+    # Leave enough headroom for prepare/claim work under the full serial gate;
+    # the executor itself remains slower than the timeout by construction.
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
     response = client.post(
         endpoint,
