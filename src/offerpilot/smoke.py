@@ -98,6 +98,10 @@ class SmokeReport:
     steps: list[SmokeStep]
 
 
+class SmokeServerShutdownError(RuntimeError):
+    pass
+
+
 class _MaterialProposalSmokeContractError(RuntimeError):
     def __init__(self, message: str, diagnostic: dict[str, Any]) -> None:
         super().__init__(message)
@@ -502,7 +506,7 @@ def run_http_smoke(
     prefix = "offerpilot-real-ai-verify-" if real_ai else "offerpilot-local-verify-"
     previous_operation = os.environ.get("OFFERPILOT_FULL_VERIFY_OPERATION")
     previous_stage = os.environ.get("OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE")
-    with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True) as temp_dir:
         isolated_data_dir = Path(temp_dir)
         if real_ai:
             _copy_real_ai_config(data_dir, isolated_data_dir)
@@ -2037,12 +2041,16 @@ def run_mock_interview_real_ai_smoke(
 ) -> SmokeReport:
     """Run only the Mock Interview real-AI smoke in an isolated data directory."""
     steps: list[SmokeStep] = []
-    with tempfile.TemporaryDirectory(prefix="offerpilot-mock-interview-real-ai-") as temp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="offerpilot-mock-interview-real-ai-",
+        ignore_cleanup_errors=True,
+    ) as temp_dir:
         isolated_data_dir = Path(temp_dir)
         _copy_real_ai_config(source_data_dir, isolated_data_dir)
         app = create_app(data_dir=isolated_data_dir, static_dir=static_dir)
         application_id: int | None = None
         resume_ids: list[int] = []
+        cleanup_safe = True
         try:
             with _running_server(app) as base_url:
                 with httpx.Client(base_url=base_url, timeout=90.0) as client:
@@ -2064,11 +2072,15 @@ def run_mock_interview_real_ai_smoke(
                     _run_real_ai_mock_interview_smoke(
                         client, steps, application_id, resume_ids, isolated_data_dir
                     )
+        except SmokeServerShutdownError:
+            cleanup_safe = False
+            raise
         finally:
-            _dispose_smoke_app_database(app)
-            if application_id is not None:
-                _cleanup_real_ai_smoke_records(isolated_data_dir, application_id, resume_ids)
-            _assert_real_ai_smoke_data_clean(isolated_data_dir)
+            if cleanup_safe:
+                _dispose_smoke_app_database(app)
+                if application_id is not None:
+                    _cleanup_real_ai_smoke_records(isolated_data_dir, application_id, resume_ids)
+                _assert_real_ai_smoke_data_clean(isolated_data_dir)
         return SmokeReport(ok=True, steps=steps)
 
 
@@ -2078,10 +2090,14 @@ def run_offer_negotiation_real_ai_smoke(
 ) -> SmokeReport:
     """Run the Offer negotiation real-AI API flow in an isolated data directory."""
     steps: list[SmokeStep] = []
-    with tempfile.TemporaryDirectory(prefix="offerpilot-offer-negotiation-real-ai-") as temp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="offerpilot-offer-negotiation-real-ai-",
+        ignore_cleanup_errors=True,
+    ) as temp_dir:
         isolated_data_dir = Path(temp_dir)
         _copy_real_ai_config(source_data_dir, isolated_data_dir)
         app = create_app(data_dir=isolated_data_dir, static_dir=static_dir)
+        cleanup_safe = True
         try:
             with _running_server(app) as base_url:
                 with httpx.Client(base_url=base_url, timeout=120.0) as client:
@@ -2205,8 +2221,12 @@ def run_offer_negotiation_real_ai_smoke(
                     if _chat_domain_counts(isolated_data_dir) != chat_before:
                         raise RuntimeError("offer negotiation real-ai wrote Chat data")
                     steps.append(SmokeStep("http_offer_negotiation", "isolated Offer negotiation API flow passed"))
+        except SmokeServerShutdownError:
+            cleanup_safe = False
+            raise
         finally:
-            _dispose_smoke_app_database(app)
+            if cleanup_safe:
+                _dispose_smoke_app_database(app)
         return SmokeReport(ok=True, steps=steps)
 
 
@@ -2323,7 +2343,7 @@ def run_interview_story_smoke(
     """
 
     prefix = "offerpilot-interview-story-real-ai-" if real_ai else "offerpilot-interview-story-local-"
-    with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True) as temp_dir:
         isolated_data_dir = Path(temp_dir)
         if real_ai:
             _copy_real_ai_config(source_data_dir, isolated_data_dir)
@@ -2333,6 +2353,7 @@ def run_interview_story_smoke(
             chat_model=None if real_ai else _InterviewStorySmokeChatModel(),
         )
         seed: dict[str, int] | None = None
+        cleanup_safe = True
         try:
             seed = _seed_interview_story_smoke_context(isolated_data_dir)
             steps: list[SmokeStep] = []
@@ -2346,11 +2367,15 @@ def run_interview_story_smoke(
                         client, isolated_data_dir, seed, steps, exercise_recovery=not real_ai
                     )
             return SmokeReport(ok=True, steps=steps)
+        except SmokeServerShutdownError:
+            cleanup_safe = False
+            raise
         finally:
-            _dispose_smoke_app_database(app)
-            if seed is not None:
-                _cleanup_interview_story_smoke_records(isolated_data_dir, seed)
-            _assert_interview_story_smoke_data_clean(isolated_data_dir)
+            if cleanup_safe:
+                _dispose_smoke_app_database(app)
+                if seed is not None:
+                    _cleanup_interview_story_smoke_records(isolated_data_dir, seed)
+                _assert_interview_story_smoke_data_clean(isolated_data_dir)
 
 
 def _seed_interview_story_smoke_context(data_dir: Path) -> dict[str, int]:
@@ -4232,16 +4257,25 @@ def _running_server(app: Any) -> Any:
         except httpx.HTTPError:
             time.sleep(0.1)
     else:
-        server.should_exit = True
-        thread.join(timeout=5)
-        _dispose_smoke_app_database(app)
+        _stop_smoke_server(server, thread, app)
         raise RuntimeError("http smoke server did not become ready")
     try:
         yield base_url
     finally:
-        server.should_exit = True
-        thread.join(timeout=5)
-        _dispose_smoke_app_database(app)
+        _stop_smoke_server(server, thread, app)
+
+
+def _stop_smoke_server(server: Any, thread: Any, app: Any) -> None:
+    shutdown_deadline = time.monotonic() + 30
+    server.should_exit = True
+    thread.join(timeout=5)
+    if thread.is_alive():
+        remaining = max(0.0, shutdown_deadline - time.monotonic())
+        if remaining > 0:
+            thread.join(timeout=remaining)
+    if thread.is_alive():
+        raise SmokeServerShutdownError("HTTP smoke server did not stop before database disposal")
+    _dispose_smoke_app_database(app)
 
 
 def _dispose_smoke_app_database(app: Any) -> None:
@@ -4258,6 +4292,9 @@ def _dispose_smoke_app_database(app: Any) -> None:
     engine = getattr(app.state, "db_engine", None)
     if engine is not None:
         engine.dispose()
+    journal_engine = getattr(app.state, "journal_db_engine", None)
+    if journal_engine is not None and journal_engine is not engine:
+        journal_engine.dispose()
 
 
 def _free_port() -> int:

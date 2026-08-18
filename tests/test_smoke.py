@@ -865,6 +865,40 @@ def test_local_http_smoke_isolates_user_data(monkeypatch, tmp_path):
     assert not observed["data_dir"].exists()
 
 
+def test_real_ai_smoke_does_not_cleanup_database_after_server_shutdown_failure(
+    monkeypatch,
+    tmp_path,
+):
+    from contextlib import contextmanager
+
+    import offerpilot.smoke as smoke
+
+    events: list[str] = []
+    fake_app = SimpleNamespace(state=SimpleNamespace())
+
+    @contextmanager
+    def failed_server(app):
+        raise smoke.SmokeServerShutdownError(
+            "HTTP smoke server did not stop before database disposal"
+        )
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(smoke, "_copy_real_ai_config", lambda source, target: None)
+    monkeypatch.setattr(smoke, "create_app", lambda **kwargs: fake_app)
+    monkeypatch.setattr(smoke, "_running_server", failed_server)
+    monkeypatch.setattr(smoke, "_dispose_smoke_app_database", lambda app: events.append("dispose"))
+    monkeypatch.setattr(
+        smoke,
+        "_assert_real_ai_smoke_data_clean",
+        lambda data_dir: events.append("assert_clean"),
+    )
+
+    with pytest.raises(smoke.SmokeServerShutdownError, match="did not stop before database disposal"):
+        smoke.run_mock_interview_real_ai_smoke(tmp_path)
+
+    assert events == []
+
+
 def test_smoke_database_disposal_stops_background_knowledge_runtime(monkeypatch, tmp_path):
     app = create_app(data_dir=tmp_path / "isolated")
     calls: list[float | None] = []
@@ -897,7 +931,88 @@ def test_smoke_database_disposal_waits_before_engine_disposal(monkeypatch, tmp_p
     assert calls == [10, None]
 
 
-def test_smoke_database_disposal_orders_engine_after_worker_stop():
+def test_running_server_waits_for_shutdown_before_database_disposal(monkeypatch):
+    import offerpilot.smoke as smoke
+
+    events: list[str] = []
+
+    class _Server:
+        should_exit = False
+
+        def run(self):
+            return None
+
+    class _Thread:
+        running = True
+
+        def start(self):
+            events.append("start")
+
+        def join(self, timeout=None):
+            events.append(f"join:{timeout}")
+            if timeout != 5:
+                self.running = False
+
+        def is_alive(self):
+            return self.running
+
+    server = _Server()
+    thread = _Thread()
+    monkeypatch.setattr(smoke, "_free_port", lambda: 18765)
+    monkeypatch.setattr(smoke.uvicorn, "Config", lambda *args, **kwargs: object())
+    monkeypatch.setattr(smoke.uvicorn, "Server", lambda config: server)
+    monkeypatch.setattr(smoke.threading, "Thread", lambda **kwargs: thread)
+    monkeypatch.setattr(
+        smoke.httpx,
+        "get",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_dispose_smoke_app_database",
+        lambda app: events.append(f"dispose:{thread.is_alive()}"),
+    )
+
+    with smoke._running_server(SimpleNamespace()):
+        pass
+
+    assert server.should_exit is True
+    assert events[0:2] == ["start", "join:5"]
+    assert events[2].startswith("join:") and events[2] != "join:None"
+    assert events[3] == "dispose:False"
+
+
+def test_stop_smoke_server_bounds_wait_and_preserves_live_database(monkeypatch):
+    import offerpilot.smoke as smoke
+
+    joins: list[float | None] = []
+    disposed: list[bool] = []
+
+    class _Server:
+        should_exit = False
+
+    class _Thread:
+        def join(self, timeout=None):
+            joins.append(timeout)
+
+        def is_alive(self):
+            return True
+
+    monotonic_values = iter((100.0, 105.0))
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(smoke, "_dispose_smoke_app_database", lambda app: disposed.append(True))
+
+    with pytest.raises(
+        smoke.SmokeServerShutdownError,
+        match="did not stop before database disposal",
+    ):
+        smoke._stop_smoke_server(_Server(), _Thread(), SimpleNamespace())
+
+    assert joins == [5, 25]
+    assert disposed == []
+
+
+def test_smoke_database_disposal_orders_engines_after_worker_stop():
     events: list[str] = []
 
     class _Runtime:
@@ -915,9 +1030,10 @@ def test_smoke_database_disposal_orders_engine_after_worker_stop():
     _dispose_smoke_app_database(SimpleNamespace(state=SimpleNamespace(
         knowledge_runtime=_Runtime(),
         db_engine=_Engine(),
+        journal_db_engine=_Engine(),
     )))
 
-    assert events == ["stop:10", "dispose"]
+    assert events == ["stop:10", "dispose", "dispose"]
 
 
 def test_smoke_database_disposal_never_disposes_live_worker():
