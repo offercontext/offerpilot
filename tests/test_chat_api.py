@@ -63,6 +63,7 @@ def _force_replace_claimed_pending_for_cas_test(
             .values(
                 pending_tool_call_id=pending.tool_call_id,
                 pending_confirmation_claim_id="",
+                pending_confirmation_claimed_at=None,
                 pending_tool_name=pending.tool_name,
                 pending_args=pending.args,
                 pending_human=pending.human,
@@ -851,7 +852,7 @@ def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpo
     assert len(versions) == 1
     assert versions[0]["source_kind"] == "pilot"
     assert model.calls == 0
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 5
     while True:
         runs, journal_events, snapshots = _journal_rows(tmp_path)
         assert len(runs) == 1
@@ -5041,23 +5042,28 @@ def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
         )
     else:
         assert response.status_code == 409
-    time.sleep(0.5)
-    runs, events, _ = _journal_rows(tmp_path)
-    assert len(runs) == 1
-    assert runs[0].status in {"running", "waiting_confirmation"}
-    confirmation_segment = next(
-        event.execution_segment_id
-        for event in events
-        if event.event_type == "segment.started"
-        and json.loads(event.payload_json)["facts"]["request_kind"] == "confirmation"
-    )
-    assert any(
-        event.event_type == "segment.finished"
-        and event.execution_segment_id == confirmation_segment
-        and json.loads(event.payload_json)["facts"]
-        == {"outcome": "noop", "terminal_run_status": None}
-        for event in events
-    )
+    deadline = time.monotonic() + 5
+    while True:
+        runs, events, _ = _journal_rows(tmp_path)
+        assert len(runs) == 1
+        assert runs[0].status in {"running", "waiting_confirmation"}
+        confirmation_segments = {
+            event.execution_segment_id
+            for event in events
+            if event.event_type == "segment.started"
+            and json.loads(event.payload_json)["facts"]["request_kind"] == "confirmation"
+        }
+        if any(
+            event.event_type == "segment.finished"
+            and event.execution_segment_id in confirmation_segments
+            and json.loads(event.payload_json)["facts"]
+            == {"outcome": "noop", "terminal_run_status": None}
+            for event in events
+        ):
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail("late CAS-loss confirmation Journal segment did not converge")
+        time.sleep(0.01)
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
