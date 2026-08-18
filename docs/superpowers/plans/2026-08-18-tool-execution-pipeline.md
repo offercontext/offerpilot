@@ -122,6 +122,7 @@ New-Item -ItemType Directory -Force -Path $gate | Out-Null
   'src/offerpilot/ai/tool_runtime/'
   'src/offerpilot/ai/tool_specs/'
   'src/offerpilot/api.py'
+  'src/offerpilot/smoke.py'
   'tests/tool_pipeline/'
   'tests/fixtures/tool_pipeline/'
   'tests/test_ai_tools.py'
@@ -963,6 +964,7 @@ git commit -m "refactor: AI isolate deterministic legacy tools"
 - Modify: `src/offerpilot/ai/agent.py`
 - Modify: `src/offerpilot/ai/client.py`
 - Modify: `src/offerpilot/api.py`
+- Modify: `src/offerpilot/smoke.py`
 - Delete: `src/offerpilot/ai/tools.py`
 - Modify: `tests/test_ai_agent.py`
 - Modify: `tests/test_chat_api.py`
@@ -1057,7 +1059,7 @@ Expected: every command passes; golden Provider/tool/Journal projections are unc
 uv run ruff check src/offerpilot/ai src/offerpilot/api.py tests/tool_pipeline tests/test_ai_tools.py tests/test_ai_agent.py tests/test_chat_api.py tests/test_knowledge_sources_api.py
 uv run mypy src/offerpilot/ai src/offerpilot/api.py
 git diff --check
-git add -A src/offerpilot/ai src/offerpilot/api.py tests/tool_pipeline tests/test_ai_tools.py tests/test_ai_agent.py tests/test_chat_api.py tests/test_knowledge_sources_api.py
+git add -A src/offerpilot/ai src/offerpilot/api.py src/offerpilot/smoke.py tests/tool_pipeline tests/test_ai_tools.py tests/test_ai_agent.py tests/test_chat_api.py tests/test_knowledge_sources_api.py
 git commit -m "refactor: AI cut over typed tool execution pipeline"
 ```
 
