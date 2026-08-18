@@ -2,8 +2,10 @@ import json
 import re
 import time
 from datetime import datetime, timezone
+from io import BytesIO
 from threading import Event
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,7 +13,9 @@ from sqlalchemy import delete, select
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.ai.agent import PendingAction, StalePendingActionError
-from offerpilot.agent_runtime.journal import NullRunRecorderFactory
+from offerpilot.agent_runtime.journal import NullRunRecorderFactory, RunRecorderFactory
+from offerpilot.agent_runtime.keyring import load_or_create_journal_key
+from offerpilot.agent_runtime.trace import reconstruct_agent_run
 from offerpilot.api import (
     _has_write_attempt,
     _stored_messages_to_ai,
@@ -20,7 +24,7 @@ from offerpilot.api import (
     create_app,
 )
 from offerpilot.config import Config, save_config
-from offerpilot.db import session_factory_for_data_dir
+from offerpilot.db import journal_session_factory_for_data_dir, session_factory_for_data_dir
 from offerpilot.models import (
     AgentContextSnapshot,
     AgentEvent,
@@ -32,6 +36,7 @@ from offerpilot.models import (
     ResumeMatch,
 )
 from offerpilot.repositories.applications import ApplicationsRepository
+from offerpilot.repositories.agent_runs import AgentRunRepository
 from offerpilot.repositories.chat import ChatRepository
 
 
@@ -155,6 +160,96 @@ class CountingFailingModel:
     def complete(self, messages, tools):
         self.calls += 1
         raise AssertionError("deterministic Pilot JD flow must not call a model")
+
+
+class CompleteCausalChainModel:
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        del messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return Assistant(
+                tool_calls=[
+                    ToolCall(id="journal-read", name="list_applications", args="{}")
+                ]
+            )
+        if self.calls == 2:
+            return Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="journal-write",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            )
+        if self.calls == 3:
+            return Assistant(content="causal chain complete")
+        raise AssertionError("unexpected provider call")
+
+    def stream_complete(self, messages, tools, on_delta):
+        assistant = self.complete(messages, tools)
+        if assistant.content:
+            on_delta(assistant.content)
+        return assistant
+
+
+class PrivacyCanaryModel(ScriptedModel):
+    def __init__(self, turns, provider_url):
+        super().__init__(turns)
+        self.base_url = provider_url
+
+
+class ExceptionCanaryModel:
+    def __init__(self, exception_text, provider_url):
+        self.exception_text = exception_text
+        self.base_url = provider_url
+
+    def complete(self, messages, tools):
+        del messages, tools
+        raise RuntimeError(self.exception_text)
+
+
+class EquivalenceModel:
+    def __init__(self):
+        self.provider_calls = 0
+        self.tool_results = 0
+
+    def complete(self, messages, tools):
+        del tools
+        self.provider_calls += 1
+        self.tool_results = sum(message.role == "tool" for message in messages)
+        if self.provider_calls == 1:
+            return Assistant(
+                tool_calls=[
+                    ToolCall(id="equivalence-read", name="list_notes", args="{}")
+                ]
+            )
+        return Assistant(content="equivalent reply")
+
+    def stream_complete(self, messages, tools, on_delta):
+        assistant = self.complete(messages, tools)
+        if assistant.content:
+            on_delta(assistant.content)
+        return assistant
+
+
+class FailingAgentRunRepository:
+    def __init__(self, delegate, failing_method):
+        self.delegate = delegate
+        self.failing_method = failing_method
+
+    def __getattr__(self, name):
+        if name == self.failing_method:
+            return self._fail
+        return getattr(self.delegate, name)
+
+    @staticmethod
+    def _fail(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("injected journal repository failure")
 
 
 @pytest.mark.parametrize(
@@ -1134,6 +1229,378 @@ def test_missing_journal_run_does_not_change_confirmation_result(tmp_path):
     assert response.status_code == 200
     assert client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
     assert "journal_run_missing" in app.state.run_recorder_factory.diagnostics
+
+
+@pytest.mark.parametrize(
+    ("chat_endpoint", "confirm_endpoint"),
+    [
+        ("/api/chat", "/api/chat/confirm"),
+        ("/api/chat/stream", "/api/chat/confirm/stream"),
+    ],
+)
+def test_complete_causal_chain_reconstructs_one_healthy_run(
+    tmp_path, chat_endpoint, confirm_endpoint
+):
+    model = CompleteCausalChainModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    client.post(
+        "/api/applications",
+        json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},
+    )
+
+    initial = client.post(
+        chat_endpoint,
+        json={"message": "review and update", "conversation_id": 0},
+    )
+    assert initial.status_code == 200
+    if chat_endpoint.endswith("/stream"):
+        initial_events = _parse_sse_events(initial.text)
+        initial_response = initial_events[-1]["data"]["data"]["response"]
+        initial_sse_run_id = initial_events[0]["data"]["run_id"]
+    else:
+        initial_response = initial.json()
+        initial_sse_run_id = None
+    assert initial_response["type"] == "confirmation_required"
+
+    confirmed = client.post(
+        confirm_endpoint,
+        json={
+            "conversation_id": initial_response["conversation_id"],
+            "approved": True,
+            "confirmation_token": initial_response["pending_action"]["confirmation_token"],
+        },
+    )
+    assert confirmed.status_code == 200
+    if confirm_endpoint.endswith("/stream"):
+        confirmation_events = _parse_sse_events(confirmed.text)
+        assert confirmation_events[-1]["event"] == "completed"
+        confirmation_sse_run_id = confirmation_events[0]["data"]["run_id"]
+    else:
+        confirmation_sse_run_id = None
+
+    runs, events, snapshots = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    run = runs[0]
+    assert model.calls == 3
+    assert len([snapshot for snapshot in snapshots if snapshot.snapshot_kind == "model_input"]) == 3
+    assert len({snapshot.model_call_id for snapshot in snapshots if snapshot.model_call_id}) == 3
+    event_types = [event.event_type for event in events]
+    assert event_types.index("tool.completed") < event_types.index("approval.requested")
+    approval_index = event_types.index("approval.decided")
+    write_start_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type == "tool.started"
+        and json.loads(event.payload_json)["facts"]["tool_call_id"] == "journal-write"
+    )
+    assert approval_index < write_start_index
+    repository = AgentRunRepository(journal_session_factory_for_data_dir(tmp_path))
+    trace = reconstruct_agent_run(
+        repository,
+        run.id,
+        as_of=datetime.now(timezone.utc),
+        stale_after=None,
+    )
+    assert trace.lifecycle_status == "completed"
+    assert trace.completion_status == "terminal"
+    assert trace.integrity_status == "healthy"
+    if initial_sse_run_id is not None and confirmation_sse_run_id is not None:
+        assert run.id not in {initial_sse_run_id, confirmation_sse_run_id}
+        transport_ids = {
+            json.loads(event.payload_json)["facts"]["transport_run_id"]
+            for event in events
+            if event.event_type == "segment.started"
+        }
+        assert transport_ids == {initial_sse_run_id, confirmation_sse_run_id}
+
+
+def test_journal_complete_secret_canary_scan(tmp_path):
+    canaries = {
+        "user-message-canary-82d34",
+        "arbitrary-context-ref-canary-71f29",
+        "attachment-label-canary-58ac1",
+        "jd-context-canary-0c2ef",
+        "resume-context-canary-43bd8",
+        "tool-args-canary-9da51",
+        "model-output-canary-4f803",
+        "confirmation-token-canary-76bb0",
+        "idempotency_canary_1234",
+        "https://provider-url-canary.invalid/v1",
+        "exception-text-canary-f129e",
+    }
+    bootstrap = TestClient(create_app(data_dir=tmp_path))
+    application = bootstrap.post(
+        "/api/applications",
+        json={
+            "company_name": "Privacy Co",
+            "position_name": "Engineer",
+            "status": "applied",
+        },
+    ).json()
+    jd_version = bootstrap.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "jd-context-canary-0c2ef",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "bootstrap_jd_canary_1234",
+        },
+    ).json()
+    resume = bootstrap.post(
+        "/api/resumes",
+        json={
+            "title": "Private resume",
+            "text": "resume-context-canary-43bd8",
+        },
+    ).json()
+    provider_url = "https://provider-url-canary.invalid/v1"
+    model = PrivacyCanaryModel(
+        [
+            Assistant(content="model-output-canary-4f803"),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="privacy-write",
+                        name="save_application_jd_version",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "jd_text": "tool-args-canary-9da51",
+                                "source_url": provider_url,
+                                "expected_current_version_id": jd_version["id"],
+                                "idempotency_key": "idempotency_canary_1234",
+                            }
+                        ),
+                    )
+                ]
+            ),
+        ],
+        provider_url,
+    )
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=model,
+            title_model=ScriptedModel(
+                [Assistant(content="title one"), Assistant(content="title two")]
+            ),
+        ),
+        raise_server_exceptions=False,
+    )
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "user-message-canary-82d34",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+            "attachments": [
+                {
+                    "kind": "resume",
+                    "id": str(resume["id"]),
+                    "label": "attachment-label-canary-58ac1",
+                }
+            ],
+        },
+    )
+    assert first.status_code == 200
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "prepare private write",
+            "conversation_id": 0,
+            "context_type": "custom-private-type",
+            "context_ref": "arbitrary-context-ref-canary-71f29",
+        },
+    )
+    assert pending.status_code == 200
+    assert pending.json()["type"] == "confirmation_required"
+    stale = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending.json()["conversation_id"],
+            "approved": True,
+            "confirmation_token": "confirmation-token-canary-76bb0",
+        },
+    )
+    assert stale.status_code == 422
+
+    exception_client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=ExceptionCanaryModel(
+                "exception-text-canary-f129e",
+                provider_url,
+            ),
+            title_model=ScriptedModel([Assistant(content="title three")]),
+        ),
+        raise_server_exceptions=False,
+    )
+    failed = exception_client.post(
+        "/api/chat",
+        json={"message": "trigger provider failure", "conversation_id": 0},
+    )
+    assert failed.status_code == 502
+
+    runs, events, snapshots = _journal_rows(tmp_path)
+    journal_text = "\n".join(
+        str(value)
+        for row in [*runs, *events, *snapshots]
+        for value in row.__dict__.values()
+        if isinstance(value, str)
+    )
+    for canary in canaries:
+        assert canary not in journal_text
+
+    run_by_id = {run.id: run for run in runs}
+    assert any(run.initial_context_ref_fingerprint for run in runs)
+    assert snapshots
+    assert all(
+        snapshot.fingerprint_key_id == run_by_id[snapshot.run_id].fingerprint_key_id
+        for snapshot in snapshots
+    )
+    fingerprinted_events = []
+    for event in events:
+        facts = json.loads(event.payload_json)["facts"]
+        if any(name.endswith("_fingerprint") for name in facts):
+            fingerprinted_events.append(event)
+            assert event.fingerprint_key_id == run_by_id[event.run_id].fingerprint_key_id
+    assert any(event.event_type == "model.requested" for event in fingerprinted_events)
+    assert any(event.event_type == "approval.requested" for event in fingerprinted_events)
+
+    log_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (tmp_path / "logs").rglob("*")
+        if path.is_file()
+    )
+    settings = client.get("/api/settings")
+    settings_backup = client.get("/api/settings/backup")
+    archive_response = client.get("/api/backups/export")
+    assert settings.status_code == settings_backup.status_code == archive_response.status_code == 200
+    external_text = "\n".join([log_text, settings.text, settings_backup.text])
+    with ZipFile(BytesIO(archive_response.content)) as archive:
+        external_text += "\n" + "\n".join(
+            archive.read(name).decode("utf-8", errors="ignore")
+            for name in archive.namelist()
+            if not name.endswith((".db", ".sqlite"))
+        )
+    for canary in canaries:
+        assert canary not in external_text
+
+
+def _failure_injected_recorder_factory(data_dir, failure):
+    repository = AgentRunRepository(journal_session_factory_for_data_dir(data_dir))
+    key = load_or_create_journal_key(data_dir)
+    assert key is not None
+    if failure == "disabled":
+        return RunRecorderFactory(repository, key=key, enabled=False)
+    if failure == "key-unavailable":
+        return RunRecorderFactory(repository, key=None)
+    method = {
+        "create": "create_run_and_initial_segment",
+        "append": "append_event",
+        "snapshot": "capture_context",
+        "disposition": "converge_disposition",
+    }[failure]
+    return RunRecorderFactory(
+        FailingAgentRunRepository(repository, method),
+        key=key,
+    )
+
+
+def _normalized_chat_response(response, endpoint):
+    if not endpoint.endswith("/stream"):
+        return response.json()
+    normalized = []
+    for item in _parse_sse_events(response.text):
+        envelope = dict(item["data"])
+        envelope["run_id"] = "<transport-run>"
+        envelope["ts"] = "<timestamp>"
+        normalized.append(
+            {
+                "event": item["event"],
+                "id": f"<transport-run>:{envelope['seq']}",
+                "data": envelope,
+            }
+        )
+    return normalized
+
+
+def _chat_and_business_projection(data_dir):
+    messages = ChatRepository(session_factory_for_data_dir(data_dir)).list_messages(1)
+    chat_rows = [
+        (message.role, message.content, message.tool_calls, message.tool_call_id)
+        for message in messages
+    ]
+    applications = ApplicationsRepository(
+        session_factory_for_data_dir(data_dir)
+    ).list()
+    business_rows = [
+        (
+            application.id,
+            application.company_name,
+            application.position_name,
+            application.status,
+        )
+        for application in applications
+    ]
+    return chat_rows, business_rows
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+@pytest.mark.parametrize(
+    "failure",
+    ["disabled", "key-unavailable", "create", "append", "snapshot", "disposition"],
+)
+def test_journal_failure_modes_preserve_business_behavior(tmp_path, endpoint, failure):
+    control_dir = tmp_path / "control"
+    candidate_dir = tmp_path / "candidate"
+    control_model = EquivalenceModel()
+    candidate_model = EquivalenceModel()
+    control = TestClient(
+        create_app(
+            data_dir=control_dir,
+            chat_model=control_model,
+            title_model=ScriptedModel([Assistant(content="title")]),
+        )
+    )
+    candidate = TestClient(
+        create_app(
+            data_dir=candidate_dir,
+            chat_model=candidate_model,
+            title_model=ScriptedModel([Assistant(content="title")]),
+            run_recorder_factory=_failure_injected_recorder_factory(
+                candidate_dir, failure
+            ),
+        )
+    )
+    application_payload = {
+        "company_name": "Equivalence Co",
+        "position_name": "Engineer",
+        "status": "applied",
+    }
+    assert control.post("/api/applications", json=application_payload).status_code == 201
+    assert candidate.post("/api/applications", json=application_payload).status_code == 201
+
+    control_response = control.post(
+        endpoint,
+        json={"message": "read applications", "conversation_id": 0},
+    )
+    candidate_response = candidate.post(
+        endpoint,
+        json={"message": "read applications", "conversation_id": 0},
+    )
+
+    assert candidate_response.status_code == control_response.status_code
+    assert _normalized_chat_response(
+        candidate_response, endpoint
+    ) == _normalized_chat_response(control_response, endpoint)
+    assert _chat_and_business_projection(candidate_dir) == _chat_and_business_projection(
+        control_dir
+    )
+    assert candidate_model.provider_calls == control_model.provider_calls == 2
+    assert candidate_model.tool_results == control_model.tool_results == 1
 
 
 PAGE_CONTEXT_POLICY = (

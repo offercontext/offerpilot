@@ -9056,14 +9056,16 @@ def _run_chat_agent_with_sse_events(
     call: Callable[[Callable[[dict[str, Any]], None], Callable[[], bool]], Any],
     emit: Callable[[str, dict[str, Any] | None], str],
 ) -> Generator[str, None, Any]:
-    event_queue: Queue[dict[str, Any]] = Queue()
+    completion_marker = object()
+    event_queue: Queue[dict[str, Any] | object] = Queue()
     cancel_event = Event()
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(lambda: call(event_queue.put, cancel_event.is_set))
+    future.add_done_callback(lambda _future: event_queue.put(completion_marker))
     deadline = perf_counter() + CHAT_AGENT_TIMEOUT_SECONDS
     cancel_futures = True
     try:
-        while not future.done() or not event_queue.empty():
+        while True:
             try:
                 agent_event = event_queue.get(timeout=0.1)
             except Empty as exc:
@@ -9071,6 +9073,9 @@ def _run_chat_agent_with_sse_events(
                     future.cancel()
                     raise ChatAgentTimedOut() from exc
                 continue
+            if agent_event is completion_marker:
+                break
+            assert isinstance(agent_event, dict)
             yield emit(str(agent_event["event"]), dict(agent_event["data"]))
         cancel_futures = False
         return future.result()
