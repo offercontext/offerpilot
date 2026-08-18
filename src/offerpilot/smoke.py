@@ -4258,6 +4258,9 @@ def _dispose_smoke_app_database(app: Any) -> None:
     engine = getattr(app.state, "db_engine", None)
     if engine is not None:
         engine.dispose()
+    journal_engine = getattr(app.state, "journal_db_engine", None)
+    if journal_engine is not None and journal_engine is not engine:
+        journal_engine.dispose()
 
 
 def _free_port() -> int:
