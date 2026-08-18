@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.ai.agent import PendingAction, StalePendingActionError
@@ -697,6 +697,13 @@ def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpo
     assert len(versions) == 1
     assert versions[0]["source_kind"] == "pilot"
     assert model.calls == 0
+    runs, journal_events, snapshots = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    event_types = [event.event_type for event in journal_events]
+    assert event_types.index("approval.decided") < event_types.index("tool.started")
+    assert not any(event_type.startswith("model.") for event_type in event_types)
+    assert [snapshot.snapshot_kind for snapshot in snapshots].count("confirmation_resume") == 1
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -736,6 +743,12 @@ def test_deterministic_pilot_confirmation_allows_only_jd_edits_without_ai(tmp_pa
     assert detail["jd_text"] == "修改后的岗位描述"
     assert detail["source_url"] is None
     assert model.calls == 0
+    _, journal_events, _ = _journal_rows(tmp_path)
+    decisions = [
+        event for event in journal_events if event.event_type == "approval.decided"
+    ]
+    assert len(decisions) == 1
+    assert json.loads(decisions[0].payload_json)["facts"]["decision"] == "edited"
 
 
 def test_deterministic_pilot_rejection_does_not_write_without_ai(tmp_path):
@@ -769,6 +782,19 @@ def test_deterministic_pilot_rejection_does_not_write_without_ai(tmp_path):
     assert "取消" in response.json()["message"]
     assert client.get(f"/api/applications/{application['id']}/job-description/versions").json() == []
     assert model.calls == 0
+    runs, journal_events, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    decisions = [
+        event for event in journal_events if event.event_type == "approval.decided"
+    ]
+    assert len(decisions) == 1
+    assert json.loads(decisions[0].payload_json)["facts"]["decision"] == "rejected"
+    assert not any(
+        event.event_type == "tool.started"
+        and event.execution_segment_id == decisions[0].execution_segment_id
+        for event in journal_events
+    )
 
 
 def test_deterministic_pilot_stale_confirmation_keeps_original_text_in_new_card(tmp_path):
@@ -949,6 +975,165 @@ def _create_status_confirmation(tmp_path, model):
         json={"message": "change status", "conversation_id": 0},
     ).json()
     return app_client, client, application, pending
+
+
+def _status_confirmation_model(*followups):
+    return ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="journal-status-1",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            *followups,
+        ]
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_journal_confirmation_resumes_original_run_and_orders_approval(
+    tmp_path, endpoint
+):
+    model = _status_confirmation_model(Assistant(content="status updated"))
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    runs, events, snapshots = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    segment_ids = {
+        event.execution_segment_id
+        for event in events
+        if event.event_type == "segment.started"
+    }
+    assert len(segment_ids) == 2
+    event_types = [event.event_type for event in events]
+    approval_index = event_types.index("approval.decided")
+    assert approval_index < event_types.index("tool.started")
+    assert event_types[approval_index + 1] == "run.resumed"
+    assert [snapshot.snapshot_kind for snapshot in snapshots].count("confirmation_resume") == 1
+
+
+def test_journal_rejected_confirmation_records_decision_without_tool_start(tmp_path):
+    model = _status_confirmation_model(Assistant(content="kept unchanged"))
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": False,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    runs, events, _ = _journal_rows(tmp_path)
+    assert runs[0].status == "completed"
+    decisions = [event for event in events if event.event_type == "approval.decided"]
+    assert len(decisions) == 1
+    assert json.loads(decisions[0].payload_json)["facts"]["decision"] == "rejected"
+    confirmation_segment = decisions[0].execution_segment_id
+    assert not any(
+        event.event_type == "tool.started"
+        and event.execution_segment_id == confirmation_segment
+        for event in events
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_journal_invalid_confirmation_token_creates_no_segment(tmp_path, endpoint):
+    model = _status_confirmation_model(Assistant(content="unused"))
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+    _, before_events, _ = _journal_rows(tmp_path)
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": "0" * 64,
+        },
+    )
+
+    assert response.status_code in {200, 409}
+    _, after_events, _ = _journal_rows(tmp_path)
+    assert [event.id for event in after_events] == [event.id for event in before_events]
+
+
+def test_journal_second_pending_write_stays_on_same_run(tmp_path):
+    model = _status_confirmation_model(
+        Assistant(
+            tool_calls=[
+                ToolCall(
+                    id="journal-status-2",
+                    name="update_application_status",
+                    args=json.dumps({"id": 1, "status": "rejected"}),
+                )
+            ]
+        )
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    runs, events, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "waiting_confirmation"
+    assert runs[0].waiting_tool_call_id == "journal-status-2"
+    assert len([event for event in events if event.event_type == "segment.started"]) == 2
+
+
+def test_missing_journal_run_does_not_change_confirmation_result(tmp_path):
+    model = _status_confirmation_model(Assistant(content="status updated"))
+    app = create_app(data_dir=tmp_path, chat_model=model)
+    client = TestClient(app, raise_server_exceptions=False)
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},
+    ).json()
+    pending = client.post(
+        "/api/chat", json={"message": "change status", "conversation_id": 0}
+    ).json()
+    factory = session_factory_for_data_dir(tmp_path)
+    with factory() as session:
+        session.execute(delete(AgentRun))
+        session.commit()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+    assert "journal_run_missing" in app.state.run_recorder_factory.diagnostics
 
 
 PAGE_CONTEXT_POLICY = (

@@ -336,14 +336,15 @@ class LangGraphAgentRunner:
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
             tool = self._registry.get(tool_name)
-            self._record_tool_proposed(
-                tool_call_id,
-                tool_name,
-                tool_args,
-                tool,
-                auto_approve=bool(state.get("auto_approve", False)),
-            )
             has_mapped_resume, mapped_resume, mapped_interrupt_id = _mapped_resume_payload()
+            if not has_mapped_resume:
+                self._record_tool_proposed(
+                    tool_call_id,
+                    tool_name,
+                    tool_args,
+                    tool,
+                    auto_approve=bool(state.get("auto_approve", False)),
+                )
             if has_mapped_resume:
                 mapped_identity_error = _resume_identity_error(
                     mapped_resume,

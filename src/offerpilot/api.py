@@ -85,6 +85,7 @@ from offerpilot.agent_runtime.journal import (
     EventInput,
     NullRunRecorder,
     NullRunRecorderFactory,
+    ResumedDisposition,
     RunRecorder,
     RunRecorderFactory,
     SuspendedDisposition,
@@ -1172,6 +1173,34 @@ def _journal_pending_replay_builder(
     return build
 
 
+def _journal_confirmation_segment_builder(
+    *,
+    transport_mode: str,
+    transport_run_id: str | None,
+    execution_path: str,
+) -> Callable[..., StartSegmentCommand]:
+    def build(
+        run_id: str,
+        _key: Any,
+        budget_check: Callable[[], None],
+    ) -> StartSegmentCommand:
+        segment_id = str(uuid4())
+        event = prepare_event(
+            event_type="segment.started",
+            execution_segment_id=segment_id,
+            facts={
+                "request_kind": "confirmation",
+                "transport_mode": transport_mode,
+                "execution_path": execution_path,
+                "transport_run_id": transport_run_id,
+            },
+            budget_check=budget_check,
+        )
+        return StartSegmentCommand(run_id=run_id, segment_started=event)
+
+    return build
+
+
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
@@ -1329,6 +1358,30 @@ def create_app(
         except Exception:
             return NullRunRecorder(["journal_run_lookup_failed"])
 
+    def _resume_journal_confirmation(
+        conversation_id: int,
+        pending: PendingAction,
+        *,
+        transport_mode: str,
+        transport_run_id: str | None,
+        execution_path: str,
+    ) -> RunRecorder:
+        try:
+            return cast(
+                RunRecorder,
+                cast(Any, resolved_run_recorder_factory).resume_waiting_run(
+                    conversation_id,
+                    pending.tool_call_id,
+                    _journal_confirmation_segment_builder(
+                        transport_mode=transport_mode,
+                        transport_run_id=transport_run_id,
+                        execution_path=execution_path,
+                    ),
+                ),
+            )
+        except Exception:
+            return NullRunRecorder(["journal_run_lookup_failed"])
+
     def _journal_call(operation: Callable[[], Any]) -> Any:
         try:
             return operation()
@@ -1382,6 +1435,208 @@ def create_app(
             )
         )
 
+    def _capture_confirmation_journal_context(
+        recorder: RunRecorder,
+        conversation: Any,
+        *,
+        tool_names: tuple[str, ...],
+    ) -> None:
+        stored_messages = chat.list_messages(int(conversation.id))
+        _journal_call(
+            lambda: recorder.capture_context(
+                {
+                    "conversation_id": int(conversation.id),
+                    "context_type": str(conversation.context_type or "workspace"),
+                    "context_ref": str(conversation.context_ref or ""),
+                    "message_count": len(stored_messages),
+                    "tool_names": list(tool_names),
+                },
+                ContextManifestInput(
+                    conversation_message_ids=tuple(
+                        int(message.id) for message in stored_messages
+                    ),
+                    tool_names=tool_names,
+                    attachment_refs=(),
+                    domain_source_refs=(),
+                ),
+                snapshot_kind="confirmation_resume",
+            )
+        )
+
+    def _record_journal_approval(
+        recorder: RunRecorder,
+        *,
+        confirmation_attempt_id: str,
+        original_pending: PendingAction,
+        effective_pending: PendingAction,
+        approved: bool,
+        edited: bool,
+    ) -> None:
+        original_fingerprint = _journal_call(
+            lambda: recorder.fingerprint_pending_identity(
+                {
+                    "tool_call_id": original_pending.tool_call_id,
+                    "tool_name": original_pending.tool_name,
+                    "args": original_pending.args,
+                }
+            )
+        )
+        decided_fingerprint = _journal_call(
+            lambda: recorder.fingerprint_pending_identity(
+                {
+                    "tool_call_id": effective_pending.tool_call_id,
+                    "tool_name": effective_pending.tool_name,
+                    "args": effective_pending.args,
+                }
+            )
+        )
+        if not isinstance(original_fingerprint, str) or not isinstance(
+            decided_fingerprint, str
+        ):
+            return
+        _journal_call(
+            lambda: recorder.append_event(
+                EventInput(
+                    event_type="approval.decided",
+                    facts={
+                        "confirmation_attempt_id": confirmation_attempt_id,
+                        "decision": (
+                            "rejected" if not approved else "edited" if edited else "approved"
+                        ),
+                        "tool_call_id": original_pending.tool_call_id,
+                        "original_input_fingerprint": original_fingerprint,
+                        "decided_input_fingerprint": decided_fingerprint,
+                    },
+                    source_ref_type="tool_call",
+                    source_ref_id=original_pending.tool_call_id,
+                )
+            )
+        )
+        _journal_call(
+            lambda: recorder.resume(
+                ResumedDisposition(
+                    confirmation_attempt_id=confirmation_attempt_id,
+                    tool_call_id=original_pending.tool_call_id,
+                )
+            )
+        )
+
+    def _record_journal_tool_start(
+        recorder: RunRecorder,
+        pending: PendingAction,
+    ) -> None:
+        _journal_call(
+            lambda: recorder.append_event(
+                EventInput(
+                    event_type="tool.started",
+                    facts={
+                        "tool_call_id": pending.tool_call_id,
+                        "tool_name": pending.tool_name,
+                        "result_contract": "legacy_string_v1",
+                    },
+                    source_ref_type="tool_call",
+                    source_ref_id=pending.tool_call_id,
+                )
+            )
+        )
+
+    def _record_journal_tool_result(
+        recorder: RunRecorder,
+        pending: PendingAction,
+        result: str,
+    ) -> None:
+        if result.startswith("错误："):
+            event = EventInput(
+                event_type="tool.failed",
+                facts={
+                    "tool_call_id": pending.tool_call_id,
+                    "tool_name": pending.tool_name,
+                    "failure_category": "tool_error",
+                },
+                source_ref_type="tool_call",
+                source_ref_id=pending.tool_call_id,
+            )
+        else:
+            event = EventInput(
+                event_type="tool.completed",
+                facts={
+                    "tool_call_id": pending.tool_call_id,
+                    "tool_name": pending.tool_name,
+                    "outcome": "completed",
+                    "result_shape_digest": _journal_shape_digest(result),
+                },
+                source_ref_type="tool_call",
+                source_ref_id=pending.tool_call_id,
+            )
+        _journal_call(lambda: recorder.append_event(event))
+
+    def _deterministic_confirmation_journal_callbacks(
+        conversation: Any,
+        pending: PendingAction,
+        *,
+        edited: bool,
+        transport_mode: str,
+        transport_run_id: str | None,
+    ) -> tuple[
+        dict[str, RunRecorder],
+        Callable[[PendingAction, bool], None],
+        Callable[[PendingAction, str], None],
+    ]:
+        holder: dict[str, RunRecorder] = {}
+        confirmation_attempt_id = str(uuid4())
+
+        def attempt(effective_pending: PendingAction, approved: bool) -> None:
+            recorder = _resume_journal_confirmation(
+                int(conversation.id),
+                pending,
+                transport_mode=transport_mode,
+                transport_run_id=transport_run_id,
+                execution_path="deterministic_confirmation",
+            )
+            holder["recorder"] = recorder
+            _capture_confirmation_journal_context(
+                recorder,
+                conversation,
+                tool_names=(pending.tool_name,),
+            )
+            _record_journal_approval(
+                recorder,
+                confirmation_attempt_id=confirmation_attempt_id,
+                original_pending=pending,
+                effective_pending=effective_pending,
+                approved=approved,
+                edited=edited,
+            )
+            if approved:
+                _record_journal_tool_start(recorder, effective_pending)
+
+        def result(effective_pending: PendingAction, value: str) -> None:
+            recorder = holder.get("recorder")
+            if recorder is not None:
+                _record_journal_tool_result(recorder, effective_pending, value)
+
+        return holder, attempt, result
+
+    def _finish_deterministic_confirmation_journal(
+        holder: dict[str, RunRecorder],
+        original_pending: PendingAction,
+        response: JSONResponse | dict[str, Any],
+        conversation_id: int,
+    ) -> None:
+        recorder = holder.get("recorder")
+        if recorder is None:
+            return
+        current_pending = chat.get_pending_action(conversation_id)
+        if (
+            current_pending is not None
+            and current_pending.tool_call_id != original_pending.tool_call_id
+        ):
+            _suspend_journal(recorder, current_pending)
+        elif isinstance(response, JSONResponse):
+            _finish_journal(recorder, "failed", "unknown")
+        else:
+            _finish_journal(recorder, "completed")
+
     def _record_persisted_messages(recorder: RunRecorder, messages: list[Any]) -> None:
         for message in messages:
             if message.role not in {"assistant", "tool"}:
@@ -1403,6 +1658,14 @@ def create_app(
             )
 
     def _suspend_journal(recorder: RunRecorder, pending: PendingAction) -> None:
+        pending_identity = {
+            "tool_call_id": pending.tool_call_id,
+            "tool_name": pending.tool_name,
+            "args": pending.args,
+        }
+        pending_fingerprint = _journal_call(
+            lambda: recorder.fingerprint_pending_identity(pending_identity)
+        )
         _journal_call(
             lambda: recorder.suspend(
                 SuspendedDisposition(
@@ -1410,11 +1673,12 @@ def create_app(
                     tool_name=pending.tool_name,
                     tool_kind="write",
                     args_shape_digest=_journal_shape_digest(pending.args),
-                    pending_identity={
-                        "tool_call_id": pending.tool_call_id,
-                        "tool_name": pending.tool_name,
-                        "args": pending.args,
-                    },
+                    pending_identity_fingerprint=(
+                        pending_fingerprint
+                        if isinstance(pending_fingerprint, str)
+                        else None
+                    ),
+                    pending_identity=pending_identity,
                 )
             )
         )
@@ -1757,6 +2021,8 @@ def create_app(
         approved: bool,
         edited_args: dict[str, Any] | None,
         rejection_feedback: str,
+        on_confirmation_attempt: Callable[[PendingAction, bool], None] | None = None,
+        on_tool_result: Callable[[PendingAction, str], None] | None = None,
     ) -> JSONResponse | dict[str, Any]:
         registry = offerpilot_tool_registry(
             applications,
@@ -1783,10 +2049,14 @@ def create_app(
             validation_error = str(validator(effective_pending.args) or "") if callable(validator) else ""
             if validation_error:
                 return error_response(422, validation_error)
+            if on_confirmation_attempt is not None:
+                on_confirmation_attempt(effective_pending, True)
             try:
                 result = str(tool["handler"](effective_pending.args))
             except Exception as exc:
                 result = f"错误：{exc}"
+            if on_tool_result is not None:
+                on_tool_result(effective_pending, result)
             succeeded = not result.startswith("错误：")
             tool_message = Message(
                 role="tool",
@@ -1856,6 +2126,8 @@ def create_app(
             response_message = "岗位资料已保存。" if succeeded else "岗位资料保存失败，请检查后重试。"
             write_status = "success" if succeeded else "failed"
         else:
+            if on_confirmation_attempt is not None:
+                on_confirmation_attempt(pending, False)
             result = _CANCELLED_TOOL_RESULT
             tool_message = Message(
                 role="tool",
@@ -1886,14 +2158,17 @@ def create_app(
     def _deterministic_pilot_confirmation_stream_response(
         conversation: Any,
         response: dict[str, Any],
+        *,
+        run: SseRun | None = None,
     ) -> StreamingResponse:
-        run = SseRun(
-            run_id=str(uuid4()),
-            conversation_id=int(response["conversation_id"]),
-            context_type=str(conversation.context_type or "workspace"),
-            context_ref=str(conversation.context_ref or ""),
-            mode=str(conversation.mode or "general"),
-        )
+        if run is None:
+            run = SseRun(
+                run_id=str(uuid4()),
+                conversation_id=int(response["conversation_id"]),
+                context_type=str(conversation.context_type or "workspace"),
+                context_ref=str(conversation.context_ref or ""),
+                mode=str(conversation.mode or "general"),
+            )
 
         def emit(event: str, data: dict[str, Any] | None = None) -> str:
             envelope = run.envelope(event, data)
@@ -5412,12 +5687,31 @@ def create_app(
         }:
             if not compare_digest(confirmation_token, _confirmation_token(pending)):
                 return error_response(409, "stale pending action")
+            (
+                deterministic_journal,
+                deterministic_attempt,
+                deterministic_result,
+            ) = _deterministic_confirmation_journal_callbacks(
+                conversation,
+                pending,
+                edited=edited_args is not None,
+                transport_mode="sync",
+                transport_run_id=None,
+            )
             deterministic_response = _deterministic_pilot_confirmation(
                 conversation_id,
                 pending,
                 approved=approved,
                 edited_args=edited_args,
                 rejection_feedback=rejection_feedback,
+                on_confirmation_attempt=deterministic_attempt,
+                on_tool_result=deterministic_result,
+            )
+            _finish_deterministic_confirmation_journal(
+                deterministic_journal,
+                pending,
+                deterministic_response,
+                conversation_id,
             )
             if isinstance(deterministic_response, JSONResponse):
                 return deterministic_response
@@ -5442,6 +5736,28 @@ def create_app(
             )
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
+        confirmation_attempt_id = str(uuid4())
+        confirmation_recorder = _resume_journal_confirmation(
+            conversation_id,
+            pending,
+            transport_mode="sync",
+            transport_run_id=None,
+            execution_path="agent_resume",
+        )
+        _capture_confirmation_journal_context(
+            confirmation_recorder,
+            conversation,
+            tool_names=tuple(registry),
+        )
+        if not approved:
+            _record_journal_approval(
+                confirmation_recorder,
+                confirmation_attempt_id=confirmation_attempt_id,
+                original_pending=pending,
+                effective_pending=effective_pending,
+                approved=False,
+                edited=False,
+            )
         context_message = _chat_context_message(
             conversation,
             applications,
@@ -5477,6 +5793,14 @@ def create_app(
                     raise StalePendingActionError(
                         "stale pending action: action changed before handler attempt"
                     )
+                _record_journal_approval(
+                    confirmation_recorder,
+                    confirmation_attempt_id=confirmation_attempt_id,
+                    original_pending=pending,
+                    effective_pending=action,
+                    approved=True,
+                    edited=edited_args is not None,
+                )
                 confirmation_attempted.set()
 
         try:
@@ -5499,39 +5823,51 @@ def create_app(
                     confirmation_result_sink=confirmation_result_sink,
                     confirmation_attempt_sink=start_confirmation_attempt,
                     cancel_check=confirmation_cancelled.is_set,
+                    run_recorder=confirmation_recorder,
                 )
             )
         except ChatAgentTimedOut:
             if confirmed_outcome.get("cas_lost"):
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             with confirmation_attempt_lock:
                 attempt_in_progress = confirmation_attempted.is_set()
                 confirmation_cancelled.set()
             fallback = finalize_confirmation_timeout()
             if fallback is not None:
+                _finish_journal(confirmation_recorder, "completed")
                 return JSONResponse(fallback)
             if confirmed_outcome.get("cas_lost"):
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             if attempt_in_progress:
                 return error_response(
                     409, "确认操作仍在后台执行，请刷新对话查看结果，不要重复提交。"
                 )
             cancel_confirmation_result()
+            _finish_journal(confirmation_recorder, "timed_out", "timeout")
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
         except PendingActionValidationError as exc:
+            _finish_journal(confirmation_recorder, "failed", "unknown")
             return error_response(422, f"确认参数无效：{exc}")
         except StalePendingActionError:
+            _finish_journal(confirmation_recorder, "failed", "unknown")
             return error_response(409, "待确认操作已过期或正在处理中，请刷新对话后重试。")
         except Exception as exc:
             if confirmed_outcome.get("cas_lost"):
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
             if fallback is not None:
+                _finish_journal(confirmation_recorder, "completed")
                 return JSONResponse(fallback)
             if confirmed_outcome.get("cas_lost"):
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+            _finish_journal(confirmation_recorder, "failed", "provider_error")
             return _ai_provider_error(exc, resolved_data_dir)
         if confirmed_outcome.get("cas_lost"):
+            _finish_journal(confirmation_recorder, "failed", "unknown")
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         added, forced_reply = _with_write_error_followup(added)
         persisted_added = _without_persisted_confirmation_result(added, confirmed_outcome)
@@ -5554,12 +5890,19 @@ def create_app(
                         clarification_messages,
                         clarification=(new_pending, missing_question),
                     ):
+                        _finish_journal(confirmation_recorder, "failed", "unknown")
                         return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
                 else:
-                    _persist_ai_messages(chat, conversation_id, persisted_added)
+                    persisted = _persist_ai_messages(chat, conversation_id, persisted_added)
                     chat.set_pending_clarification(conversation_id, new_pending, missing_question)
-                    chat.append_message(conversation_id, "assistant", content=missing_question)
+                    persisted.append(
+                        chat.append_message(
+                            conversation_id, "assistant", content=missing_question
+                        )
+                    )
                     chat.clear_pending_action(conversation_id)
+                    _record_persisted_messages(confirmation_recorder, persisted)
+                _finish_journal(confirmation_recorder, "completed")
                 return JSONResponse(
                     {
                         "type": "message",
@@ -5575,6 +5918,7 @@ def create_app(
                     persisted_added,
                     pending=new_pending,
                 ):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             else:
                 if not chat.persist_pending_action(
@@ -5582,7 +5926,9 @@ def create_app(
                     new_pending,
                     _persistable_ai_messages(persisted_added),
                 ):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     return error_response(409, "对话已归档，无法保存待确认操作。")
+            _suspend_journal(confirmation_recorder, new_pending)
             return JSONResponse(
                 {
                     "type": "confirmation_required",
@@ -5603,14 +5949,16 @@ def create_app(
                 persisted_added,
                 clarification=clarification,
             ):
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         else:
-            _persist_ai_messages(chat, conversation_id, persisted_added)
+            persisted = _persist_ai_messages(chat, conversation_id, persisted_added)
             chat.clear_pending_action(conversation_id)
             if forced_pending is not None and forced_reply:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             elif not forced_reply:
                 chat.clear_pending_clarification(conversation_id)
+            _record_persisted_messages(confirmation_recorder, persisted)
         undo = (
             dict(confirmed_outcome.get("undo") or {})
             if confirmed_outcome
@@ -5638,6 +5986,7 @@ def create_app(
             response_payload["write_error"] = write_error
         if undo:
             response_payload["undo"] = undo
+        _finish_journal(confirmation_recorder, "completed")
         return JSONResponse(response_payload)
 
     @app.post("/api/chat/undo-last-write")
@@ -5719,18 +6068,38 @@ def create_app(
         }:
             if not compare_digest(confirmation_token, _confirmation_token(pending)):
                 return stale_response()
+            (
+                deterministic_journal,
+                deterministic_attempt,
+                deterministic_result,
+            ) = _deterministic_confirmation_journal_callbacks(
+                conversation,
+                pending,
+                edited=edited_args is not None,
+                transport_mode="stream",
+                transport_run_id=run.run_id,
+            )
             deterministic_response = _deterministic_pilot_confirmation(
                 conversation_id,
                 pending,
                 approved=approved,
                 edited_args=edited_args,
                 rejection_feedback=rejection_feedback,
+                on_confirmation_attempt=deterministic_attempt,
+                on_tool_result=deterministic_result,
+            )
+            _finish_deterministic_confirmation_journal(
+                deterministic_journal,
+                pending,
+                deterministic_response,
+                conversation_id,
             )
             if isinstance(deterministic_response, JSONResponse):
                 return deterministic_response
             return _deterministic_pilot_confirmation_stream_response(
                 conversation,
                 deterministic_response,
+                run=run,
             )
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
@@ -5753,6 +6122,29 @@ def create_app(
             )
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
+
+        confirmation_attempt_id = str(uuid4())
+        confirmation_recorder = _resume_journal_confirmation(
+            conversation_id,
+            pending,
+            transport_mode="stream",
+            transport_run_id=run.run_id,
+            execution_path="agent_resume",
+        )
+        _capture_confirmation_journal_context(
+            confirmation_recorder,
+            conversation,
+            tool_names=tuple(registry),
+        )
+        if not approved:
+            _record_journal_approval(
+                confirmation_recorder,
+                confirmation_attempt_id=confirmation_attempt_id,
+                original_pending=pending,
+                effective_pending=effective_pending,
+                approved=False,
+                edited=False,
+            )
 
         context_message = _chat_context_message(
             conversation,
@@ -5789,6 +6181,14 @@ def create_app(
                     raise StalePendingActionError(
                         "stale pending action: action changed before handler attempt"
                     )
+                _record_journal_approval(
+                    confirmation_recorder,
+                    confirmation_attempt_id=confirmation_attempt_id,
+                    original_pending=pending,
+                    effective_pending=action,
+                    approved=True,
+                    edited=edited_args is not None,
+                )
                 confirmation_attempted.set()
 
         def stream() -> Any:
@@ -5826,14 +6226,17 @@ def create_app(
                         cancel_check=lambda: confirmation_cancelled.is_set() or cancel_check(),
                         confirmation_result_sink=confirmation_result_sink,
                         confirmation_attempt_sink=start_confirmation_attempt,
+                        run_recorder=confirmation_recorder,
                     ),
                     emit,
                 )
             except ChatRunCancelled:
                 cancel_confirmation_result()
+                _finish_journal(confirmation_recorder, "cancelled", "cancelled")
                 return
             except ChatAgentTimedOut:
                 if confirmed_outcome.get("cas_lost"):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     yield emit(
                         "error",
                         {
@@ -5849,10 +6252,12 @@ def create_app(
                     confirmation_cancelled.set()
                 fallback = finalize_confirmation_timeout()
                 if fallback is not None:
+                    _finish_journal(confirmation_recorder, "completed")
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
                 if confirmed_outcome.get("cas_lost"):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     yield emit(
                         "error",
                         {
@@ -5875,6 +6280,7 @@ def create_app(
                     )
                     return
                 cancel_confirmation_result()
+                _finish_journal(confirmation_recorder, "timed_out", "timeout")
                 yield emit(
                     "error",
                     {
@@ -5886,6 +6292,7 @@ def create_app(
                 )
                 return
             except PendingActionValidationError as exc:
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 yield emit(
                     "error",
                     {
@@ -5897,6 +6304,7 @@ def create_app(
                 )
                 return
             except StalePendingActionError:
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 yield emit(
                     "error",
                     {
@@ -5909,6 +6317,7 @@ def create_app(
                 return
             except Exception as exc:
                 if confirmed_outcome.get("cas_lost"):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     yield emit(
                         "error",
                         {
@@ -5921,10 +6330,12 @@ def create_app(
                     return
                 fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
                 if fallback is not None:
+                    _finish_journal(confirmation_recorder, "completed")
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
                 if confirmed_outcome.get("cas_lost"):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     yield emit(
                         "error",
                         {
@@ -5935,6 +6346,7 @@ def create_app(
                         },
                     )
                     return
+                _finish_journal(confirmation_recorder, "failed", "provider_error")
                 yield emit(
                     "error",
                     {
@@ -5947,6 +6359,7 @@ def create_app(
                 return
 
             if confirmed_outcome.get("cas_lost"):
+                _finish_journal(confirmation_recorder, "failed", "unknown")
                 yield emit(
                     "error",
                     {
@@ -5978,6 +6391,7 @@ def create_app(
                             clarification_messages,
                             clarification=(new_pending, missing_question),
                         ):
+                            _finish_journal(confirmation_recorder, "failed", "unknown")
                             yield emit(
                                 "error",
                                 {
@@ -5989,12 +6403,22 @@ def create_app(
                             )
                             return
                     else:
-                        _persist_ai_messages(chat, conversation_id, persisted_added)
+                        persisted = _persist_ai_messages(
+                            chat, conversation_id, persisted_added
+                        )
                         chat.set_pending_clarification(
                             conversation_id, new_pending, missing_question
                         )
-                        chat.append_message(conversation_id, "assistant", content=missing_question)
+                        persisted.append(
+                            chat.append_message(
+                                conversation_id,
+                                "assistant",
+                                content=missing_question,
+                            )
+                        )
                         chat.clear_pending_action(conversation_id)
+                        _record_persisted_messages(confirmation_recorder, persisted)
+                    _finish_journal(confirmation_recorder, "completed")
                     response = {
                         "type": "message",
                         "conversation_id": conversation_id,
@@ -6011,6 +6435,7 @@ def create_app(
                         persisted_added,
                         pending=new_pending,
                     ):
+                        _finish_journal(confirmation_recorder, "failed", "unknown")
                         yield emit(
                             "error",
                             {
@@ -6027,6 +6452,7 @@ def create_app(
                         new_pending,
                         _persistable_ai_messages(persisted_added),
                     ):
+                        _finish_journal(confirmation_recorder, "failed", "unknown")
                         yield emit(
                             "error",
                             {
@@ -6037,6 +6463,7 @@ def create_app(
                             },
                         )
                         return
+                _suspend_journal(confirmation_recorder, new_pending)
                 pending_payload = _pending_action_json(new_pending, applications)
                 response = {
                     "type": "confirmation_required",
@@ -6060,6 +6487,7 @@ def create_app(
                     persisted_added,
                     clarification=clarification,
                 ):
+                    _finish_journal(confirmation_recorder, "failed", "unknown")
                     yield emit(
                         "error",
                         {
@@ -6071,12 +6499,13 @@ def create_app(
                     )
                     return
             else:
-                _persist_ai_messages(chat, conversation_id, persisted_added)
+                persisted = _persist_ai_messages(chat, conversation_id, persisted_added)
                 chat.clear_pending_action(conversation_id)
                 if forced_pending is not None and forced_reply:
                     chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
                 elif not forced_reply:
                     chat.clear_pending_clarification(conversation_id)
+                _record_persisted_messages(confirmation_recorder, persisted)
             undo = (
                 dict(confirmed_outcome.get("undo") or {})
                 if confirmed_outcome
@@ -6100,6 +6529,7 @@ def create_app(
             response["write_status"] = write_status
             if write_error:
                 response["write_error"] = write_error
+            _finish_journal(confirmation_recorder, "completed")
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
 

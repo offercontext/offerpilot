@@ -76,6 +76,12 @@ class TerminalDisposition:
     failure_code: str | None = None
 
 
+@dataclass(frozen=True)
+class ResumedDisposition:
+    confirmation_attempt_id: str
+    tool_call_id: str
+
+
 class RunRecorder(Protocol):
     @property
     def run_id(self) -> str | None: ...
@@ -104,6 +110,8 @@ class RunRecorder(Protocol):
     ) -> str | None: ...
 
     def append_event(self, event: EventInput) -> None: ...
+
+    def resume(self, command: ResumedDisposition) -> None: ...
 
     def suspend(self, command: SuspendedDisposition) -> None: ...
 
@@ -151,6 +159,9 @@ class NullRunRecorder:
         return None
 
     def append_event(self, _event: EventInput) -> None:
+        return None
+
+    def resume(self, _command: ResumedDisposition) -> None:
         return None
 
     def suspend(self, _command: SuspendedDisposition) -> None:
@@ -336,6 +347,54 @@ class SafeRunRecorder:
             self._degrade("journal_event_invalid")
         except Exception:
             self._degrade("journal_event_write_failed")
+
+    def resume(self, command: ResumedDisposition) -> None:
+        if self.recording_status == "degraded" or self._disposition_attempted:
+            return
+        try:
+            self._require_budget(self._segment_deadline)
+            event = self._event_preparer(
+                EventInput(
+                    event_type="run.resumed",
+                    facts={
+                        "confirmation_attempt_id": command.confirmation_attempt_id,
+                        "tool_call_id": command.tool_call_id,
+                    },
+                    source_ref_type="tool_call",
+                    source_ref_id=command.tool_call_id,
+                ),
+                self._segment_deadline,
+            )
+            self.repository.converge_disposition(
+                self.run_id,
+                DispositionCommand(
+                    target_status="running",
+                    events=(event,),
+                    waiting_tool_call_id=None,
+                    failure_code=None,
+                ),
+                deadline=self._segment_deadline,
+                clock=self.clock,
+            )
+            self._require_budget(self._segment_deadline)
+        except JournalBudgetExhausted:
+            self._degrade("journal_budget_exhausted")
+        except JournalDeadlineExceeded:
+            self._degrade("journal_budget_exhausted")
+        except OperationalError as error:
+            diagnostic = (
+                "journal_budget_exhausted"
+                if self._operational_error_exhausted_budget(
+                    error,
+                    self._segment_deadline,
+                )
+                else "journal_resume_failed"
+            )
+            self._degrade(diagnostic)
+        except JournalEventValidationError:
+            self._degrade("journal_resume_invalid")
+        except Exception:
+            self._degrade("journal_resume_failed")
 
     def suspend(self, command: SuspendedDisposition) -> None:
         def inputs(deadline: float) -> tuple[EventDraft, ...]:
@@ -822,6 +881,7 @@ __all__ = [
     "NullRunRecorder",
     "RunRecorder",
     "RunRecorderFactory",
+    "ResumedDisposition",
     "SafeRunRecorder",
     "StartRunBuilder",
     "StartSegmentBuilder",

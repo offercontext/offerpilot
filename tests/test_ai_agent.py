@@ -69,6 +69,9 @@ class RecordingRunRecorder:
     def append_event(self, event: EventInput):
         self.actions.append((event.event_type, event))
 
+    def resume(self, command):
+        self.actions.append(("run.resumed", command))
+
     def suspend(self, command):
         self.actions.append(("run.suspended", command))
 

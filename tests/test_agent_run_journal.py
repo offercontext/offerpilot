@@ -23,6 +23,7 @@ from offerpilot.agent_runtime.keyring import JournalKeyDomain
 from offerpilot.agent_runtime.journal import (
     EventInput,
     NullRunRecorder,
+    ResumedDisposition,
     RunRecorderFactory,
     SafeRunRecorder,
     SuspendedDisposition,
@@ -782,6 +783,65 @@ def test_final_disposition_preparation_uses_one_independent_fifty_ms_deadline() 
     assert repository.converge_calls == 1
     assert repository.converge_kwargs[0]["deadline"] == 0.05
     assert repository.converge_kwargs[0]["clock"] is clock
+
+
+def test_resume_disposition_is_atomic_and_keeps_segment_recorder_open() -> None:
+    repository = RecordingJournalRepository()
+    recorder = _recorder(repository)
+
+    recorder.resume(
+        ResumedDisposition(
+            confirmation_attempt_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+            tool_call_id="call-1",
+        )
+    )
+    recorder.append_event(_route_event())
+    recorder.finish(TerminalDisposition(status="completed"))
+
+    assert repository.converge_calls == 2
+    resumed = repository.dispositions[0]
+    assert getattr(resumed, "target_status") == "running"
+    assert [event.event_type for event in getattr(resumed, "events")] == ["run.resumed"]
+    assert repository.append_calls == 1
+
+
+def test_exhausted_initial_segment_still_converges_and_later_resumes_same_run() -> None:
+    clock = ManualClock()
+    repository = RecordingJournalRepository()
+    initial = _recorder(repository, clock=clock)
+    clock.advance(0.151)
+    initial.append_event(_route_event())
+
+    initial.suspend(
+        SuspendedDisposition(
+            tool_call_id="call-1",
+            tool_name="update_application_status",
+            tool_kind="write",
+            args_shape_digest="sha256:" + "a" * 64,
+            pending_identity_fingerprint="b" * 64,
+        )
+    )
+    resumed = SafeRunRecorder(
+        repository,  # type: ignore[arg-type]
+        KEY,
+        initial.run_id,
+        SEGMENT_B,
+        clock=clock,
+    )
+    resumed.resume(
+        ResumedDisposition(
+            confirmation_attempt_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+            tool_call_id="call-1",
+        )
+    )
+    resumed.finish(TerminalDisposition(status="completed"))
+
+    assert initial.diagnostics == ["journal_budget_exhausted"]
+    assert [getattr(command, "target_status") for command in repository.dispositions] == [
+        "waiting_confirmation",
+        "running",
+        "completed",
+    ]
 
 
 def test_canonicalization_invokes_budget_guard_during_collection_traversal() -> None:
