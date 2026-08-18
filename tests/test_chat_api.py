@@ -816,7 +816,14 @@ def test_existing_deterministic_conversation_uses_durable_context(tmp_path, endp
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpoint):
     model = CountingFailingModel()
-    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=model,
+            title_model=model,
+            run_recorder_factory=_stable_journal_factory(tmp_path),
+        )
+    )
     application = client.post(
         "/api/applications",
         json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
@@ -5010,7 +5017,11 @@ def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
             Assistant(content="must not be persisted"),
         ]
     )
-    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+    _, client, _, pending = _create_status_confirmation(
+        tmp_path,
+        model,
+        stable_journal=True,
+    )
     original_update = ApplicationsRepository.update_full
 
     def slow_update(self, app_id, data):
