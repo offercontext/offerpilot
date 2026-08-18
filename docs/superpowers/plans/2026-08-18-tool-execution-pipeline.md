@@ -129,6 +129,7 @@ New-Item -ItemType Directory -Force -Path $gate | Out-Null
   'tests/fixtures/tool_pipeline/'
   'tests/test_ai_tools.py'
   'tests/test_ai_agent.py'
+  'tests/test_ai_client.py'
   'tests/test_chat_api.py'
   'tests/test_chat_repository.py'
   'tests/test_knowledge_sources_api.py'
