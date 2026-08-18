@@ -1351,6 +1351,10 @@ class Conversation(Base):
         default="",
         server_default="",
     )
+    pending_confirmation_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_args: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_human: Mapped[str] = mapped_column(String, default="", server_default="")

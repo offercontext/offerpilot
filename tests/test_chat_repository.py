@@ -1,10 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier
+
+import pytest
+from sqlalchemy import update
 
 from offerpilot.ai.agent import PendingAction
 from offerpilot.ai.types import Message
 from offerpilot.db import init_database
+from offerpilot.models import Conversation
 from offerpilot.repositories.chat import ChatRepository
 
 
@@ -234,6 +238,67 @@ def test_pending_confirmation_claim_has_one_winner_across_repository_instances(t
 
     assert sum(result.result() for result in results) == 1
     assert first.get_pending_action(conversation.id) == pending
+
+
+def test_stale_pending_confirmation_claim_can_be_recovered_after_process_loss(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    repo = ChatRepository(session_factory)
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    repo.set_pending_action(conversation.id, pending)
+    assert repo.claim_pending_confirmation(conversation.id, pending, "abandoned") is True
+
+    with session_factory() as session:
+        session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation.id)
+            .values(
+                pending_confirmation_claimed_at=datetime.now(timezone.utc)
+                - timedelta(minutes=16)
+            )
+        )
+        session.commit()
+
+    assert repo.claim_pending_confirmation(conversation.id, pending, "recovery") is True
+    assert (
+        repo.resolve_pending_confirmation(
+            conversation.id,
+            pending,
+            Message(role="tool", content="abandoned", tool_call_id="write-1"),
+            {},
+            claim_id="abandoned",
+        )
+        is None
+    )
+    assert (
+        repo.resolve_pending_confirmation(
+            conversation.id,
+            pending,
+            Message(role="tool", content="recovered", tool_call_id="write-1"),
+            {},
+            claim_id="recovery",
+        )
+        is not None
+    )
+
+
+def test_empty_pending_confirmation_claim_id_is_rejected_without_clearing_pending(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    repo.set_pending_action(conversation.id, pending)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        repo.resolve_pending_confirmation(
+            conversation.id,
+            pending,
+            Message(role="tool", content="invalid", tool_call_id="write-1"),
+            {},
+            claim_id="",
+        )
+
+    assert repo.get_pending_action(conversation.id) == pending
+    assert repo.list_messages(conversation.id) == []
 
 
 def test_resolve_pending_confirmation_cas_does_not_clear_newer_pending(tmp_path):

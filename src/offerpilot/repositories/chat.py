@@ -5,12 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import PendingAction
 from offerpilot.ai.types import Message
 from offerpilot.models import ChatMessage, Conversation
+
+
+_CONFIRMATION_CLAIM_LEASE = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,7 @@ class ChatRepository:
                 .values(
                     pending_tool_call_id=pending.tool_call_id,
                     pending_confirmation_claim_id="",
+                    pending_confirmation_claimed_at=None,
                     pending_tool_name=pending.tool_name,
                     pending_args=pending.args,
                     pending_human=pending.human,
@@ -204,6 +208,7 @@ class ChatRepository:
                 .values(
                     pending_tool_call_id=pending.tool_call_id,
                     pending_confirmation_claim_id="",
+                    pending_confirmation_claimed_at=None,
                     pending_tool_name=pending.tool_name,
                     pending_args=pending.args,
                     pending_human=pending.human,
@@ -241,6 +246,7 @@ class ChatRepository:
                 .values(
                     pending_tool_call_id="",
                     pending_confirmation_claim_id="",
+                    pending_confirmation_claimed_at=None,
                     pending_tool_name="",
                     pending_args="",
                     pending_human="",
@@ -259,6 +265,8 @@ class ChatRepository:
 
         if not claim_id:
             raise ValueError("confirmation claim id must be non-empty")
+        now = datetime.now(timezone.utc)
+        stale_before = now - _CONFIRMATION_CLAIM_LEASE
         with self._session_factory() as session:
             result = session.execute(
                 update(Conversation)
@@ -267,10 +275,17 @@ class ChatRepository:
                 .where(Conversation.pending_tool_call_id == expected.tool_call_id)
                 .where(Conversation.pending_tool_name == expected.tool_name)
                 .where(Conversation.pending_args == expected.args)
-                .where(Conversation.pending_confirmation_claim_id == "")
+                .where(
+                    or_(
+                        Conversation.pending_confirmation_claim_id == "",
+                        Conversation.pending_confirmation_claimed_at.is_(None),
+                        Conversation.pending_confirmation_claimed_at <= stale_before,
+                    )
+                )
                 .values(
                     pending_confirmation_claim_id=claim_id,
-                    updated_at=datetime.now(timezone.utc),
+                    pending_confirmation_claimed_at=now,
+                    updated_at=now,
                 )
             )
             session.commit()
@@ -287,9 +302,12 @@ class ChatRepository:
         terminal_assistant_content: str = "",
     ) -> datetime | None:
         """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
+        if claim_id == "":
+            raise ValueError("confirmation claim id must be non-empty when provided")
         values: dict[str, Any] = {
             "pending_tool_call_id": "",
             "pending_confirmation_claim_id": "",
+            "pending_confirmation_claimed_at": None,
             "pending_tool_name": "",
             "pending_args": "",
             "pending_human": "",
@@ -311,10 +329,15 @@ class ChatRepository:
                 .where(Conversation.pending_tool_name == expected.tool_name)
                 .where(Conversation.pending_args == expected.args)
             )
-            statement = statement.where(
-                Conversation.pending_confirmation_claim_id
-                == (claim_id if claim_id is not None else "")
-            )
+            if claim_id is None:
+                statement = statement.where(
+                    Conversation.pending_confirmation_claim_id == "",
+                    Conversation.pending_confirmation_claimed_at.is_(None),
+                )
+            else:
+                statement = statement.where(
+                    Conversation.pending_confirmation_claim_id == claim_id
+                )
             result = session.execute(statement.values(**values))
             if getattr(result, "rowcount", 0) != 1:
                 session.rollback()
@@ -352,6 +375,7 @@ class ChatRepository:
         values: dict[str, Any] = {
             "pending_tool_call_id": replacement.tool_call_id,
             "pending_confirmation_claim_id": "",
+            "pending_confirmation_claimed_at": None,
             "pending_tool_name": replacement.tool_name,
             "pending_args": replacement.args,
             "pending_human": replacement.human,
@@ -415,6 +439,7 @@ class ChatRepository:
                 {
                     "pending_tool_call_id": pending.tool_call_id,
                     "pending_confirmation_claim_id": "",
+                    "pending_confirmation_claimed_at": None,
                     "pending_tool_name": pending.tool_name,
                     "pending_args": pending.args,
                     "pending_human": pending.human,
@@ -431,6 +456,7 @@ class ChatRepository:
                 {
                     "pending_tool_call_id": "",
                     "pending_confirmation_claim_id": "",
+                    "pending_confirmation_claimed_at": None,
                     "pending_tool_name": "",
                     "pending_args": "",
                     "pending_human": "",

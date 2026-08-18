@@ -70,10 +70,16 @@ def init_database(db_path: Path) -> SessionFactory:
         "pending_confirmation_claim_id",
         "TEXT NOT NULL DEFAULT ''",
     )
+    _ensure_column(
+        engine,
+        "conversations",
+        "pending_confirmation_claimed_at",
+        "DATETIME",
+    )
     _record_migration(
         engine,
         "0025_pending_confirmation_claim",
-        "Add private Pending Action confirmation claim identity",
+        "Add private Pending Action confirmation claim identity and lease",
     )
     _record_migration(
         engine,

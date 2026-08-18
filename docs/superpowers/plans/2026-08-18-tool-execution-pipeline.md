@@ -60,7 +60,7 @@
 - `src/offerpilot/ai/types.py`: keep persisted `Message` wire shape; add no typed outcome fields.
 - `src/offerpilot/api.py`: construct runtime Context, route trusted deterministic Pending Actions, consume `ToolExecutionRecord`, and stop parsing compatibility strings.
 - `src/offerpilot/repositories/chat.py`: add the narrow durable pre-executor Pending Action claim CAS used by typed confirmation recovery; preserve the public Pending Action representation.
-- `src/offerpilot/models.py` and `src/offerpilot/db.py`: add the private `0025_pending_confirmation_claim` column/migration; never encode claim state into Provider-controlled fields.
+- `src/offerpilot/models.py` and `src/offerpilot/db.py`: add the private `0025_pending_confirmation_claim` identity and 15-minute lease columns/migration; never encode claim state into Provider-controlled fields.
 - `src/offerpilot/ai/tools.py`: delete after all production call sites move; no model-visible code remains here.
 - `pyproject.toml`, `uv.lock`: direct exact `jsonschema==4.26.0` dependency.
 
@@ -1155,6 +1155,7 @@ capability short-circuit before binding/repository access
 binding audit-only behavior and existing ownership checks
 prepare/execute ordering and executor call counts
 confirmation claim/authorization/args digest ordering
+bounded stale confirmation-claim recovery, empty claim rejection, and 0024 upgrade idempotency
 checkpoint absence of transient runtime values
 renderer/transport/Journal failure behavior
 Journal started/terminal structural sequence
