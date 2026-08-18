@@ -851,9 +851,18 @@ def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpo
     assert len(versions) == 1
     assert versions[0]["source_kind"] == "pilot"
     assert model.calls == 0
-    runs, journal_events, snapshots = _journal_rows(tmp_path)
-    assert len(runs) == 1
-    assert runs[0].status == "completed"
+    deadline = time.monotonic() + 2
+    while True:
+        runs, journal_events, snapshots = _journal_rows(tmp_path)
+        assert len(runs) == 1
+        if runs[0].status == "completed":
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                "deterministic confirmation Journal did not converge: "
+                f"status={runs[0].status!r}"
+            )
+        time.sleep(0.01)
     event_types = [event.event_type for event in journal_events]
     assert event_types.index("approval.decided") < event_types.index("tool.started")
     assert not any(event_type.startswith("model.") for event_type in event_types)
