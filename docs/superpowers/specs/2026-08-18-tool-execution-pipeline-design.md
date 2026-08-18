@@ -2,7 +2,7 @@
 
 日期：2026-08-18
 
-状态：设计已批准，待实施计划
+状态：待复审
 
 分支：`feat/20260818-tool-execution-pipeline`
 
@@ -172,9 +172,11 @@ Tool Execution Pipeline
   5. read-only preflight
   6. existing HITL / Pending Action
   7. mutable precondition recheck
-  8. confirmation claim / CAS
-  9. executor at most once per call
- 10. ToolOutcome
+  8. write only: confirmation claim / CAS
+  9. write only: create and verify ExecutionAuthorization
+ 10. tool.started
+ 11. executor at most once per call
+ 12. ToolOutcome
         ├── Compatibility Renderer
         ├── Transport Projector
         └── Frozen Journal Projector
@@ -312,12 +314,15 @@ jsonschema.validators.Draft202012Validator
 Catalog 初始化时：
 
 1. 递归检查全部 Schema；
-2. 拒绝远程或外部 `$ref`；
-3. 仅允许本地 `#...` fragment reference；
-4. 调用 `Draft202012Validator.check_schema()`；
-5. 预编译每个 validator；
-6. 不配置 `FormatChecker`；
-7. 不提供运行时网络 retrieval。
+2. 同时检查 `$ref` 与 `$dynamicRef`；
+3. 两种引用都只允许以 `#` 开头的本地 fragment reference；
+4. 远程 URI、外部相对路径和其他非本地引用全部导致初始化失败；
+5. 调用 `Draft202012Validator.check_schema()`；
+6. 使用显式禁止 retrieval 的 `referencing.Registry` 预编译每个 validator；
+7. 不配置 `FormatChecker`；
+8. retrieval callback 只能抛出固定初始化异常，不得访问文件或网络。
+
+Schema 门禁测试必须分别注入外部 `$ref` 和 `$dynamicRef`，断言 Catalog 初始化失败，并通过网络 spy 证明 HTTP、DNS 和其他 retrieval 调用均为 0 次。
 
 内部 Schema 非法是应用初始化错误，不得在运行时伪装成用户参数错误，也不得回退旧路径。
 
@@ -482,11 +487,35 @@ prepare_call()
 ```text
 execute_prepared()
   → mutable precondition recheck
-  → confirmation authorization verification
-  → existing claim / CAS
+  → write only: existing confirmation claim / CAS
+  → write only: create and verify ExecutionAuthorization
+  → tool.started
   → executor at most once
   → ToolOutcome
 ```
+
+只读工具的固定顺序是：
+
+```text
+mutable precondition recheck
+→ tool.started
+→ executor
+→ tool.completed | tool.failed
+```
+
+已确认写入的固定顺序是：
+
+```text
+mutable precondition recheck
+→ confirmation claim / CAS
+→ 创建 ExecutionAuthorization
+→ authorization 与 PreparedToolCall 匹配
+→ tool.started
+→ executor
+→ tool.completed | tool.failed
+```
+
+claim/CAS 或 authorization 匹配失败都发生在执行开始前，executor 为 0 次，也不得写 `tool.started`、`tool.completed` 或 `tool.failed`。
 
 确认后必须重新校验：
 
@@ -537,6 +566,7 @@ Pending Action 继续保存现有字段。`PreparedToolCall`、Context、capabil
       → 现有 confirmation claim / CAS
       → ExecutionAuthorization
       → authorization 与 PreparedToolCall 匹配
+      → tool.started
       → executor
 ```
 
@@ -637,7 +667,7 @@ Renderer 异常是交付/集成缺陷，不得修改已经确定的 Outcome，�
 
 ### 12.1 固定时序
 
-只读或已批准写入：
+只有 executor 即将实际调用时，Journal 才进入工具执行序列：
 
 ```text
 tool.proposed
@@ -645,7 +675,7 @@ tool.proposed
 → tool.completed | tool.failed
 ```
 
-`tool.started` 必须在 executor 调用前写入：
+`tool.started` 必须在全部执行前检查和写入授权完成后、executor 调用前写入：
 
 ```text
 result_contract = legacy_string_v1
@@ -667,9 +697,10 @@ tool.proposed
 executor = 0
 → 不伪造 tool.started
 → 不伪造 tool.completed
+→ 不伪造 tool.failed
 ```
 
-失败可以按下表投影 `tool.failed`，但不能伪造已开始执行。
+这类失败仍保留内部 ToolOutcome 和兼容 transport 结果，但不写工具执行终结事件。第一期 Trace 因而不会产生 `tool_completion_without_start`。
 
 ### 12.2 第一期开集内 payload
 
@@ -693,18 +724,24 @@ tool.failed
 
 contract fingerprint、binding/capability、内部失败 code、typed result enum 和额外计数只有在第一期 Schema 已允许时才能写入；否则只存在于内存诊断。需要新增字段时必须单独设计 Journal schema version。
 
-### 12.3 ToolFailure 到 Journal 的投影表
+### 12.3 ToolFailure 到 Journal 的阶段化投影表
 
-| ToolFailure category | 产生 `tool.failed` | 第一期开集内 `failure_category` |
-|---|---:|---|
-| `validation_error` | 是 | `tool_error` |
-| `permission_denied` | 是 | `tool_error` |
-| `confirmation_rejected` | 否 | 不适用；使用既有 `approval.decided=rejected` |
-| `stale_state` | 是 | `tool_error` |
-| `conflict` | 是 | `tool_error` |
-| `not_found` | 是 | `tool_error` |
-| `provider_error` | 是 | `provider_error` |
-| `internal_error` | 是 | `tool_error` |
+映射表只能在 `execution_started=true`，即 Pipeline 已越过全部执行前门禁、调用了 `tool.started` 投影并进入 executor 调用边界后使用。`execution_started=false` 时所有失败分类都不产生 `tool.failed`。
+
+| ToolFailure category | `execution_started=false` | `execution_started=true` 的第一期 `failure_category` |
+|---|---|---|
+| `validation_error` | 不写工具终结事件 | `tool_error` |
+| `permission_denied` | 不写工具终结事件 | `tool_error` |
+| `confirmation_rejected` | 不写工具终结事件；使用既有 `approval.decided=rejected` | 不适用 |
+| `stale_state` | 不写工具终结事件 | `tool_error` |
+| `conflict` | 不写工具终结事件 | `tool_error` |
+| `not_found` | 不写工具终结事件 | `tool_error` |
+| `provider_error` | 不写工具终结事件 | `provider_error` |
+| `internal_error` | 不写工具终结事件 | `tool_error` |
+
+`tool.completed` 同样要求 `execution_started=true`。executor 正常返回时写 `tool.completed`；executor 抛出被 Pipeline 捕获的普通 `Exception` 时，才按上表写 `tool.failed`。
+
+第一期 `SafeRunRecorder` 的 degraded latch 保证结构 fail-open：若 `tool.started` 校验或持久化失败，Recorder 进入 degraded，后续 `tool.completed/tool.failed` 投影为 no-op；Pipeline 仍执行 executor，但不会制造“终结事件存在而 started 缺失”的残缺序列。
 
 若未知工具名不满足第一期 `tool_name` 白名单，Journal projector 不得伪造其他名称；该投影按 recorder fail-open 处理。
 
@@ -878,7 +915,7 @@ Gate 不允许通过宽泛目录 allowlist 隐藏新增调用点。
 
 - 非法 JSON、非 object、重复键、非有限数字；
 - `check_schema` 与预编译；
-- 禁止外部 `$ref` 和网络解析；
+- 禁止外部 `$ref`、`$dynamicRef` 和网络解析；
 - unknown tool 与 capability 短路顺序；
 - Binding 聚合组合；
 - 普通 `Exception` 分类和 `BaseException` 传播；
@@ -917,8 +954,11 @@ Gate 不允许通过宽泛目录 allowlist 隐藏新增调用点。
 
 - `tool.proposed → tool.started → completed/failed` 时序；
 - 等待确认不产生 `tool.started`；
-- pre-executor failure 不伪造 started/completed；
-- ToolFailure 到第一期 failure category 的完整投影表；
+- pre-executor failure 不伪造 started/completed/failed；
+- claim/CAS 和 authorization 匹配失败不产生工具执行事件；
+- ToolFailure 仅在 `execution_started=true` 时映射到第一期 failure category；
+- 与 `30c944f` 的第一期 Journal 事件序列 golden 对比；
+- Trace 不产生 `tool_completion_without_start`；
 - `result_contract=legacy_string_v1`；
 - Journal 故障 fail-open；
 - Journal/日志/审计无参数、结果或异常文本。
@@ -944,6 +984,8 @@ Gate 不允许通过宽泛目录 allowlist 隐藏新增调用点。
 - canonical JSON 投影。
 
 Golden 锁定成功/失败字符串和领域写入结果，不保存 SQLite、真实用户内容、密钥或不稳定时间字段。新实现测试只能读取，不能刷新预期。
+
+Golden 还必须保存纯合成、canonical 的第一期 Journal 事件序列投影，逐场景比较事件类型、顺序和冻结 facts。它不得保存 Journal SQLite 文件，也不得忽略结构异常。
 
 ## 18. 发布级完成门禁
 
@@ -994,9 +1036,10 @@ Golden 锁定成功/失败字符串和领域写入结果，不保存 SQLite、�
 4. Capability 缺失先于任何实体查询短路。
 5. Binding 首批只审计，不放宽或收紧现有领域归属规则。
 6. Pending Action 恢复不信任跨请求内存对象。
-7. Confirmation claim/authorization 先于 executor。
+7. 已确认写入严格按 claim/CAS → authorization 创建与匹配 → `tool.started` → executor 排序。
 8. 单次 `execute_prepared()` 内 executor 最多调用一次。
 9. Journal、renderer 和 transport 故障不得重跑 executor。
-10. Journal 只写第一期冻结 Schema，`tool.started` 保持 `legacy_string_v1`。
+10. Journal 只写第一期冻结 Schema，`tool.started` 保持 `legacy_string_v1`，执行前失败不写工具终结事件。
 11. ToolExecutionRecord、Outcome、typed result 和异常对象不进入 checkpoint。
 12. 本阶段不声称业务 exactly-once。
+13. `$ref` 与 `$dynamicRef` 只允许本地 fragment，Schema validator 不具备 retrieval 能力。
