@@ -86,13 +86,30 @@ def evaluate_context(
     typed_args: ArgsT,
     context: ToolExecutionContext,
 ) -> BindingAudit | ToolFailure:
-    if not spec.required_capabilities.issubset(context.capabilities):
-        return ToolFailure(
-            category="permission_denied",
-            code="missing_capability",
-            compatibility_detail="permission denied",
-        )
+    permission = require_capabilities(spec, context)
+    if permission is not None:
+        return permission
+    return audit_bindings(spec, typed_args, context)
 
+
+def require_capabilities(
+    spec: ToolSpec[Any, Any],
+    context: ToolExecutionContext,
+) -> ToolFailure | None:
+    if spec.required_capabilities.issubset(context.capabilities):
+        return None
+    return ToolFailure(
+        category="permission_denied",
+        code="missing_capability",
+        compatibility_detail="permission denied",
+    )
+
+
+def audit_bindings(
+    spec: ToolSpec[ArgsT, Any],
+    typed_args: ArgsT,
+    context: ToolExecutionContext,
+) -> BindingAudit:
     targets = tuple(resolver(typed_args, context) for resolver in spec.binding_resolvers)
     if not targets:
         status: BindingStatus = "unbound" if not context.current_bindings else "unavailable"

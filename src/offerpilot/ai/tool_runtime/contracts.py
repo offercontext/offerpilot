@@ -108,6 +108,13 @@ ToolOutcome: TypeAlias = ToolSuccess[ResultT] | ToolFailure
 
 
 @dataclass(frozen=True)
+class ToolResultMetadata:
+    evidence: tuple[Mapping[str, JSONValue], ...] = ()
+    affected_resources: tuple[Mapping[str, JSONValue], ...] = ()
+    changed_entities: tuple[Mapping[str, JSONValue], ...] = ()
+
+
+@dataclass(frozen=True)
 class ToolExceptionMapping:
     exception_type: type[Exception]
     category: FailureCategory
@@ -123,6 +130,8 @@ ToolDecoder: TypeAlias = Callable[[Mapping[str, JSONValue]], ArgsT]
 ToolCheck: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], ToolFailure | None]
 ToolExecutor: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], ResultT]
 BindingResolver: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], BindingTarget]
+SuccessRenderer: TypeAlias = Callable[[ResultT], str]
+ResultMetadataProjector: TypeAlias = Callable[[ResultT], ToolResultMetadata]
 
 
 @dataclass(frozen=True)
@@ -139,6 +148,12 @@ class ToolSpec(Generic[ArgsT, ResultT]):
     mutable_validator: ToolCheck[ArgsT] | None = field(default=None, repr=False, compare=False)
     declared_failure_categories: frozenset[FailureCategory] = field(default_factory=frozenset)
     exception_map: tuple[ToolExceptionMapping, ...] = field(default_factory=tuple)
+    success_renderer: SuccessRenderer[ResultT] | None = field(default=None, repr=False, compare=False)
+    result_metadata: ResultMetadataProjector[ResultT] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def name(self) -> str:
@@ -153,6 +168,8 @@ class PreparedToolCall(TransientToolRuntimeValue, Generic[ArgsT, ResultT]):
     typed_args: ArgsT = field(repr=False)
     arguments_digest: str
     binding: BindingAudit
+    pending_identity: object | None = field(default=None, repr=False, compare=False)
+    pending_action_revision: int | None = None
 
 
 @dataclass(frozen=True)
