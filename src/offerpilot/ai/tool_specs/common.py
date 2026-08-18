@@ -11,7 +11,15 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolExceptionMapping,
 )
 from offerpilot.repositories.application_events import duration_minutes
-from offerpilot.schemas import ApplicationEventOut, ApplicationOut, InterviewNoteOut, OfferOut
+from offerpilot.schemas import (
+    ApplicationEventOut,
+    ApplicationOut,
+    InterviewNoteOut,
+    JDAnalysisOut,
+    OfferOut,
+    ResumeMatchOut,
+    resume_payload,
+)
 
 
 class ToolInputError(Exception):
@@ -114,6 +122,27 @@ def offer_json(offer: Any) -> dict[str, Any]:
     payload = OfferOut.model_validate(offer).model_dump(mode="json", exclude_none=False)
     payload["record_type"] = "offer"
     payload["offer_id"] = offer.id
+    return payload
+
+
+def resume_json(resume: Any) -> dict[str, Any]:
+    payload = resume_payload(resume)
+    payload["record_type"] = "resume"
+    payload["resume_id"] = resume.id
+    return payload
+
+
+def resume_match_json(match: Any) -> dict[str, Any]:
+    payload = ResumeMatchOut.model_validate(match).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "resume_match"
+    payload["resume_match_id"] = match.id
+    return payload
+
+
+def jd_analysis_json(analysis: Any) -> dict[str, Any]:
+    payload = JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "jd_analysis"
+    payload["jd_analysis_id"] = analysis.id
     return payload
 
 
