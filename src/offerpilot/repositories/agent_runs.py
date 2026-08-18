@@ -306,7 +306,7 @@ class AgentRunRepository:
                 if existing is not None:
                     return self._detach(session, existing)
                 run = self._required_run(session, run_id)
-                if run.status in _TERMINAL_STATUSES:
+                if run.status in _TERMINAL_STATUSES and not is_noop_finish:
                     raise JournalConflictError("terminal run cannot accept a new event")
                 if is_noop_finish:
                     segment_start = session.scalar(
@@ -316,11 +316,14 @@ class AgentRunRepository:
                             AgentEvent.execution_segment_id == draft.execution_segment_id,
                         )
                     )
-                    if run.status != "waiting_confirmation" or segment_start is None:
-                        raise JournalConflictError("noop finish requires a pending replay segment")
+                    if segment_start is None:
+                        raise JournalConflictError("noop finish requires a resumable segment")
                     started_facts = json.loads(segment_start.payload_json)["facts"]
-                    if started_facts["request_kind"] != "pending_replay":
-                        raise JournalConflictError("noop finish requires a pending replay segment")
+                    if started_facts["request_kind"] not in {
+                        "confirmation",
+                        "pending_replay",
+                    }:
+                        raise JournalConflictError("noop finish requires a resumable segment")
                 event = self._insert_event(session, run_id, draft, self._utc_now())
                 return self._detach(session, event)
         except IntegrityError:

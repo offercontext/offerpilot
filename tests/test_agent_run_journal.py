@@ -805,6 +805,22 @@ def test_resume_disposition_is_atomic_and_keeps_segment_recorder_open() -> None:
     assert repository.append_calls == 1
 
 
+def test_resumed_segment_can_be_abandoned_without_changing_run_disposition() -> None:
+    repository = RecordingJournalRepository()
+    recorder = _recorder(repository)
+
+    recorder.resume(
+        ResumedDisposition(
+            confirmation_attempt_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+            tool_call_id="call-1",
+        )
+    )
+    recorder.abandon()
+
+    assert repository.converge_calls == 1
+    assert repository.append_calls == 1
+
+
 def test_exhausted_initial_segment_still_converges_and_later_resumes_same_run() -> None:
     clock = ManualClock()
     repository = RecordingJournalRepository()

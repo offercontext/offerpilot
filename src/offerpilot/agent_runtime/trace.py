@@ -371,14 +371,26 @@ def _semantic_anomalies(
         if starts and outcomes and outcomes[0].seq < starts[0].seq:
             anomalies.append(f"tool_completion_before_start:{tool_call_id}")
 
-    terminal_types = {
-        event.event_type for event in events if event.event_type.startswith("run.")
+    lifecycle_event_types = {
+        "run.waiting_confirmation",
+        "run.resumed",
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "run.timed_out",
     }
+    lifecycle_events = [
+        event for event in events if event.event_type in lifecycle_event_types
+    ]
+    latest_lifecycle_event = lifecycle_events[-1] if lifecycle_events else None
+    terminal_types = {event.event_type for event in lifecycle_events}
     if run.status in {"completed", "failed", "cancelled", "timed_out"}:
         expected = f"run.{run.status}"
         terminal_events = [event for event in events if event.event_type == expected]
         if not terminal_events:
             anomalies.append(f"terminal_event_missing:{run.status}")
+        elif latest_lifecycle_event is not None and latest_lifecycle_event.event_type != expected:
+            anomalies.append(f"lifecycle_event_conflict:{run.status}")
         for event in terminal_events:
             if event.facts != {
                 "agent_run_id": run.id,
@@ -415,11 +427,16 @@ def _semantic_anomalies(
         ]
         if not waiting_events:
             anomalies.append("waiting_event_missing")
+        elif (
+            latest_lifecycle_event is not None
+            and latest_lifecycle_event.event_type != "run.waiting_confirmation"
+        ):
+            anomalies.append("lifecycle_event_conflict:waiting_confirmation")
         if run.waiting_tool_call_id is None:
             anomalies.append("waiting_identity_missing")
-        elif any(
-            event.facts.get("tool_call_id") != run.waiting_tool_call_id
-            for event in waiting_events
+        elif (
+            waiting_events
+            and waiting_events[-1].facts.get("tool_call_id") != run.waiting_tool_call_id
         ):
             anomalies.append("waiting_projection_mismatch")
         for event in waiting_events:
@@ -437,13 +454,10 @@ def _semantic_anomalies(
             anomalies.append("waiting_finished_at_present")
     elif any(
         event_type in terminal_types
-        for event_type in {
-            "run.waiting_confirmation",
-            "run.completed",
-            "run.failed",
-            "run.cancelled",
-            "run.timed_out",
-        }
+        for event_type in {"run.completed", "run.failed", "run.cancelled", "run.timed_out"}
+    ) or (
+        latest_lifecycle_event is not None
+        and latest_lifecycle_event.event_type != "run.resumed"
     ):
         anomalies.append("lifecycle_event_conflict:running")
     elif run.finished_at is not None or run.waiting_tool_call_id is not None:

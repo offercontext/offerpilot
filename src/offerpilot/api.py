@@ -368,6 +368,10 @@ class ChatAgentTimedOut(RuntimeError):
     pass
 
 
+class _StaleConfirmationResponse(JSONResponse):
+    pass
+
+
 def _json_datetime(value: Any) -> str | None:
     if value is None:
         return None
@@ -1627,7 +1631,9 @@ def create_app(
         if recorder is None:
             return
         current_pending = chat.get_pending_action(conversation_id)
-        if (
+        if isinstance(response, _StaleConfirmationResponse):
+            _abandon_journal_segment(recorder)
+        elif (
             current_pending is not None
             and current_pending.tool_call_id != original_pending.tool_call_id
         ):
@@ -1703,6 +1709,9 @@ def create_app(
                 )
             )
         )
+
+    def _abandon_journal_segment(recorder: RunRecorder) -> None:
+        _journal_call(recorder.abandon)
 
     def _deterministic_pilot_pending_messages(pending: PendingAction) -> list[dict[str, str]]:
         return [
@@ -2096,7 +2105,10 @@ def create_app(
                         terminal_assistant_content="当前岗位资料已变化，请重新确认保存。",
                     )
                     if replaced is None:
-                        return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+                        return _StaleConfirmationResponse(
+                            {"error": "待确认操作已被更新，请刷新对话后重试。"},
+                            status_code=409,
+                        )
                     return error_response(
                         409,
                         "当前岗位资料已变化，请重新确认保存。",
@@ -2146,7 +2158,10 @@ def create_app(
             terminal_assistant_content=response_message,
         )
         if generation is None:
-            return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+            return _StaleConfirmationResponse(
+                {"error": "待确认操作已被更新，请刷新对话后重试。"},
+                status_code=409,
+            )
         response: dict[str, Any] = {
             "type": "message",
             "conversation_id": conversation_id,
@@ -5780,7 +5795,24 @@ def create_app(
         )
         confirmation_attempted = Event()
         confirmation_cancelled = Event()
+        confirmation_timed_out = Event()
         confirmation_attempt_lock = Lock()
+
+        def persist_confirmation_result(
+            action: PendingAction,
+            result_approved: bool,
+            tool_message: Message,
+        ) -> None:
+            try:
+                confirmation_result_sink(action, result_approved, tool_message)
+            except Exception:
+                if confirmation_timed_out.is_set():
+                    _abandon_journal_segment(confirmation_recorder)
+                raise
+            if confirmation_timed_out.is_set() and confirmed_outcome.get(
+                "fallback_persisted"
+            ):
+                _finish_journal(confirmation_recorder, "completed")
 
         def start_confirmation_attempt(action: PendingAction) -> None:
             with confirmation_attempt_lock:
@@ -5820,7 +5852,7 @@ def create_app(
                     rejection_feedback=rejection_feedback,
                     checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
-                    confirmation_result_sink=confirmation_result_sink,
+                    confirmation_result_sink=persist_confirmation_result,
                     confirmation_attempt_sink=start_confirmation_attempt,
                     cancel_check=confirmation_cancelled.is_set,
                     run_recorder=confirmation_recorder,
@@ -5828,17 +5860,18 @@ def create_app(
             )
         except ChatAgentTimedOut:
             if confirmed_outcome.get("cas_lost"):
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             with confirmation_attempt_lock:
                 attempt_in_progress = confirmation_attempted.is_set()
                 confirmation_cancelled.set()
+                confirmation_timed_out.set()
             fallback = finalize_confirmation_timeout()
             if fallback is not None:
                 _finish_journal(confirmation_recorder, "completed")
                 return JSONResponse(fallback)
             if confirmed_outcome.get("cas_lost"):
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             if attempt_in_progress:
                 return error_response(
@@ -5848,26 +5881,26 @@ def create_app(
             _finish_journal(confirmation_recorder, "timed_out", "timeout")
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
         except PendingActionValidationError as exc:
-            _finish_journal(confirmation_recorder, "failed", "unknown")
+            _abandon_journal_segment(confirmation_recorder)
             return error_response(422, f"确认参数无效：{exc}")
         except StalePendingActionError:
-            _finish_journal(confirmation_recorder, "failed", "unknown")
+            _abandon_journal_segment(confirmation_recorder)
             return error_response(409, "待确认操作已过期或正在处理中，请刷新对话后重试。")
         except Exception as exc:
             if confirmed_outcome.get("cas_lost"):
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
             if fallback is not None:
                 _finish_journal(confirmation_recorder, "completed")
                 return JSONResponse(fallback)
             if confirmed_outcome.get("cas_lost"):
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             _finish_journal(confirmation_recorder, "failed", "provider_error")
             return _ai_provider_error(exc, resolved_data_dir)
         if confirmed_outcome.get("cas_lost"):
-            _finish_journal(confirmation_recorder, "failed", "unknown")
+            _abandon_journal_segment(confirmation_recorder)
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         added, forced_reply = _with_write_error_followup(added)
         persisted_added = _without_persisted_confirmation_result(added, confirmed_outcome)
@@ -5890,7 +5923,7 @@ def create_app(
                         clarification_messages,
                         clarification=(new_pending, missing_question),
                     ):
-                        _finish_journal(confirmation_recorder, "failed", "unknown")
+                        _abandon_journal_segment(confirmation_recorder)
                         return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
                 else:
                     persisted = _persist_ai_messages(chat, conversation_id, persisted_added)
@@ -5918,7 +5951,7 @@ def create_app(
                     persisted_added,
                     pending=new_pending,
                 ):
-                    _finish_journal(confirmation_recorder, "failed", "unknown")
+                    _abandon_journal_segment(confirmation_recorder)
                     return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             else:
                 if not chat.persist_pending_action(
@@ -5949,7 +5982,7 @@ def create_app(
                 persisted_added,
                 clarification=clarification,
             ):
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         else:
             persisted = _persist_ai_messages(chat, conversation_id, persisted_added)
@@ -6168,7 +6201,24 @@ def create_app(
         )
         confirmation_attempted = Event()
         confirmation_cancelled = Event()
+        confirmation_timed_out = Event()
         confirmation_attempt_lock = Lock()
+
+        def persist_confirmation_result(
+            action: PendingAction,
+            result_approved: bool,
+            tool_message: Message,
+        ) -> None:
+            try:
+                confirmation_result_sink(action, result_approved, tool_message)
+            except Exception:
+                if confirmation_timed_out.is_set():
+                    _abandon_journal_segment(confirmation_recorder)
+                raise
+            if confirmation_timed_out.is_set() and confirmed_outcome.get(
+                "fallback_persisted"
+            ):
+                _finish_journal(confirmation_recorder, "completed")
 
         def start_confirmation_attempt(action: PendingAction) -> None:
             with confirmation_attempt_lock:
@@ -6224,7 +6274,7 @@ def create_app(
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
                         cancel_check=lambda: confirmation_cancelled.is_set() or cancel_check(),
-                        confirmation_result_sink=confirmation_result_sink,
+                        confirmation_result_sink=persist_confirmation_result,
                         confirmation_attempt_sink=start_confirmation_attempt,
                         run_recorder=confirmation_recorder,
                     ),
@@ -6236,7 +6286,7 @@ def create_app(
                 return
             except ChatAgentTimedOut:
                 if confirmed_outcome.get("cas_lost"):
-                    _finish_journal(confirmation_recorder, "failed", "unknown")
+                    _abandon_journal_segment(confirmation_recorder)
                     yield emit(
                         "error",
                         {
@@ -6250,6 +6300,7 @@ def create_app(
                 with confirmation_attempt_lock:
                     attempt_in_progress = confirmation_attempted.is_set()
                     confirmation_cancelled.set()
+                    confirmation_timed_out.set()
                 fallback = finalize_confirmation_timeout()
                 if fallback is not None:
                     _finish_journal(confirmation_recorder, "completed")
@@ -6257,7 +6308,7 @@ def create_app(
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
                 if confirmed_outcome.get("cas_lost"):
-                    _finish_journal(confirmation_recorder, "failed", "unknown")
+                    _abandon_journal_segment(confirmation_recorder)
                     yield emit(
                         "error",
                         {
@@ -6292,7 +6343,7 @@ def create_app(
                 )
                 return
             except PendingActionValidationError as exc:
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 yield emit(
                     "error",
                     {
@@ -6304,7 +6355,7 @@ def create_app(
                 )
                 return
             except StalePendingActionError:
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 yield emit(
                     "error",
                     {
@@ -6317,7 +6368,7 @@ def create_app(
                 return
             except Exception as exc:
                 if confirmed_outcome.get("cas_lost"):
-                    _finish_journal(confirmation_recorder, "failed", "unknown")
+                    _abandon_journal_segment(confirmation_recorder)
                     yield emit(
                         "error",
                         {
@@ -6335,7 +6386,7 @@ def create_app(
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
                 if confirmed_outcome.get("cas_lost"):
-                    _finish_journal(confirmation_recorder, "failed", "unknown")
+                    _abandon_journal_segment(confirmation_recorder)
                     yield emit(
                         "error",
                         {
@@ -6359,7 +6410,7 @@ def create_app(
                 return
 
             if confirmed_outcome.get("cas_lost"):
-                _finish_journal(confirmation_recorder, "failed", "unknown")
+                _abandon_journal_segment(confirmation_recorder)
                 yield emit(
                     "error",
                     {
@@ -6391,7 +6442,7 @@ def create_app(
                             clarification_messages,
                             clarification=(new_pending, missing_question),
                         ):
-                            _finish_journal(confirmation_recorder, "failed", "unknown")
+                            _abandon_journal_segment(confirmation_recorder)
                             yield emit(
                                 "error",
                                 {
@@ -6435,7 +6486,7 @@ def create_app(
                         persisted_added,
                         pending=new_pending,
                     ):
-                        _finish_journal(confirmation_recorder, "failed", "unknown")
+                        _abandon_journal_segment(confirmation_recorder)
                         yield emit(
                             "error",
                             {
@@ -6487,7 +6538,7 @@ def create_app(
                     persisted_added,
                     clarification=clarification,
                 ):
-                    _finish_journal(confirmation_recorder, "failed", "unknown")
+                    _abandon_journal_segment(confirmation_recorder)
                     yield emit(
                         "error",
                         {

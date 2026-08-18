@@ -115,6 +115,8 @@ class RunRecorder(Protocol):
 
     def suspend(self, command: SuspendedDisposition) -> None: ...
 
+    def abandon(self) -> None: ...
+
     def finish(self, command: TerminalDisposition) -> None: ...
 
     def fingerprint_model_id(self, value: str) -> str | None: ...
@@ -165,6 +167,9 @@ class NullRunRecorder:
         return None
 
     def suspend(self, _command: SuspendedDisposition) -> None:
+        return None
+
+    def abandon(self) -> None:
         return None
 
     def finish(self, _command: TerminalDisposition) -> None:
@@ -478,6 +483,45 @@ class SafeRunRecorder:
             waiting_tool_call_id=None,
             failure_code=command.failure_code,
         )
+
+    def abandon(self) -> None:
+        if self._disposition_attempted:
+            return
+        self._disposition_attempted = True
+        deadline = self.clock() + self.disposition_budget_seconds
+        try:
+            event = self._event_preparer(
+                EventInput(
+                    event_type="segment.finished",
+                    facts={"outcome": "noop", "terminal_run_status": None},
+                ),
+                deadline,
+            )
+            self._require_budget(deadline)
+            self.repository.append_event(
+                self.run_id,
+                event,
+                deadline=deadline,
+                clock=self.clock,
+            )
+            self._require_budget(deadline)
+            if self.recording_status == "degraded":
+                self._sync_degraded(deadline)
+        except JournalBudgetExhausted:
+            self._degrade("journal_disposition_budget_exhausted")
+        except JournalDeadlineExceeded:
+            self._degrade("journal_disposition_budget_exhausted")
+        except OperationalError as error:
+            diagnostic = (
+                "journal_disposition_budget_exhausted"
+                if self._operational_error_exhausted_budget(error, deadline)
+                else "journal_disposition_failed"
+            )
+            self._degrade(diagnostic)
+        except JournalEventValidationError:
+            self._degrade("journal_disposition_invalid")
+        except Exception:
+            self._degrade("journal_disposition_failed")
 
     def mark_degraded(self, diagnostic: str = "journal_recording_degraded") -> None:
         self._degrade(diagnostic)

@@ -1006,3 +1006,69 @@ def test_pending_replay_segment_can_finish_noop_without_changing_run_state(
     run = repository.get_run(RUN_ID)
     assert finished.event_type == "segment.finished"
     assert run is not None and run.status == "waiting_confirmation"
+
+
+def test_confirmation_loser_can_finish_segment_after_winner_terminates_run(
+    tmp_path: Path,
+) -> None:
+    repository, _, _ = _create_run(tmp_path)
+    tool_call_id = "call-concurrent-confirmation"
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=_waiting_events(tool_call_id),
+            waiting_tool_call_id=tool_call_id,
+        ),
+    )
+    winner_segment = "99999999-9999-4999-8999-999999999996"
+    loser_segment = "99999999-9999-4999-8999-999999999995"
+    for segment_id in (winner_segment, loser_segment):
+        repository.start_segment(
+            StartSegmentCommand(
+                run_id=RUN_ID,
+                segment_started=_segment_started(segment_id, request_kind="confirmation"),
+            )
+        )
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="running",
+            events=(
+                _resumed_event(
+                    tool_call_id,
+                    winner_segment,
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac",
+                ),
+            ),
+        ),
+    )
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="completed",
+            events=_terminal_events("completed", winner_segment),
+        ),
+    )
+
+    finished = repository.append_event(
+        RUN_ID,
+        prepare_event(
+            event_type="segment.finished",
+            execution_segment_id=loser_segment,
+            facts={"outcome": "noop", "terminal_run_status": None},
+        ),
+    )
+
+    run = repository.get_run(RUN_ID)
+    assert finished.event_type == "segment.finished"
+    assert run is not None and run.status == "completed"
+    with pytest.raises(JournalConflictError, match="different stable facts"):
+        repository.append_event(
+            RUN_ID,
+            prepare_event(
+                event_type="segment.finished",
+                execution_segment_id=winner_segment,
+                facts={"outcome": "noop", "terminal_run_status": None},
+            ),
+        )

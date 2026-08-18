@@ -14,12 +14,15 @@ from offerpilot.repositories.agent_runs import (
     AgentRunRepository,
     DispositionCommand,
     StartRunCommand,
+    StartSegmentCommand,
 )
 
 KEY_ID = "11111111-1111-4111-8111-111111111111"
 RUN_ID = "22222222-2222-4222-8222-222222222222"
 SEGMENT_ID = "33333333-3333-4333-8333-333333333333"
 MODEL_CALL_ID = "44444444-4444-4444-8444-444444444444"
+CONFIRMATION_SEGMENT_ID = "55555555-5555-4555-8555-555555555555"
+CONFIRMATION_ATTEMPT_ID = "66666666-6666-4666-8666-666666666666"
 
 
 def _setup(tmp_path: Path) -> tuple[AgentRunRepository, sessionmaker[Session]]:
@@ -91,11 +94,14 @@ def _complete(repository: AgentRunRepository) -> None:
     )
 
 
-def _waiting_events(tool_call_id: str) -> tuple[EventDraft, ...]:
+def _waiting_events(
+    tool_call_id: str,
+    segment_id: str = SEGMENT_ID,
+) -> tuple[EventDraft, ...]:
     return (
         prepare_event(
             event_type="tool.proposed",
-            execution_segment_id=SEGMENT_ID,
+            execution_segment_id=segment_id,
             facts={
                 "tool_call_id": tool_call_id,
                 "tool_name": "create_application",
@@ -108,7 +114,7 @@ def _waiting_events(tool_call_id: str) -> tuple[EventDraft, ...]:
         ),
         prepare_event(
             event_type="approval.requested",
-            execution_segment_id=SEGMENT_ID,
+            execution_segment_id=segment_id,
             facts={
                 "tool_call_id": tool_call_id,
                 "confirmation_mode": "required",
@@ -120,15 +126,49 @@ def _waiting_events(tool_call_id: str) -> tuple[EventDraft, ...]:
         ),
         prepare_event(
             event_type="run.waiting_confirmation",
-            execution_segment_id=SEGMENT_ID,
+            execution_segment_id=segment_id,
             facts={"tool_call_id": tool_call_id},
             source_ref_type="tool_call",
             source_ref_id=tool_call_id,
         ),
         prepare_event(
             event_type="segment.finished",
-            execution_segment_id=SEGMENT_ID,
+            execution_segment_id=segment_id,
             facts={"outcome": "suspended", "terminal_run_status": None},
+        ),
+    )
+
+
+def _resume_confirmation(repository: AgentRunRepository, tool_call_id: str) -> None:
+    repository.start_segment(
+        StartSegmentCommand(
+            run_id=RUN_ID,
+            segment_started=prepare_event(
+                event_type="segment.started",
+                execution_segment_id=CONFIRMATION_SEGMENT_ID,
+                facts={
+                    "request_kind": "confirmation",
+                    "transport_mode": "sync",
+                    "execution_path": "agent_resume",
+                    "transport_run_id": None,
+                },
+            ),
+        )
+    )
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="running",
+            events=(
+                prepare_event(
+                    event_type="run.resumed",
+                    execution_segment_id=CONFIRMATION_SEGMENT_ID,
+                    facts={
+                        "confirmation_attempt_id": CONFIRMATION_ATTEMPT_ID,
+                        "tool_call_id": tool_call_id,
+                    },
+                ),
+            ),
         ),
     )
 
@@ -178,6 +218,68 @@ def test_trace_reconstructs_waiting_confirmation_as_healthy_suspension(
     assert trace.anomalies == ()
     assert trace.segments[0].tools[0].tool_call_id == "call-1"
     assert trace.segments[0].approvals[0].requested_seq == 4
+
+
+def test_trace_treats_historical_waiting_event_as_resumed_lifecycle(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _setup(tmp_path)
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=_waiting_events("call-first"),
+            waiting_tool_call_id="call-first",
+        ),
+    )
+    _resume_confirmation(repository, "call-first")
+
+    trace = reconstruct_agent_run(
+        repository,
+        RUN_ID,
+        as_of=datetime.now(timezone.utc),
+        stale_after=None,
+    )
+
+    assert trace.lifecycle_status == "running"
+    assert trace.completion_status == "open"
+    assert trace.integrity_status == "healthy"
+    assert trace.anomalies == ()
+
+
+def test_trace_projects_only_latest_waiting_confirmation_identity(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _setup(tmp_path)
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=_waiting_events("call-first"),
+            waiting_tool_call_id="call-first",
+        ),
+    )
+    _resume_confirmation(repository, "call-first")
+    repository.converge_disposition(
+        RUN_ID,
+        DispositionCommand(
+            target_status="waiting_confirmation",
+            events=_waiting_events("call-second", CONFIRMATION_SEGMENT_ID),
+            waiting_tool_call_id="call-second",
+        ),
+    )
+
+    trace = reconstruct_agent_run(
+        repository,
+        RUN_ID,
+        as_of=datetime.now(timezone.utc),
+        stale_after=None,
+    )
+
+    assert trace.lifecycle_status == "waiting_confirmation"
+    assert trace.completion_status == "suspended"
+    assert trace.integrity_status == "healthy"
+    assert trace.anomalies == ()
 
 
 def test_stale_uses_latest_activity_instead_of_started_at(tmp_path: Path) -> None:

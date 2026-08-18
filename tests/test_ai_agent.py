@@ -75,6 +75,9 @@ class RecordingRunRecorder:
     def suspend(self, command):
         self.actions.append(("run.suspended", command))
 
+    def abandon(self):
+        self.actions.append(("segment.abandoned", None))
+
     def finish(self, command):
         self.actions.append(("run.finished", command))
 

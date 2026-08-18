@@ -58,6 +58,18 @@ def _journal_rows(tmp_path):
     return runs, events, snapshots
 
 
+def _stable_journal_factory(data_dir):
+    repository = AgentRunRepository(journal_session_factory_for_data_dir(data_dir))
+    key = load_or_create_journal_key(data_dir)
+    assert key is not None
+    return RunRecorderFactory(
+        repository,
+        key=key,
+        segment_budget_seconds=2.0,
+        disposition_budget_seconds=0.5,
+    )
+
+
 class ScriptedModel:
     def __init__(self, turns):
         self.turns = list(turns)
@@ -848,7 +860,14 @@ def test_deterministic_pilot_confirmation_allows_only_jd_edits_without_ai(tmp_pa
 
 def test_deterministic_pilot_rejection_does_not_write_without_ai(tmp_path):
     model = CountingFailingModel()
-    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=model,
+            title_model=model,
+            run_recorder_factory=_stable_journal_factory(tmp_path),
+        )
+    )
     application = client.post(
         "/api/applications",
         json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
@@ -946,7 +965,10 @@ def test_deterministic_pilot_stale_confirmation_keeps_original_text_in_new_card(
     assert model.calls == 0
 
 
-def test_deterministic_pilot_retries_same_key_after_chat_cas_failure(monkeypatch, tmp_path):
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_deterministic_pilot_retries_same_key_after_chat_cas_failure(
+    monkeypatch, tmp_path, endpoint
+):
     model = CountingFailingModel()
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
     application = client.post(
@@ -979,12 +1001,32 @@ def test_deterministic_pilot_retries_same_key_after_chat_cas_failure(monkeypatch
         "confirmation_token": pending["pending_action"]["confirmation_token"],
     }
 
-    first = client.post("/api/chat/confirm", json=confirmation)
-    second = client.post("/api/chat/confirm", json=confirmation)
+    first = client.post(endpoint, json=confirmation)
+    runs, events, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status in {"running", "waiting_confirmation"}
+    confirmation_segment = next(
+        event.execution_segment_id
+        for event in events
+        if event.event_type == "segment.started"
+        and json.loads(event.payload_json)["facts"]["request_kind"] == "confirmation"
+    )
+    assert any(
+        event.event_type == "segment.finished"
+        and event.execution_segment_id == confirmation_segment
+        and json.loads(event.payload_json)["facts"]
+        == {"outcome": "noop", "terminal_run_status": None}
+        for event in events
+    )
+    second = client.post(endpoint, json=confirmation)
 
     assert first.status_code == 409
     assert second.status_code == 200
-    assert second.json()["write_status"] == "success"
+    if endpoint.endswith("/stream"):
+        second_body = _parse_sse_events(second.text)[-1]["data"]["data"]["response"]
+    else:
+        second_body = second.json()
+    assert second_body["write_status"] == "success"
     versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
     assert len(versions) == 1
     assert model.calls == 0
@@ -1242,7 +1284,13 @@ def test_complete_causal_chain_reconstructs_one_healthy_run(
     tmp_path, chat_endpoint, confirm_endpoint
 ):
     model = CompleteCausalChainModel()
-    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=model,
+            run_recorder_factory=_stable_journal_factory(tmp_path),
+        )
+    )
     client.post(
         "/api/applications",
         json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},
@@ -1303,7 +1351,7 @@ def test_complete_causal_chain_reconstructs_one_healthy_run(
     )
     assert trace.lifecycle_status == "completed"
     assert trace.completion_status == "terminal"
-    assert trace.integrity_status == "healthy"
+    assert trace.integrity_status == "healthy", trace.anomalies
     if initial_sse_run_id is not None and confirmation_sse_run_id is not None:
         assert run.id not in {initial_sse_run_id, confirmation_sse_run_id}
         transport_ids = {
@@ -4537,6 +4585,32 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
         assert response.status_code == 409
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"]["args"]["closed_reason"] == "newer"
+    runs, events, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status in {"running", "waiting_confirmation"}
+    confirmation_segment = next(
+        event.execution_segment_id
+        for event in events
+        if event.event_type == "segment.started"
+        and json.loads(event.payload_json)["facts"]["request_kind"] == "confirmation"
+    )
+    assert any(
+        event.event_type == "segment.finished"
+        and event.execution_segment_id == confirmation_segment
+        and json.loads(event.payload_json)["facts"]
+        == {"outcome": "noop", "terminal_run_status": None}
+        for event in events
+    )
+    trace = reconstruct_agent_run(
+        AgentRunRepository(journal_session_factory_for_data_dir(tmp_path)),
+        runs[0].id,
+        as_of=datetime.now(timezone.utc),
+        stale_after=None,
+    )
+    assert not any(
+        anomaly.startswith(("lifecycle_event_conflict", "segment_missing_finish"))
+        for anomaly in trace.anomalies
+    )
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -4646,6 +4720,88 @@ def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert sum(message["role"] == "tool" for message in stored) == 1
+    runs, _, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    trace = reconstruct_agent_run(
+        AgentRunRepository(journal_session_factory_for_data_dir(tmp_path)),
+        runs[0].id,
+        as_of=datetime.now(timezone.utc),
+        stale_after=None,
+    )
+    assert trace.completion_status == "terminal"
+    assert "recording_degraded" in trace.anomalies
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    import offerpilot.api as api_module
+
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="slow-handler-cas-loss",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="must not be persisted"),
+        ]
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+    original_update = ApplicationsRepository.update_full
+
+    def slow_update(self, app_id, data):
+        time.sleep(0.4)
+        return original_update(self, app_id, data)
+
+    def lose_cas(self, conversation_id, expected, tool_message, undo):
+        del self, conversation_id, expected, tool_message, undo
+        return None
+
+    monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)
+    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.15)
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    if endpoint.endswith("/stream"):
+        assert _parse_sse_events(response.text)[-1]["data"]["data"]["code"] == (
+            "confirmation_in_progress"
+        )
+    else:
+        assert response.status_code == 409
+    time.sleep(0.5)
+    runs, events, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status in {"running", "waiting_confirmation"}
+    confirmation_segment = next(
+        event.execution_segment_id
+        for event in events
+        if event.event_type == "segment.started"
+        and json.loads(event.payload_json)["facts"]["request_kind"] == "confirmation"
+    )
+    assert any(
+        event.event_type == "segment.finished"
+        and event.execution_segment_id == confirmation_segment
+        and json.loads(event.payload_json)["facts"]
+        == {"outcome": "noop", "terminal_run_status": None}
+        for event in events
+    )
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
