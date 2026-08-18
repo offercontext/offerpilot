@@ -318,7 +318,7 @@ Expected structural projections across the logical Run, after filtering unrelate
     "write_waiting_confirmation": ["tool.proposed", "approval.requested"],
     "confirmation_rejected": ["tool.proposed", "approval.requested", "approval.decided"],
     "pre_execution_validation_failure": ["tool.proposed"],
-    "pre_execution_stale_claim": ["tool.proposed", "approval.requested"],
+    "pre_execution_stale_claim": ["tool.proposed", "approval.requested", "approval.decided"],
 }
 ```
 
