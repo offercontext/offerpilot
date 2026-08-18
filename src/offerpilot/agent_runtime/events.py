@@ -505,16 +505,16 @@ def prepare_context_snapshot(
     budget_check: Callable[[], None] | None = None,
 ) -> PreparedSnapshot:
     messages = manifest.conversation_message_ids
-    for item in messages:
+    for message_id in messages:
         if budget_check is not None:
             budget_check()
-        if type(item) is not int or item <= 0:
+        if type(message_id) is not int or message_id <= 0:
             raise JournalEventValidationError("invalid conversation message id")
     tools = manifest.tool_names
-    for item in tools:
+    for tool_name in tools:
         if budget_check is not None:
             budget_check()
-        if type(item) is not str or _SAFE_NAME.fullmatch(item) is None:
+        if type(tool_name) is not str or _SAFE_NAME.fullmatch(tool_name) is None:
             raise JournalEventValidationError("invalid tool name")
     attachments = [
         _normalize_manifest_ref(item, budget_check=budget_check)
