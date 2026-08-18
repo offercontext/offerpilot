@@ -82,7 +82,7 @@ def prepare_call(
     try:
         validated = validate_arguments(catalog.validator_for(spec.name), parsed)
     except ArgumentValidationError as exc:
-        return Rejected(_validation_failure(exc.code))
+        return Rejected(_schema_validation_failure(spec, parsed, exc.code))
 
     _stage(stage_sink, "decode")
     try:
@@ -208,6 +208,30 @@ def _validation_failure(code: str) -> ToolFailure:
         code=code,
         compatibility_detail="工具参数验证失败，请检查后重试。",
     )
+
+
+def _schema_validation_failure(
+    spec: ToolSpec[Any, Any],
+    arguments: Mapping[str, JSONValue],
+    code: str,
+) -> ToolFailure:
+    if spec.schema_failure_renderer is not None:
+        try:
+            detail = spec.schema_failure_renderer(arguments, code)
+        except Exception:
+            detail = None
+        if detail:
+            return ToolFailure("validation_error", code, detail)
+    required = spec.contract.parameters.get("required")
+    if isinstance(required, list):
+        missing = [key for key in required if isinstance(key, str) and key not in arguments]
+        if missing:
+            return ToolFailure(
+                category="validation_error",
+                code=code,
+                compatibility_detail=f"{spec.name} requires {missing[0]}",
+            )
+    return _validation_failure(code)
 
 
 def _arguments_digest(arguments: dict[str, JSONValue]) -> str:

@@ -132,6 +132,8 @@ ToolExecutor: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], ResultT]
 BindingResolver: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], BindingTarget]
 SuccessRenderer: TypeAlias = Callable[[ResultT], str]
 ResultMetadataProjector: TypeAlias = Callable[[ResultT], ToolResultMetadata]
+ConfirmationDescription: TypeAlias = Callable[[ArgsT], str]
+SchemaFailureRenderer: TypeAlias = Callable[[Mapping[str, JSONValue], str], str | None]
 
 
 @dataclass(frozen=True)
@@ -150,6 +152,16 @@ class ToolSpec(Generic[ArgsT, ResultT]):
     exception_map: tuple[ToolExceptionMapping, ...] = field(default_factory=tuple)
     success_renderer: SuccessRenderer[ResultT] | None = field(default=None, repr=False, compare=False)
     result_metadata: ResultMetadataProjector[ResultT] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    confirmation_description: ConfirmationDescription[ArgsT] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    schema_failure_renderer: SchemaFailureRenderer | None = field(
         default=None,
         repr=False,
         compare=False,
