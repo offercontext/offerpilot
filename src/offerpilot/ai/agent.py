@@ -5,6 +5,7 @@ import json
 import math
 import os
 from collections import OrderedDict
+from collections.abc import Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,7 +20,22 @@ from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt, interrupt
 
-from offerpilot.ai.types import Assistant, Message
+from offerpilot.ai.tool_runtime.catalog import ToolCatalog
+from offerpilot.ai.tool_runtime.context import ToolExecutionContext
+from offerpilot.ai.tool_runtime.contracts import (
+    ConfirmationRequired,
+    ExecutionAuthorization,
+    ProviderToolContract,
+    ReadyToExecute,
+    ToolExecutionRecord,
+    ToolFailure,
+    ToolSpec,
+)
+from offerpilot.ai.tool_runtime.pipeline import Rejected, execute_prepared, prepare_call
+from offerpilot.ai.tool_runtime.rendering import render_compatibility
+from offerpilot.ai.tool_runtime.transport import project_transport_event
+from offerpilot.ai.tool_runtime.validation import parse_arguments
+from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.agent_runtime.events import ContextManifestInput
 from offerpilot.agent_runtime.journal import EventInput, NullRunRecorder, RunRecorder
 
@@ -61,7 +77,7 @@ class ChatModel(Protocol):
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
     ) -> Assistant: ...
 
@@ -70,7 +86,7 @@ class StreamingChatModel(Protocol):
     def stream_complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         on_delta: AssistantDeltaSink,
     ) -> Assistant: ...
 
@@ -83,7 +99,24 @@ class PendingAction:
     human: str
 
 
-ConfirmationResultSink = Callable[[PendingAction, bool, Message], None]
+@dataclass(frozen=True)
+class AgentTurnResult:
+    added: list[Message]
+    reply: str
+    pending: PendingAction | None
+    records: tuple[ToolExecutionRecord[Any, Any], ...] = ()
+    failures: tuple[ToolFailure, ...] = ()
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.added
+        yield self.reply
+        yield self.pending
+
+
+ConfirmationResultSink = Callable[
+    [PendingAction, bool, Message, ToolExecutionRecord[Any, Any] | None],
+    None,
+]
 ConfirmationAttemptSink = Callable[[PendingAction], None]
 
 
@@ -139,7 +172,8 @@ class LangGraphAgentRunner:
     def __init__(
         self,
         model: ChatModel,
-        registry: dict[str, dict[str, Any]],
+        catalog: ToolCatalog,
+        tool_context: ToolExecutionContext,
         *,
         checkpoint_path: Path | None = None,
         thread_id: str = _DEFAULT_THREAD_ID,
@@ -150,7 +184,8 @@ class LangGraphAgentRunner:
         run_recorder: RunRecorder | None = None,
     ):
         self._model = model
-        self._registry = registry
+        self._catalog = catalog
+        self._tool_context = tool_context
         self._checkpoint_path = checkpoint_path
         self._thread_id = thread_id
         self._event_sink = event_sink
@@ -160,13 +195,17 @@ class LangGraphAgentRunner:
         self._run_recorder = run_recorder or NullRunRecorder()
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
+        self._records: list[ToolExecutionRecord[Any, Any]] = []
+        self._failures: list[ToolFailure] = []
 
     def run_turn(
         self,
         messages: list[Message],
         auto_approve: bool,
         max_iter: int = DEFAULT_MAX_ITERATIONS,
-    ) -> tuple[list[Message], str, PendingAction | None]:
+    ) -> AgentTurnResult:
+        self._records = []
+        self._failures = []
         state: _GraphState = {
             "messages": [_message_to_dict(message) for message in messages],
             "added": [],
@@ -180,7 +219,7 @@ class LangGraphAgentRunner:
         added, reply, pending = self._result_from_state(cast(dict[str, Any], result))
         if pending is not None:
             self._has_pending_checkpoint = True
-        return added, reply, pending
+        return AgentTurnResult(added, reply, pending, tuple(self._records), tuple(self._failures))
 
     def resume_after_confirm(
         self,
@@ -190,7 +229,7 @@ class LangGraphAgentRunner:
         auto_approve: bool,
         max_iter: int = DEFAULT_MAX_ITERATIONS,
         rejection_feedback: str = "",
-    ) -> tuple[list[Message], str, PendingAction | None]:
+    ) -> AgentTurnResult:
         approved = approved is True
         confirmation_lock_key = self._confirmation_lock_key()
         with _confirmation_lock(confirmation_lock_key):
@@ -213,7 +252,9 @@ class LangGraphAgentRunner:
         max_iter: int,
         rejection_feedback: str,
         confirmation_lock_key: ConfirmationLockKey,
-    ) -> tuple[list[Message], str, PendingAction | None]:
+    ) -> AgentTurnResult:
+        self._records = []
+        self._failures = []
         checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
         if checkpoint_missing and not self._has_pending_checkpoint:
             return self._resume_without_checkpoint(
@@ -256,7 +297,7 @@ class LangGraphAgentRunner:
         added, reply, new_pending = self._result_from_state(result_state)
         if new_pending is not None:
             self._has_pending_checkpoint = True
-        return added, reply, new_pending
+        return AgentTurnResult(added, reply, new_pending, tuple(self._records), tuple(self._failures))
 
     def _confirmation_lock_key(self) -> ConfirmationLockKey:
         if self._checkpoint_path is None:
@@ -292,9 +333,9 @@ class LangGraphAgentRunner:
             raise RuntimeError("AI 工具调用超过最大轮次")
 
         work = [_message_from_dict(message) for message in state.get("messages", [])]
-        tools = _model_visible_tools(self._registry)
+        tools = list(self._catalog.provider_contracts())
         assistant = self._complete_model(work, tools, model_step=iterations + 1)
-        selected_tool_calls = _select_tool_calls(assistant.tool_calls, self._registry)
+        selected_tool_calls = _select_tool_calls(assistant.tool_calls, self._catalog)
         assistant_message = Message(
             role="assistant",
             content=assistant.content,
@@ -335,16 +376,8 @@ class LangGraphAgentRunner:
             tool_name = str(tool_call["name"])
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
-            tool = self._registry.get(tool_name)
+            spec = self._catalog.resolve(tool_name)
             has_mapped_resume, mapped_resume, mapped_interrupt_id = _mapped_resume_payload()
-            if not has_mapped_resume:
-                self._record_tool_proposed(
-                    tool_call_id,
-                    tool_name,
-                    tool_args,
-                    tool,
-                    auto_approve=bool(state.get("auto_approve", False)),
-                )
             if has_mapped_resume:
                 mapped_identity_error = _resume_identity_error(
                     mapped_resume,
@@ -362,20 +395,42 @@ class LangGraphAgentRunner:
                 consumed_resume_attempt_id = mapped_attempt_id
                 added = []
 
-            if tool is None:
-                result = f'错误：未知工具 "{tool_name}"'
-            elif bool(tool.get("write")):
-                validation_error = _validate_pending_action(tool.get("validate"), tool_args)
-                if validation_error:
-                    result = "错误：" + validation_error
-                elif _requires_confirmation(tool, bool(state.get("auto_approve", False))):
-                    describe = tool.get("describe")
-                    pending = {
-                        "tool_call_id": tool_call_id,
-                        "tool_name": tool_name,
-                        "args": tool_args,
-                        "human": _describe_pending_action(describe, tool_args, tool_name),
-                    }
+            if spec is None:
+                unknown_failure = ToolFailure(
+                    "validation_error",
+                    "unknown_tool",
+                    f'未知工具 "{tool_name}"',
+                )
+                self._failures.append(unknown_failure)
+                result = "错误：" + unknown_failure.compatibility_detail
+            elif spec.kind == "write":
+                initial_prepared = None
+                if not has_mapped_resume:
+                    initial_prepared = prepare_call(
+                        self._catalog,
+                        self._tool_context,
+                        ToolCall(tool_call_id, tool_name, tool_args),
+                        pending_identity=f"{tool_call_id}:{tool_name}",
+                        pending_action_revision=_pending_action_revision(
+                            tool_call_id, tool_name, tool_args
+                        ),
+                    )
+                    self._raise_if_cancelled()
+                    if isinstance(initial_prepared, Rejected):
+                        self._failures.append(initial_prepared.failure)
+                        result = render_compatibility(spec, initial_prepared.failure)
+                        self._emit_tool_result(tool_call_id, tool_name, result, None)
+                        tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
+                        messages.append(_message_to_dict(tool_message))
+                        added.append(_message_to_dict(tool_message))
+                        continue
+                pending = {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "args": tool_args,
+                    "human": _spec_confirmation_description(spec, tool_args, tool_name),
+                }
+                if isinstance(initial_prepared, ConfirmationRequired) or has_mapped_resume:
                     raw_resume_value = interrupt(pending)
                     resume_value = raw_resume_value if isinstance(raw_resume_value, dict) else {}
                     self._raise_if_cancelled()
@@ -393,7 +448,7 @@ class LangGraphAgentRunner:
                                 tool_name,
                                 tool_args,
                                 resume_value.get("effective_args"),
-                                self._registry,
+                                self._catalog,
                             )
                         except ValueError as exc:
                             raise PendingActionValidationError(str(exc)) from exc
@@ -401,9 +456,7 @@ class LangGraphAgentRunner:
                             tool_call_id=tool_call_id,
                             tool_name=tool_name,
                             args=effective_args,
-                            human=_describe_pending_action(
-                                describe, effective_args, str(pending["human"])
-                            ),
+                            human=_spec_confirmation_description(spec, effective_args, str(pending["human"])),
                         )
                         self._emit_pending_tool_call(
                             effective_pending,
@@ -414,14 +467,52 @@ class LangGraphAgentRunner:
                             True,
                         )
                         self._raise_if_cancelled()
-                        if self._confirmation_attempt_sink is not None:
-                            self._confirmation_attempt_sink(effective_pending)
-                        result = self._execute_tool_recorded(
-                            tool_call_id,
-                            tool_name,
-                            tool,
-                            effective_args,
+                        prepared_result = prepare_call(
+                            self._catalog,
+                            self._tool_context,
+                            ToolCall(tool_call_id, tool_name, effective_args),
+                            pending_identity=f"{tool_call_id}:{tool_name}",
+                            pending_action_revision=_pending_action_revision(
+                                tool_call_id, tool_name, tool_args
+                            ),
+                            record_proposal=False,
                         )
+                        self._raise_if_cancelled()
+                        if not isinstance(prepared_result, ConfirmationRequired):
+                            if isinstance(prepared_result, Rejected):
+                                self._failures.append(prepared_result.failure)
+                                result = render_compatibility(spec, prepared_result.failure)
+                            else:
+                                result = "错误：确认操作状态不一致"
+                        else:
+                            def claim(prepared: Any) -> ExecutionAuthorization:
+                                if self._confirmation_attempt_sink is not None:
+                                    try:
+                                        self._confirmation_attempt_sink(effective_pending)
+                                    except StalePendingActionError as exc:
+                                        raise exc
+                                return ExecutionAuthorization(
+                                    pending_identity=prepared.pending_identity,
+                                    pending_action_revision=cast(int, prepared.pending_action_revision),
+                                    tool_call_id=prepared.tool_call_id,
+                                    tool_name=prepared.spec.name,
+                                    arguments_digest=prepared.arguments_digest,
+                                )
+
+                            record = execute_prepared(
+                                prepared_result.prepared,
+                                self._tool_context,
+                                confirmation_claimer=claim,
+                            )
+                            self._records.append(record)
+                            if (
+                                isinstance(record.outcome, ToolFailure)
+                                and record.outcome.code == "confirmation_claim_failed"
+                            ):
+                                raise StalePendingActionError(
+                                    "stale pending action: confirmation claim failed"
+                                )
+                            result = render_compatibility(spec, record.outcome)
                     else:
                         self._emit_pending_tool_call(
                             PendingAction(
@@ -443,23 +534,31 @@ class LangGraphAgentRunner:
                             False,
                         )
                 else:
-                    self._raise_if_cancelled()
-                    result = self._execute_tool_recorded(
-                        tool_call_id,
-                        tool_name,
-                        tool,
-                        tool_args,
-                    )
+                    result = "错误：确认操作状态不一致"
             else:
                 self._raise_if_cancelled()
-                result = self._execute_tool_recorded(
-                    tool_call_id,
-                    tool_name,
-                    tool,
-                    tool_args,
+                prepared_result = prepare_call(
+                    self._catalog,
+                    self._tool_context,
+                    ToolCall(tool_call_id, tool_name, tool_args),
                 )
+                self._raise_if_cancelled()
+                if isinstance(prepared_result, Rejected):
+                    self._failures.append(prepared_result.failure)
+                    record = None
+                    result = render_compatibility(spec, prepared_result.failure)
+                elif isinstance(prepared_result, ReadyToExecute):
+                    record = execute_prepared(prepared_result.prepared, self._tool_context)
+                    self._records.append(record)
+                    result = render_compatibility(spec, record.outcome)
+                else:
+                    record = None
+                    result = "错误：只读工具不能请求确认"
 
-            self._emit_tool_result(tool_call_id, tool_name, result)
+            emitted_record = record if spec is not None and spec.kind == "read" else (
+                self._records[-1] if self._records and self._records[-1].prepared.tool_call_id == tool_call_id else None
+            )
+            self._emit_tool_result(tool_call_id, tool_name, result, emitted_record)
             tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
             messages.append(_message_to_dict(tool_message))
             added.append(_message_to_dict(tool_message))
@@ -469,6 +568,7 @@ class LangGraphAgentRunner:
                     effective_pending,
                     confirmed_approved,
                     tool_message,
+                    emitted_record,
                 )
         return {
             "messages": messages,
@@ -520,10 +620,13 @@ class LangGraphAgentRunner:
         max_iter: int,
         rejection_feedback: str,
         confirmation_lock_key: ConfirmationLockKey,
-    ) -> tuple[list[Message], str, PendingAction | None]:
+    ) -> AgentTurnResult:
         sink_pending = pending
+        record: ToolExecutionRecord[Any, Any] | None = None
         if approved is True:
-            tool = self._registry[pending.tool_name]
+            spec = self._catalog.resolve(pending.tool_name)
+            if spec is None:
+                raise PendingActionValidationError(f'unknown pending tool "{pending.tool_name}"')
             try:
                 parsed_args = _parse_json_object(
                     pending.args,
@@ -532,63 +635,96 @@ class LangGraphAgentRunner:
             except ValueError as exc:
                 raise PendingActionValidationError(str(exc)) from exc
             effective_args = _encode_json_object(parsed_args)
-            validation_error = _validate_pending_action(tool.get("validate"), effective_args)
-            if validation_error:
-                raise PendingActionValidationError(validation_error)
             sink_pending = PendingAction(
                 tool_call_id=pending.tool_call_id,
                 tool_name=pending.tool_name,
                 args=effective_args,
                 human=pending.human,
             )
-            self._emit_pending_tool_call(sink_pending, "approved")
             self._raise_if_cancelled()
-            if self._confirmation_attempt_sink is not None:
-                self._confirmation_attempt_sink(sink_pending)
-            if not _claim_fallback_confirmation(
-                confirmation_lock_key,
-                pending,
+            prepared_result = prepare_call(
+                self._catalog,
+                self._tool_context,
+                ToolCall(pending.tool_call_id, pending.tool_name, effective_args),
+                pending_identity=f"{pending.tool_call_id}:{pending.tool_name}",
+                pending_action_revision=_pending_action_revision(
+                    pending.tool_call_id, pending.tool_name, pending.args
+                ),
+                record_proposal=False,
+            )
+            self._raise_if_cancelled()
+            if not isinstance(prepared_result, ConfirmationRequired):
+                if isinstance(prepared_result, Rejected):
+                    raise PendingActionValidationError(
+                        prepared_result.failure.compatibility_detail
+                        or prepared_result.failure.code
+                    )
+                raise PendingActionValidationError("pending tool no longer requires confirmation")
+            self._emit_pending_tool_call(sink_pending, "approved")
+
+            def claim(prepared: Any) -> ExecutionAuthorization | ToolFailure:
+                if self._confirmation_attempt_sink is not None:
+                    self._confirmation_attempt_sink(sink_pending)
+                if not _claim_fallback_confirmation(confirmation_lock_key, pending):
+                    return ToolFailure("stale_state", "fallback_confirmation_consumed", "stale pending action: fallback confirmation was already consumed")
+                return ExecutionAuthorization(
+                    pending_identity=prepared.pending_identity,
+                    pending_action_revision=cast(int, prepared.pending_action_revision),
+                    tool_call_id=prepared.tool_call_id,
+                    tool_name=prepared.spec.name,
+                    arguments_digest=prepared.arguments_digest,
+                )
+
+            record = execute_prepared(
+                prepared_result.prepared,
+                self._tool_context,
+                confirmation_claimer=claim,
+            )
+            self._records.append(record)
+            if (
+                isinstance(record.outcome, ToolFailure)
+                and record.outcome.code == "fallback_confirmation_consumed"
             ):
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
                 )
-            result = self._execute_tool_recorded(
-                pending.tool_call_id,
-                pending.tool_name,
-                tool,
-                effective_args,
-            )
+            result = render_compatibility(spec, record.outcome)
         else:
             self._emit_pending_tool_call(pending, "rejected")
             result = _rejection_result(rejection_feedback)
-        self._emit_tool_result(pending.tool_call_id, pending.tool_name, result)
+        self._emit_tool_result(pending.tool_call_id, pending.tool_name, result, record)
 
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)
         added = [tool_message]
         if self._confirmation_result_sink is not None:
-            self._confirmation_result_sink(sink_pending, approved, tool_message)
-        more, reply, new_pending = self.run_turn(
+            self._confirmation_result_sink(sink_pending, approved, tool_message, record)
+        first_records = tuple(self._records)
+        first_failures = tuple(self._failures)
+        continuation = self.run_turn(
             [*messages, tool_message],
             auto_approve=auto_approve,
             max_iter=max_iter,
         )
-        added.extend(more)
-        return added, reply, new_pending
+        added.extend(continuation.added)
+        records = (*first_records, *continuation.records)
+        failures = (*first_failures, *continuation.failures)
+        self._records = list(records)
+        self._failures = list(failures)
+        return AgentTurnResult(added, continuation.reply, continuation.pending, records, failures)
 
     def _emit_tool_call(self, tool_call: Any, auto_approve: bool) -> None:
+        del auto_approve
         tool_name = str(tool_call.name)
-        tool = self._registry.get(tool_name) or {}
-        is_write = bool(tool.get("write"))
-        confirm_mode = (
-            "hitl" if _requires_confirmation(tool, auto_approve) else "auto" if is_write else "none"
-        )
-        summary = _tool_call_summary(tool, str(tool_call.args or ""), tool_name)
+        spec = self._catalog.resolve(tool_name)
+        is_write = spec is not None and spec.kind == "write"
+        confirm_mode = "hitl" if is_write else "none"
+        summary = _tool_call_summary(spec, str(tool_call.args or ""), tool_name)
         self._emit_event(
             "tool_call",
             {
                 "tool_call_id": str(tool_call.id),
                 "tool_name": tool_name,
-                "public_label": _tool_public_label(tool, tool_name),
+                "public_label": _tool_public_label(spec, tool_name),
                 "kind": "write" if is_write else "read",
                 "confirm_mode": confirm_mode,
                 "summary": summary,
@@ -597,29 +733,41 @@ class LangGraphAgentRunner:
         )
 
     def _emit_pending_tool_call(self, pending: PendingAction, confirm_mode: str) -> None:
-        tool = self._registry.get(pending.tool_name) or {}
+        spec = self._catalog.resolve(pending.tool_name)
         self._emit_event(
             "tool_call",
             {
                 "tool_call_id": pending.tool_call_id,
                 "tool_name": pending.tool_name,
-                "public_label": _tool_public_label(tool, pending.tool_name),
-                "kind": "write" if bool(tool.get("write")) else "read",
+                "public_label": _tool_public_label(spec, pending.tool_name),
+                "kind": "write" if spec is not None and spec.kind == "write" else "read",
                 "confirm_mode": confirm_mode,
-                "summary": _describe_pending_action(
-                    tool.get("describe"), pending.args, pending.human
-                ),
+                "summary": _spec_confirmation_description(spec, pending.args, pending.human),
                 "args_summary": _args_summary(pending.args),
             },
         )
 
-    def _emit_tool_result(self, tool_call_id: str, tool_name: str, result: str) -> None:
-        self._emit_event("tool_result", _tool_result_payload(tool_call_id, tool_name, result))
+    def _emit_tool_result(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        result: str,
+        record: ToolExecutionRecord[Any, Any] | None,
+    ) -> None:
+        spec = self._catalog.resolve(tool_name)
+        if spec is not None and record is not None:
+            try:
+                payload = project_transport_event(spec, record)
+            except Exception:
+                payload = _delivery_error_payload(tool_call_id, tool_name, result)
+        else:
+            payload = _delivery_error_payload(tool_call_id, tool_name, result)
+        self._emit_event("tool_result", cast(dict[str, Any], payload))
 
     def _complete_model(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         *,
         model_step: int,
     ) -> Assistant:
@@ -701,7 +849,7 @@ class LangGraphAgentRunner:
     def _capture_model_input(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         *,
         model_step: int,
         model_call_id: str,
@@ -711,7 +859,7 @@ class LangGraphAgentRunner:
                 _journal_model_input(messages, tools),
                 ContextManifestInput(
                     conversation_message_ids=(),
-                    tool_names=tuple(str(tool.get("name") or "") for tool in tools),
+                    tool_names=tuple(tool.name for tool in tools),
                     attachment_refs=(),
                     domain_source_refs=(),
                 ),
@@ -734,85 +882,6 @@ class LangGraphAgentRunner:
         except Exception:
             return
 
-    def _record_tool_proposed(
-        self,
-        tool_call_id: str,
-        tool_name: str,
-        tool_args: str,
-        tool: dict[str, Any] | None,
-        *,
-        auto_approve: bool,
-    ) -> None:
-        tool_definition = tool or {}
-        requires_confirmation = bool(tool_definition.get("write")) and _requires_confirmation(
-            tool_definition,
-            auto_approve,
-        )
-        self._append_journal_event(
-            EventInput(
-                event_type="tool.proposed",
-                facts={
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "tool_kind": "write" if bool(tool_definition.get("write")) else "read",
-                    "args_shape_digest": _journal_shape_digest(tool_args),
-                    "proposal_outcome": (
-                        "confirmation_required"
-                        if requires_confirmation
-                        else "execution_allowed"
-                    ),
-                },
-                source_ref_type="tool_call",
-                source_ref_id=tool_call_id,
-            )
-        )
-
-    def _execute_tool_recorded(
-        self,
-        tool_call_id: str,
-        tool_name: str,
-        tool: dict[str, Any],
-        args: str,
-    ) -> str:
-        self._append_journal_event(
-            EventInput(
-                event_type="tool.started",
-                facts={
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "result_contract": "legacy_string_v1",
-                },
-                source_ref_type="tool_call",
-                source_ref_id=tool_call_id,
-            )
-        )
-        result = _execute_tool(tool, args)
-        if result.startswith("错误："):
-            event = EventInput(
-                event_type="tool.failed",
-                facts={
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "failure_category": "tool_error",
-                },
-                source_ref_type="tool_call",
-                source_ref_id=tool_call_id,
-            )
-        else:
-            event = EventInput(
-                event_type="tool.completed",
-                facts={
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "outcome": "completed",
-                    "result_shape_digest": _journal_shape_digest(result),
-                },
-                source_ref_type="tool_call",
-                source_ref_id=tool_call_id,
-            )
-        self._append_journal_event(event)
-        return result
-
     def _emit_assistant_delta(self, delta: str) -> None:
         if not delta:
             return
@@ -833,7 +902,7 @@ class LangGraphAgentRunner:
 
 def run_turn(
     model: ChatModel,
-    registry: dict[str, dict[str, Any]],
+    catalog: ToolCatalog,
     messages: list[Message],
     auto_approve: bool,
     max_iter: int = DEFAULT_MAX_ITERATIONS,
@@ -843,10 +912,12 @@ def run_turn(
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
     run_recorder: RunRecorder | None = None,
-) -> tuple[list[Message], str, PendingAction | None]:
+    tool_context: ToolExecutionContext,
+) -> AgentTurnResult:
     return LangGraphAgentRunner(
         model,
-        registry,
+        catalog,
+        tool_context,
         checkpoint_path=checkpoint_path,
         thread_id=thread_id,
         event_sink=event_sink,
@@ -857,7 +928,7 @@ def run_turn(
 
 def resume_after_confirm(
     model: ChatModel,
-    registry: dict[str, dict[str, Any]],
+    catalog: ToolCatalog,
     messages: list[Message],
     pending: PendingAction,
     approved: bool,
@@ -872,10 +943,12 @@ def resume_after_confirm(
     confirmation_result_sink: ConfirmationResultSink | None = None,
     confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
     run_recorder: RunRecorder | None = None,
-) -> tuple[list[Message], str, PendingAction | None]:
+    tool_context: ToolExecutionContext,
+) -> AgentTurnResult:
     return LangGraphAgentRunner(
         model,
-        registry,
+        catalog,
+        tool_context,
         checkpoint_path=checkpoint_path,
         thread_id=thread_id,
         event_sink=event_sink,
@@ -895,7 +968,7 @@ def resume_after_confirm(
 
 def prepare_pending_action(
     pending: PendingAction,
-    registry: dict[str, dict[str, Any]],
+    catalog: ToolCatalog,
     edited_args: dict[str, Any] | None,
 ) -> PendingAction:
     if edited_args is None:
@@ -903,8 +976,8 @@ def prepare_pending_action(
     if not isinstance(edited_args, dict):
         raise ValueError("edited arguments must be a JSON object")
 
-    tool = registry.get(pending.tool_name)
-    if tool is None:
+    spec = catalog.resolve(pending.tool_name)
+    if spec is None:
         raise ValueError(f'unknown pending tool "{pending.tool_name}"')
 
     original_args = _parse_json_object(
@@ -912,16 +985,11 @@ def prepare_pending_action(
         "pending arguments must be a valid JSON object",
     )
 
-    descriptors = tool.get("editable_fields")
-    editable_fields = (
-        {
-            descriptor.get("field"): descriptor
-            for descriptor in descriptors
-            if isinstance(descriptor, dict) and isinstance(descriptor.get("field"), str)
-        }
-        if isinstance(descriptors, list)
-        else {}
-    )
+    editable_fields = {
+        descriptor.get("field"): descriptor
+        for descriptor in spec.editable_fields
+        if isinstance(descriptor.get("field"), str)
+    }
     non_editable = [str(field) for field in edited_args if field not in editable_fields]
     if non_editable:
         raise ValueError("non-editable fields: " + ", ".join(sorted(non_editable)))
@@ -931,14 +999,11 @@ def prepare_pending_action(
 
     effective_args = {**original_args, **edited_args}
     encoded_args = _encode_json_object(effective_args)
-    validation_error = _validate_pending_action(tool.get("validate"), encoded_args)
-    if validation_error:
-        raise ValueError(validation_error)
     return PendingAction(
         tool_call_id=pending.tool_call_id,
         tool_name=pending.tool_name,
         args=encoded_args,
-        human=_describe_pending_action(tool.get("describe"), encoded_args, pending.human),
+        human=_spec_confirmation_description(spec, encoded_args, pending.human),
     )
 
 
@@ -947,7 +1012,7 @@ def _validated_resumed_args(
     tool_name: str,
     original_encoded_args: str,
     effective_encoded_args: Any,
-    registry: dict[str, dict[str, Any]],
+    catalog: ToolCatalog,
 ) -> str:
     if not isinstance(effective_encoded_args, str):
         raise ValueError("approved resume requires validated effective arguments")
@@ -980,7 +1045,7 @@ def _validated_resumed_args(
             args=original_encoded_args,
             human=tool_name,
         ),
-        registry,
+        catalog,
         edited_args,
     )
     return prepared.args
@@ -1067,6 +1132,27 @@ def _encode_json_object(value: dict[str, Any]) -> str:
     )
 
 
+def _pending_action_revision(tool_call_id: str, tool_name: str, raw_args: str) -> int:
+    try:
+        normalized_args = _encode_json_object(
+            _parse_json_object(raw_args, "pending arguments must be a valid JSON object")
+        )
+    except ValueError:
+        normalized_args = raw_args
+    canonical = json.dumps(
+        {
+            "args": normalized_args,
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(canonical).digest()[:8], "big") & ((1 << 63) - 1)
+
+
 def _validate_finite_json_numbers(value: Any) -> None:
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("JSON numbers must be finite")
@@ -1103,7 +1189,7 @@ def _is_json_scalar(value: Any) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def _validate_edited_value(field: str, value: Any, descriptor: dict[str, Any]) -> None:
+def _validate_edited_value(field: str, value: Any, descriptor: Mapping[str, Any]) -> None:
     if (
         descriptor.get("clearable") is True
         and "clear_value" in descriptor
@@ -1151,29 +1237,24 @@ def _rejection_result(rejection_feedback: Any) -> str:
     return f"用户拒绝了该操作，请勿执行。用户反馈：{feedback}请将这条反馈作为用户指导继续正常回应。"
 
 
-def _describe_pending_action(describe: Any, args: str, fallback: str) -> str:
-    if not callable(describe):
+def _spec_confirmation_description(
+    spec: ToolSpec[Any, Any] | None,
+    args: str,
+    fallback: str,
+) -> str:
+    if spec is None or spec.confirmation_description is None:
         return fallback
     try:
-        human = describe(args)
+        parsed = parse_arguments(args)
+        human = spec.confirmation_description(spec.decoder(parsed))
     except Exception:
         return fallback
     return str(human or fallback)
 
 
-def _validate_pending_action(validate: Any, args: str) -> str:
-    if not callable(validate):
-        return ""
-    try:
-        error = validate(args)
-        return str(error or "")
-    except Exception:
-        return "工具参数验证失败，请检查后重试。"
-
-
 def _journal_model_input(
     messages: list[Message],
-    tools: list[dict[str, Any]],
+    tools: list[ProviderToolContract],
 ) -> dict[str, object]:
     return {
         "messages": [
@@ -1190,9 +1271,9 @@ def _journal_model_input(
         ],
         "tools": [
             {
-                "name": str(tool.get("name") or ""),
-                "description": str(tool.get("description") or ""),
-                "parameters": tool.get("schema") or {},
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": dict(tool.parameters),
             }
             for tool in tools
         ],
@@ -1239,90 +1320,26 @@ def _journal_assistant_kind(assistant: Assistant) -> str:
     return "empty"
 
 
-def _journal_shape_digest(raw: str) -> str:
-    if len(raw) > 65_536:
-        value: object = {"type": "oversized"}
-    else:
-        try:
-            value = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            value = raw
-    shape = _journal_value_shape(value)
-    encoded = json.dumps(shape, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _journal_value_shape(value: object, *, depth: int = 0) -> object:
-    if depth >= 16:
-        return {"type": "truncated"}
-    if type(value) is dict:
-        mapping = cast(dict[object, object], value)
-        if len(mapping) > 64:
-            return {"type": "object", "field_count": len(mapping), "truncated": True}
-        return {
-            "type": "object",
-            "fields": {
-                str(key): _journal_value_shape(item, depth=depth + 1)
-                for key, item in sorted(mapping.items(), key=lambda pair: str(pair[0]))
-            },
-        }
-    if type(value) is list:
-        sequence = cast(list[object], value)
-        return {
-            "type": "array",
-            "length": len(sequence),
-            "items": [_journal_value_shape(item, depth=depth + 1) for item in sequence[:16]],
-        }
-    if value is None:
-        return {"type": "null"}
-    if type(value) is bool:
-        return {"type": "boolean"}
-    if type(value) in {int, float}:
-        return {"type": "number"}
-    if type(value) is str:
-        return {"type": "string"}
-    return {"type": "unsupported"}
-
-
-def _execute_tool(tool: dict[str, Any], args: str) -> str:
-    handler = tool["handler"]
-    try:
-        return str(handler(args))
-    except Exception as exc:  # pragma: no cover - exercised through API adapters later.
-        return "错误：" + str(exc)
-
-
-def _select_tool_calls(tool_calls: list[Any], registry: dict[str, dict[str, Any]]) -> list[Any]:
+def _select_tool_calls(tool_calls: list[Any], catalog: ToolCatalog) -> list[Any]:
     if not tool_calls:
         return []
-    if all(not bool((registry.get(str(call.name)) or {}).get("write")) for call in tool_calls):
+    if all(
+        (spec := catalog.resolve(str(call.name))) is None or spec.kind == "read"
+        for call in tool_calls
+    ):
         return tool_calls
     return tool_calls[:1]
 
 
-def _model_visible_tools(registry: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {"name": name, **tool}
-        for name, tool in registry.items()
-        if tool.get("model_visible", True) is not False
-    ]
-
-
-def _requires_confirmation(tool: dict[str, Any], auto_approve: bool) -> bool:
-    if not bool(tool.get("write")):
-        return False
-    return True
-
-
-def _tool_public_label(tool: dict[str, Any], fallback: str) -> str:
-    description = str(tool.get("description") or "").strip()
+def _tool_public_label(spec: ToolSpec[Any, Any] | None, fallback: str) -> str:
+    description = spec.contract.description.strip() if spec is not None else ""
     return description or fallback
 
 
-def _tool_call_summary(tool: dict[str, Any], args: str, fallback: str) -> str:
-    if bool(tool.get("write")):
-        return _describe_pending_action(tool.get("describe"), args, fallback)
-    return _tool_public_label(tool, fallback)
+def _tool_call_summary(spec: ToolSpec[Any, Any] | None, args: str, fallback: str) -> str:
+    if spec is not None and spec.kind == "write":
+        return _spec_confirmation_description(spec, args, fallback)
+    return _tool_public_label(spec, fallback)
 
 
 def _args_summary(args: str) -> Any:
@@ -1333,36 +1350,21 @@ def _args_summary(args: str) -> Any:
     return _scrub_sensitive(parsed)
 
 
-def _tool_result_payload(tool_call_id: str, tool_name: str, result: str) -> dict[str, Any]:
-    structured = _json_object(result)
-    status = "error" if result.startswith("错误：") else "success"
+def _delivery_error_payload(tool_call_id: str, tool_name: str, result: str) -> dict[str, Any]:
     return {
         "tool_call_id": tool_call_id,
         "tool_name": tool_name,
-        "status": status,
+        "status": "error",
         "summary": _summarize_tool_result(result),
-        "evidence": _list_field(structured, "evidence"),
-        "affected_resources": _list_field(structured, "affected_resources"),
-        "changed_entities": _list_field(structured, "changed_entities"),
+        "evidence": [],
+        "affected_resources": [],
+        "changed_entities": [],
     }
 
 
 def _summarize_tool_result(result: str) -> str:
     compact = " ".join(result.split())
     return compact[:500]
-
-
-def _json_object(raw: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _list_field(payload: dict[str, Any], key: str) -> list[Any]:
-    value = payload.get(key)
-    return value if isinstance(value, list) else []
 
 
 def _scrub_sensitive(value: Any) -> Any:

@@ -120,6 +120,12 @@ def _journal_shape_digest(raw: str) -> str:
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def journal_shape_digest(raw: str) -> str:
+    """Return the frozen Phase 1 shape digest without exposing payload contents."""
+
+    return _journal_shape_digest(raw)
+
+
 def _journal_value_shape(value: object, *, depth: int = 0) -> object:
     if depth >= 16:
         return {"type": "truncated"}

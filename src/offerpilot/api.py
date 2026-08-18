@@ -31,7 +31,6 @@ from offerpilot.ai.agent import (
     prepare_pending_action,
     resume_after_confirm,
     run_turn,
-    _journal_shape_digest,
 )
 from offerpilot.ai.deterministic_actions import (
     PilotAction,
@@ -74,7 +73,16 @@ from offerpilot.reliability.trace import (
     record_mock_interview_trace,
 )
 from offerpilot.ai.client import ConfiguredAIClient
-from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
+from offerpilot.ai.tool_runtime.context import ToolCapability, ToolExecutionContext
+from offerpilot.ai.tool_runtime.catalog import ToolCatalog
+from offerpilot.ai.tool_runtime.contracts import ToolExecutionRecord, ToolFailure, ToolSuccess
+from offerpilot.ai.tool_runtime.journal import journal_shape_digest as _journal_shape_digest
+from offerpilot.ai.tool_runtime.legacy import prepare_legacy_arguments
+from offerpilot.ai.tool_specs.catalog import (
+    MODEL_TOOL_CATALOG,
+    editable_fields_for_tool,
+)
+from offerpilot.ai.tool_specs.legacy import build_legacy_deterministic_catalog
 from offerpilot.ai.types import Message, ToolCall
 from offerpilot.agent_runtime.events import (
     ContextManifestInput,
@@ -293,6 +301,37 @@ from offerpilot.skills import SkillRegistryError, register_skill, skills_payload
 from offerpilot.sse import STREAM_VERSION, SseRun, format_sse, sse_headers
 
 _MOCK_INTERVIEW_TRACE_RUN_ID = uuid4().hex
+
+def _model_tool_context(
+    conversation: Any,
+    applications: Any,
+    events: Any,
+    notes: Any,
+    offers: Any,
+    resumes: Any,
+    jd_analyses: Any,
+    run_recorder: RunRecorder,
+) -> ToolExecutionContext:
+    current_bindings: dict[str, int | str] = {}
+    if str(conversation.context_type or "") == "application":
+        try:
+            application_id = int(str(conversation.context_ref or ""))
+        except ValueError:
+            application_id = 0
+        if application_id > 0:
+            current_bindings["application"] = application_id
+    return ToolExecutionContext(
+        applications=applications,
+        capabilities=frozenset(ToolCapability),
+        current_bindings=current_bindings,
+        events=events,
+        jd_analyses=jd_analyses,
+        notes=notes,
+        offers=offers,
+        resumes=resumes,
+        run_recorder=run_recorder,
+    )
+
 
 CHAT_AGENT_TIMEOUT_SECONDS = 120.0
 CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
@@ -1548,8 +1587,9 @@ def create_app(
         recorder: RunRecorder,
         pending: PendingAction,
         result: str,
+        succeeded: bool,
     ) -> None:
-        if result.startswith("错误："):
+        if not succeeded:
             event = EventInput(
                 event_type="tool.failed",
                 facts={
@@ -1584,7 +1624,7 @@ def create_app(
     ) -> tuple[
         dict[str, RunRecorder],
         Callable[[PendingAction, bool], None],
-        Callable[[PendingAction, str], None],
+        Callable[[PendingAction, str, bool], None],
     ]:
         holder: dict[str, RunRecorder] = {}
         confirmation_attempt_id = str(uuid4())
@@ -1614,10 +1654,10 @@ def create_app(
             if approved:
                 _record_journal_tool_start(recorder, effective_pending)
 
-        def result(effective_pending: PendingAction, value: str) -> None:
+        def result(effective_pending: PendingAction, value: str, succeeded: bool) -> None:
             recorder = holder.get("recorder")
             if recorder is not None:
-                _record_journal_tool_result(recorder, effective_pending, value)
+                _record_journal_tool_result(recorder, effective_pending, value, succeeded)
 
         return holder, attempt, result
 
@@ -2031,49 +2071,55 @@ def create_app(
         edited_args: dict[str, Any] | None,
         rejection_feedback: str,
         on_confirmation_attempt: Callable[[PendingAction, bool], None] | None = None,
-        on_tool_result: Callable[[PendingAction, str], None] | None = None,
+        on_tool_result: Callable[[PendingAction, str, bool], None] | None = None,
     ) -> JSONResponse | dict[str, Any]:
-        registry = offerpilot_tool_registry(
-            applications,
-            events,
-            notes,
-            offers,
-            resumes=resumes,
-            jd_analyses=jd_analyses,
-            application_jd_versions=application_jd_versions,
-            application_outcomes=application_outcomes,
+        legacy_catalog = build_legacy_deterministic_catalog(
+            application_jd_versions,
+            application_outcomes,
         )
-        tool = registry.get(pending.tool_name)
-        if tool is None:
+        adapter = legacy_catalog.resolve_server_loaded(pending)
+        if adapter is None:
             return error_response(409, "pending action is no longer available")
         try:
-            effective_pending = (
-                prepare_pending_action(pending, registry, edited_args) if approved else pending
-            )
+            if approved:
+                effective_args, human = prepare_legacy_arguments(
+                    adapter,
+                    pending.args,
+                    edited_args,
+                )
+                effective_pending = PendingAction(
+                    tool_call_id=pending.tool_call_id,
+                    tool_name=pending.tool_name,
+                    args=effective_args,
+                    human=human,
+                )
+            else:
+                effective_pending = pending
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
 
         if approved:
-            validator = tool.get("validate")
-            validation_error = str(validator(effective_pending.args) or "") if callable(validator) else ""
+            validation_error = adapter.validate(effective_pending.args)
             if validation_error:
                 return error_response(422, validation_error)
             if on_confirmation_attempt is not None:
                 on_confirmation_attempt(effective_pending, True)
             try:
-                result = str(tool["handler"](effective_pending.args))
+                result = adapter.execute(effective_pending.args)
+                succeeded = True
+                failure_code = ""
             except Exception as exc:
                 result = f"错误：{exc}"
+                succeeded = False
+                failure_code = str(exc).strip()
             if on_tool_result is not None:
-                on_tool_result(effective_pending, result)
-            succeeded = not result.startswith("错误：")
+                on_tool_result(effective_pending, result, succeeded)
             tool_message = Message(
                 role="tool",
                 content=result,
                 tool_call_id=effective_pending.tool_call_id,
             )
             if not succeeded:
-                failure_code = result.removeprefix("错误：").strip()
                 if failure_code in {
                     "application_jd_stale_current_version",
                     "application_jd_idempotency_conflict",
@@ -5245,33 +5291,38 @@ def create_app(
             *attachment_messages,
             *_stored_messages_to_ai(chat.list_messages(conversation_id)),
         ]
-        registry = offerpilot_tool_registry(
-            applications,
-            events,
-            notes,
-            offers,
-            resumes=resumes,
-            jd_analyses=jd_analyses,
-            application_jd_versions=application_jd_versions,
-        )
+        catalog = MODEL_TOOL_CATALOG
         _capture_initial_journal_context(
             run_recorder,
             conversation,
-            tool_names=tuple(registry),
+            tool_names=tuple(contract.name for contract in catalog.provider_contracts()),
         )
         try:
-            added, reply, pending = _run_chat_agent_with_timeout(
+            turn_result = _run_chat_agent_with_timeout(
                 lambda: run_turn(
                     model,
-                    registry,
+                    catalog,
                     history,
                     auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                     max_iter=DEFAULT_MAX_ITERATIONS,
                     checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
                     run_recorder=run_recorder,
+                    tool_context=_model_tool_context(
+                        conversation,
+                        applications,
+                        events,
+                        notes,
+                        offers,
+                        resumes,
+                        jd_analyses,
+                        run_recorder,
+                    ),
                 )
             )
+            added, reply, pending = turn_result
+            tool_records = turn_result.records
+            tool_failures = turn_result.failures
         except ChatAgentTimedOut:
             timeout_message = chat.append_message(
                 conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE
@@ -5290,9 +5341,9 @@ def create_app(
         except Exception as exc:
             _finish_journal(run_recorder, "failed", "provider_error")
             return _ai_provider_error(exc, resolved_data_dir)
-        added, forced_reply = _with_write_error_followup(added)
+        added, forced_reply = _with_write_error_followup(added, tool_records, tool_failures)
         reply = forced_reply or _user_facing_assistant_content(reply)
-        write_status, write_error = _write_outcome(added, _has_write_attempt(added, registry))
+        write_status, write_error = _write_outcome(tool_records, _has_write_attempt(added, catalog), tool_failures)
         if pending is not None:
             missing_question = _pending_action_missing_question(pending, applications)
             if missing_question:
@@ -5328,7 +5379,7 @@ def create_app(
             )
         persisted = _persist_ai_messages(chat, conversation_id, added)
         if forced_reply:
-            forced_pending = _pending_action_from_added_write_call(added, registry)
+            forced_pending = _pending_action_from_added_write_call(added, catalog)
             if forced_pending is not None:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         chat.clear_pending_action(conversation_id)
@@ -5491,15 +5542,7 @@ def create_app(
             *attachment_messages,
             *_stored_messages_to_ai(chat.list_messages(conversation_id)),
         ]
-        registry = offerpilot_tool_registry(
-            applications,
-            events,
-            notes,
-            offers,
-            resumes=resumes,
-            jd_analyses=jd_analyses,
-            application_jd_versions=application_jd_versions,
-        )
+        catalog = MODEL_TOOL_CATALOG
         run = SseRun(
             run_id=str(uuid4()),
             conversation_id=conversation_id,
@@ -5523,7 +5566,7 @@ def create_app(
         _capture_initial_journal_context(
             run_recorder,
             conversation,
-            tool_names=tuple(registry),
+            tool_names=tuple(contract.name for contract in catalog.provider_contracts()),
         )
 
         def emit(event: str, data: dict[str, Any] | None = None) -> str:
@@ -5543,10 +5586,10 @@ def create_app(
             yield emit("user_message_saved", {"role": "user"})
             yield emit("status", {"phase": "model_running", "label": "正在思考"})
             try:
-                added, reply, pending = yield from _run_chat_agent_with_sse_events(
+                turn_result = yield from _run_chat_agent_with_sse_events(
                     lambda event_sink, cancel_check: run_turn(
                         model,
-                        registry,
+                        catalog,
                         history,
                         auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                         max_iter=DEFAULT_MAX_ITERATIONS,
@@ -5555,9 +5598,22 @@ def create_app(
                         event_sink=event_sink,
                         cancel_check=cancel_check,
                         run_recorder=run_recorder,
+                        tool_context=_model_tool_context(
+                            conversation,
+                            applications,
+                            events,
+                            notes,
+                            offers,
+                            resumes,
+                            jd_analyses,
+                            run_recorder,
+                        ),
                     ),
                     emit,
                 )
+                added, reply, pending = turn_result
+                tool_records = turn_result.records
+                tool_failures = turn_result.failures
             except ChatRunCancelled:
                 _finish_journal(run_recorder, "cancelled", "cancelled")
                 return
@@ -5592,9 +5648,9 @@ def create_app(
                 )
                 return
 
-            added, forced_reply = _with_write_error_followup(added)
+            added, forced_reply = _with_write_error_followup(added, tool_records, tool_failures)
             reply = forced_reply or _user_facing_assistant_content(reply)
-            write_status, write_error = _write_outcome(added, _has_write_attempt(added, registry))
+            write_status, write_error = _write_outcome(tool_records, _has_write_attempt(added, catalog), tool_failures)
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
@@ -5643,7 +5699,7 @@ def create_app(
                 return
             persisted = _persist_ai_messages(chat, conversation_id, added)
             if forced_reply:
-                forced_pending = _pending_action_from_added_write_call(added, registry)
+                forced_pending = _pending_action_from_added_write_call(added, catalog)
                 if forced_pending is not None:
                     chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             chat.clear_pending_action(conversation_id)
@@ -5736,18 +5792,10 @@ def create_app(
             return model
         if not compare_digest(confirmation_token, _confirmation_token(pending)):
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
-        registry = offerpilot_tool_registry(
-            applications,
-            events,
-            notes,
-            offers,
-            resumes=resumes,
-            jd_analyses=jd_analyses,
-            application_jd_versions=application_jd_versions,
-        )
+        catalog = MODEL_TOOL_CATALOG
         try:
             effective_pending = (
-                prepare_pending_action(pending, registry, edited_args) if approved else pending
+                prepare_pending_action(pending, catalog, edited_args) if approved else pending
             )
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
@@ -5762,7 +5810,7 @@ def create_app(
         _capture_confirmation_journal_context(
             confirmation_recorder,
             conversation,
-            tool_names=tuple(registry),
+            tool_names=tuple(contract.name for contract in catalog.provider_contracts()),
         )
         if not approved:
             _record_journal_approval(
@@ -5802,9 +5850,10 @@ def create_app(
             action: PendingAction,
             result_approved: bool,
             tool_message: Message,
+            execution_record: ToolExecutionRecord[Any, Any] | None,
         ) -> None:
             try:
-                confirmation_result_sink(action, result_approved, tool_message)
+                confirmation_result_sink(action, result_approved, tool_message, execution_record)
             except Exception:
                 if confirmation_timed_out.is_set():
                     _abandon_journal_segment(confirmation_recorder)
@@ -5836,10 +5885,10 @@ def create_app(
                 confirmation_attempted.set()
 
         try:
-            added, reply, new_pending = _run_chat_agent_with_timeout(
+            turn_result = _run_chat_agent_with_timeout(
                 lambda: resume_after_confirm(
                     model,
-                    registry,
+                    catalog,
                     [
                         _chat_response_system_message(),
                         *([context_message] if context_message is not None else []),
@@ -5856,8 +5905,21 @@ def create_app(
                     confirmation_attempt_sink=start_confirmation_attempt,
                     cancel_check=confirmation_cancelled.is_set,
                     run_recorder=confirmation_recorder,
+                    tool_context=_model_tool_context(
+                        conversation,
+                        applications,
+                        events,
+                        notes,
+                        offers,
+                        resumes,
+                        jd_analyses,
+                        confirmation_recorder,
+                    ),
                 )
             )
+            added, reply, new_pending = turn_result
+            tool_records = turn_result.records
+            tool_failures = turn_result.failures
         except ChatAgentTimedOut:
             if confirmed_outcome.get("cas_lost"):
                 _abandon_journal_segment(confirmation_recorder)
@@ -5902,12 +5964,12 @@ def create_app(
         if confirmed_outcome.get("cas_lost"):
             _abandon_journal_segment(confirmation_recorder)
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
-        added, forced_reply = _with_write_error_followup(added)
+        added, forced_reply = _with_write_error_followup(added, tool_records, tool_failures)
         persisted_added = _without_persisted_confirmation_result(added, confirmed_outcome)
         reply = forced_reply or _user_facing_assistant_content(reply)
         forced_pending: PendingAction | None = None
         if forced_reply and new_pending is None:
-            forced_pending = _pending_action_from_added_write_call(added, registry)
+            forced_pending = _pending_action_from_added_write_call(added, catalog)
         if new_pending is not None:
             missing_question = _pending_action_missing_question(new_pending, applications)
             if missing_question:
@@ -5995,7 +6057,7 @@ def create_app(
         undo = (
             dict(confirmed_outcome.get("undo") or {})
             if confirmed_outcome
-            else _build_write_undo(effective_pending, added, undo_seed)
+            else _build_write_undo(effective_pending, _last_record(tool_records), undo_seed)
             if approved
             else {}
         )
@@ -6005,9 +6067,9 @@ def create_app(
                     chat.set_last_write_undo(conversation_id, undo)
                 else:
                     chat.clear_last_write_undo(conversation_id)
-            reply = _prepend_write_success(reply, effective_pending, added)
+            reply = _prepend_write_success(reply, effective_pending, tool_records)
         write_status, write_error = (
-            _write_outcome(added, attempted=True) if approved else ("cancelled", "")
+            _write_outcome(tool_records, attempted=True, failures=tool_failures) if approved else ("cancelled", "")
         )
         response_payload: dict[str, Any] = {
             "type": "message",
@@ -6140,18 +6202,10 @@ def create_app(
         if not compare_digest(confirmation_token, _confirmation_token(pending)):
             return stale_response()
 
-        registry = offerpilot_tool_registry(
-            applications,
-            events,
-            notes,
-            offers,
-            resumes=resumes,
-            jd_analyses=jd_analyses,
-            application_jd_versions=application_jd_versions,
-        )
+        catalog = MODEL_TOOL_CATALOG
         try:
             effective_pending = (
-                prepare_pending_action(pending, registry, edited_args) if approved else pending
+                prepare_pending_action(pending, catalog, edited_args) if approved else pending
             )
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
@@ -6167,7 +6221,7 @@ def create_app(
         _capture_confirmation_journal_context(
             confirmation_recorder,
             conversation,
-            tool_names=tuple(registry),
+            tool_names=tuple(contract.name for contract in catalog.provider_contracts()),
         )
         if not approved:
             _record_journal_approval(
@@ -6208,9 +6262,10 @@ def create_app(
             action: PendingAction,
             result_approved: bool,
             tool_message: Message,
+            execution_record: ToolExecutionRecord[Any, Any] | None,
         ) -> None:
             try:
-                confirmation_result_sink(action, result_approved, tool_message)
+                confirmation_result_sink(action, result_approved, tool_message, execution_record)
             except Exception:
                 if confirmation_timed_out.is_set():
                     _abandon_journal_segment(confirmation_recorder)
@@ -6256,10 +6311,10 @@ def create_app(
             else:
                 yield emit("status", {"phase": "thinking", "label": "正在根据你的反馈继续"})
             try:
-                added, reply, new_pending = yield from _run_chat_agent_with_sse_events(
+                turn_result = yield from _run_chat_agent_with_sse_events(
                     lambda event_sink, cancel_check: resume_after_confirm(
                         model,
-                        registry,
+                        catalog,
                         [
                             _chat_response_system_message(),
                             *([context_message] if context_message is not None else []),
@@ -6277,9 +6332,22 @@ def create_app(
                         confirmation_result_sink=persist_confirmation_result,
                         confirmation_attempt_sink=start_confirmation_attempt,
                         run_recorder=confirmation_recorder,
+                        tool_context=_model_tool_context(
+                            conversation,
+                            applications,
+                            events,
+                            notes,
+                            offers,
+                            resumes,
+                            jd_analyses,
+                            confirmation_recorder,
+                        ),
                     ),
                     emit,
                 )
+                added, reply, new_pending = turn_result
+                tool_records = turn_result.records
+                tool_failures = turn_result.failures
             except ChatRunCancelled:
                 cancel_confirmation_result()
                 _finish_journal(confirmation_recorder, "cancelled", "cancelled")
@@ -6421,12 +6489,12 @@ def create_app(
                     },
                 )
                 return
-            added, forced_reply = _with_write_error_followup(added)
+            added, forced_reply = _with_write_error_followup(added, tool_records, tool_failures)
             persisted_added = _without_persisted_confirmation_result(added, confirmed_outcome)
             reply = forced_reply or _user_facing_assistant_content(reply)
             forced_pending: PendingAction | None = None
             if forced_reply and new_pending is None:
-                forced_pending = _pending_action_from_added_write_call(added, registry)
+                forced_pending = _pending_action_from_added_write_call(added, catalog)
             if new_pending is not None:
                 missing_question = _pending_action_missing_question(new_pending, applications)
                 if missing_question:
@@ -6560,7 +6628,7 @@ def create_app(
             undo = (
                 dict(confirmed_outcome.get("undo") or {})
                 if confirmed_outcome
-                else _build_write_undo(effective_pending, added, undo_seed)
+                else _build_write_undo(effective_pending, _last_record(tool_records), undo_seed)
                 if approved
                 else {}
             )
@@ -6570,12 +6638,12 @@ def create_app(
                         chat.set_last_write_undo(conversation_id, undo)
                     else:
                         chat.clear_last_write_undo(conversation_id)
-                reply = _prepend_write_success(reply, effective_pending, added)
+                reply = _prepend_write_success(reply, effective_pending, tool_records)
             response = {"type": "message", "conversation_id": conversation_id, "message": reply}
             if undo:
                 response["undo"] = undo
             write_status, write_error = (
-                _write_outcome(added, attempted=True) if approved else ("cancelled", "")
+                _write_outcome(tool_records, attempted=True, failures=tool_failures) if approved else ("cancelled", "")
             )
             response["write_status"] = write_status
             if write_error:
@@ -9378,7 +9446,7 @@ def _confirmation_result_recorder(
     undo_seed: dict[str, Any],
 ) -> tuple[
     dict[str, Any],
-    Callable[[PendingAction, bool, Message], None],
+    Callable[[PendingAction, bool, Message, ToolExecutionRecord[Any, Any] | None], None],
     Callable[[], None],
     Callable[[], dict[str, Any] | None],
 ]:
@@ -9387,13 +9455,18 @@ def _confirmation_result_recorder(
     timed_out = False
     lock = Lock()
 
-    def record(effective_pending: PendingAction, approved: bool, tool_message: Message) -> None:
+    def record(
+        effective_pending: PendingAction,
+        approved: bool,
+        tool_message: Message,
+        execution_record: ToolExecutionRecord[Any, Any] | None,
+    ) -> None:
         with lock:
             if not active:
                 return
-            succeeded = approved and not tool_message.content.startswith("错误：")
+            succeeded = approved and _record_succeeded(execution_record)
             undo = (
-                _build_write_undo(effective_pending, [tool_message], undo_seed) if succeeded else {}
+                _build_write_undo(effective_pending, execution_record, undo_seed) if succeeded else {}
             )
             # Rejection never attempts a handler, so it preserves the previous undo. Every
             # approved sink call follows a handler attempt; errors are mutation-ambiguous and
@@ -10040,8 +10113,12 @@ _FIELD_FOLLOWUP_LABELS = {
 }
 
 
-def _with_write_error_followup(added: list[Message]) -> tuple[list[Message], str]:
-    followup = _write_error_followup(added)
+def _with_write_error_followup(
+    added: list[Message],
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+    failures: tuple[ToolFailure, ...],
+) -> tuple[list[Message], str]:
+    followup = _write_error_followup(records, failures)
     if not followup:
         return added, ""
     updated = [*added]
@@ -10058,11 +10135,15 @@ def _with_write_error_followup(added: list[Message]) -> tuple[list[Message], str
     return updated, followup
 
 
-def _write_error_followup(added: list[Message]) -> str:
-    for message in reversed(added):
-        if message.role != "tool" or not message.content.startswith("错误："):
-            continue
-        error = message.content.removeprefix("错误：").strip()
+def _write_error_followup(
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+    failures: tuple[ToolFailure, ...],
+) -> str:
+    recorded_failures = tuple(
+        record.outcome for record in records if isinstance(record.outcome, ToolFailure)
+    )
+    for failure in reversed((*recorded_failures, *failures)):
+        error = failure.compatibility_detail
         if error.startswith("add_note date is unclear"):
             return "这次复盘的具体面试日期还不明确。请告诉我具体日期，或回复“日期待定”确认先按待定保存。"
         if error.startswith("add_note requires company"):
@@ -10213,10 +10294,14 @@ def _pending_action_details(
     }
 
 
-def _prepend_write_success(reply: str, pending: PendingAction, added: list[Message]) -> str:
+def _prepend_write_success(
+    reply: str,
+    pending: PendingAction,
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+) -> str:
     if pending.tool_name not in {"create_application", "add_note", "create_application_event"}:
         return reply
-    summary = _write_success_summary(pending.tool_name, added)
+    summary = _write_success_summary(pending.tool_name, records)
     if not summary:
         return reply
     if summary in reply:
@@ -10224,8 +10309,11 @@ def _prepend_write_success(reply: str, pending: PendingAction, added: list[Messa
     return f"{summary}\n\n{reply}".strip()
 
 
-def _write_success_summary(tool_name: str, added: list[Message]) -> str:
-    payload = _last_successful_tool_payload(added)
+def _write_success_summary(
+    tool_name: str,
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+) -> str:
+    payload = _last_successful_tool_payload(records)
     if not payload:
         return ""
     if tool_name == "create_application":
@@ -10249,25 +10337,21 @@ def _write_success_summary(tool_name: str, added: list[Message]) -> str:
     return ""
 
 
-def _last_successful_tool_payload(added: list[Message]) -> dict[str, Any]:
-    for message in reversed(added):
-        if message.role != "tool" or not message.content or message.content.startswith("错误："):
-            continue
-        try:
-            parsed = json.loads(message.content)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
+def _last_successful_tool_payload(
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+) -> dict[str, Any]:
+    for record in reversed(records):
+        if isinstance(record.outcome, ToolSuccess) and isinstance(record.outcome.result, dict):
+            return cast(dict[str, Any], record.outcome.result)
     return {}
 
 
-def _write_tool_names(registry: dict[str, dict[str, Any]]) -> set[str]:
-    return {name for name, tool in registry.items() if bool(tool.get("write"))}
+def _write_tool_names(catalog: ToolCatalog) -> set[str]:
+    return set(catalog.write_names())
 
 
-def _has_write_attempt(added: list[Message], registry: dict[str, dict[str, Any]]) -> bool:
-    write_tool_names = _write_tool_names(registry)
+def _has_write_attempt(added: list[Message], catalog: ToolCatalog) -> bool:
+    write_tool_names = _write_tool_names(catalog)
     return any(
         message.role == "assistant"
         and any(tool_call.name in write_tool_names for tool_call in message.tool_calls)
@@ -10275,13 +10359,20 @@ def _has_write_attempt(added: list[Message], registry: dict[str, dict[str, Any]]
     )
 
 
-def _write_outcome(added: list[Message], attempted: bool) -> tuple[str, str]:
+def _write_outcome(
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+    attempted: bool,
+    failures: tuple[ToolFailure, ...] = (),
+) -> tuple[str, str]:
     if not attempted:
         return "none", ""
-    for message in reversed(added):
-        if message.role == "tool" and message.content.startswith("错误："):
-            return "failed", message.content.removeprefix("错误：").strip()
-    payload = _last_successful_tool_payload(added)
+    record = _last_record(records)
+    if record is not None and isinstance(record.outcome, ToolFailure):
+        return "failed", record.outcome.compatibility_detail or record.outcome.code
+    if failures:
+        failure = failures[-1]
+        return "failed", failure.compatibility_detail or failure.code
+    payload = _last_successful_tool_payload(records)
     if payload:
         if payload.get("deleted") is False:
             return "failed", "目标记录不存在"
@@ -10290,9 +10381,9 @@ def _write_outcome(added: list[Message], attempted: bool) -> tuple[str, str]:
 
 
 def _pending_action_from_added_write_call(
-    added: list[Message], registry: dict[str, dict[str, Any]]
+    added: list[Message], catalog: ToolCatalog
 ) -> PendingAction | None:
-    write_tool_names = _write_tool_names(registry)
+    write_tool_names = _write_tool_names(catalog)
     for message in reversed(added):
         if message.role != "assistant" or not message.tool_calls:
             continue
@@ -10329,10 +10420,10 @@ def _undo_seed_for_pending(
 
 def _build_write_undo(
     pending: PendingAction,
-    added: list[Message],
+    record: ToolExecutionRecord[Any, Any] | None,
     seed: dict[str, Any],
 ) -> dict[str, Any]:
-    payload = _last_successful_tool_payload(added)
+    payload = _record_payload(record)
     if pending.tool_name == "update_application_status" and seed:
         return {
             "kind": "update_application_status",
@@ -10375,6 +10466,23 @@ def _build_write_undo(
                 "expected_after": _created_record_fingerprint("add_note", payload),
             }
     return {}
+
+
+def _record_succeeded(record: ToolExecutionRecord[Any, Any] | None) -> bool:
+    return record is not None and isinstance(record.outcome, ToolSuccess)
+
+
+def _record_payload(record: ToolExecutionRecord[Any, Any] | None) -> dict[str, Any]:
+    if record is None or not isinstance(record.outcome, ToolSuccess):
+        return {}
+    result = record.outcome.result
+    return cast(dict[str, Any], result) if isinstance(result, dict) else {}
+
+
+def _last_record(
+    records: tuple[ToolExecutionRecord[Any, Any], ...],
+) -> ToolExecutionRecord[Any, Any] | None:
+    return records[-1] if records else None
 
 
 _CREATED_RECORD_FINGERPRINT_FIELDS = {

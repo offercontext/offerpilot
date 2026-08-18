@@ -6,13 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from conftest import wait_for_extraction
 
-from offerpilot.ai.tools import offerpilot_tool_registry
+from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG
 from offerpilot.api import create_app
 from offerpilot.db import init_database
-from offerpilot.repositories.applications import ApplicationsRepository
-from offerpilot.repositories.application_events import ApplicationEventsRepository
-from offerpilot.repositories.notes import NotesRepository
-from offerpilot.repositories.offers import OffersRepository
 
 
 @pytest.fixture
@@ -79,20 +75,7 @@ def test_legacy_wiki_routes_return_404(client):
         )
 
 
-def test_offerpilot_tool_registry_has_no_knowledge_tools(tmp_path):
-    session_factory = init_database(tmp_path / "data.db")
-    applications = ApplicationsRepository(session_factory)
-    events = ApplicationEventsRepository(session_factory)
-    notes = NotesRepository(session_factory)
-    offers = OffersRepository(session_factory)
-
-    registry = offerpilot_tool_registry(
-        applications=applications,
-        events=events,
-        notes=notes,
-        offers=offers,
-    )
-
+def test_model_tool_catalog_has_no_knowledge_tools():
     forbidden = {
         "add_to_wiki",
         "search_wiki",
@@ -103,7 +86,8 @@ def test_offerpilot_tool_registry_has_no_knowledge_tools(tmp_path):
         "update_knowledge_document",
         "delete_knowledge_document",
     }
-    assert not (forbidden & set(registry))
+    names = {contract.name for contract in MODEL_TOOL_CATALOG.provider_contracts()}
+    assert not (forbidden & names)
 
 
 def test_knowledge_legacy_tables_all_dropped_after_init(tmp_path):

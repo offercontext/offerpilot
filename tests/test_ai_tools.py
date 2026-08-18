@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
-from offerpilot.ai.tools import (
+from tool_pipeline.compat_registry import (
     EVENT_TYPES,
     OFFER_STATUSES,
     application_tool_registry,
@@ -263,19 +263,17 @@ def test_application_write_tools_are_marked_and_mutate_when_executed(tmp_path):
     assert repo.get(created.id).status == "offer"  # type: ignore[union-attr]
 
 
-def test_application_status_tool_normalizes_legacy_status(tmp_path):
+def test_application_status_tool_rejects_legacy_status_outside_provider_schema(tmp_path):
     repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
     created = repo.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
     registry = application_tool_registry(repo)
 
-    updated = json.loads(
+    with pytest.raises(ValueError, match="invalid application status"):
         registry["update_application_status"]["handler"](
             json.dumps({"id": created.id, "status": "assessment"})
         )
-    )
 
-    assert updated["status"] == "written_test"
-    assert repo.get(created.id).status == "written_test"  # type: ignore[union-attr]
+    assert repo.get(created.id).status == "applied"  # type: ignore[union-attr]
 
 
 def test_application_status_tool_rejects_invalid_status(tmp_path):

@@ -60,6 +60,7 @@ def prepare_call(
     pending_identity: object | None = None,
     pending_action_revision: int | None = None,
     stage_sink: StageSink | None = None,
+    record_proposal: bool = True,
 ) -> PrepareResult:
     spec = catalog.resolve(call.name)
     if spec is None:
@@ -71,7 +72,8 @@ def prepare_call(
             )
         )
 
-    project_tool_proposed(context.run_recorder, spec, call)
+    if record_proposal:
+        project_tool_proposed(context.run_recorder, spec, call)
     _stage(stage_sink, "parse")
     try:
         parsed = parse_arguments(call.args)

@@ -5,6 +5,7 @@ import json
 import os
 import time
 import uuid
+from copy import deepcopy
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -12,6 +13,7 @@ from urllib.parse import urlparse
 from litellm import completion
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
+from offerpilot.ai.tool_runtime.contracts import ProviderToolContract
 from offerpilot.config import AIProviderProfile, Config
 
 
@@ -37,7 +39,7 @@ class ConfiguredAIClient:
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
     ) -> Assistant:
         last_error: Exception | None = None
@@ -97,7 +99,7 @@ class ConfiguredAIClient:
     def stream_complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         on_delta: Callable[[str], None],
     ) -> Assistant:
         last_error: Exception | None = None
@@ -139,7 +141,7 @@ class ConfiguredAIClient:
         self,
         provider: AIProviderProfile,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
     ) -> Assistant:
         payload: dict[str, Any] = {
@@ -184,7 +186,7 @@ class ConfiguredAIClient:
         self,
         provider: AIProviderProfile,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         on_delta: Callable[[str], None],
     ) -> Assistant:
         payload: dict[str, Any] = {
@@ -539,18 +541,5 @@ def _provider_blocks(message: Any) -> dict[str, Any]:
     return blocks
 
 
-def _openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
-    function = tool.get("function")
-    if tool.get("type") == "function" and isinstance(function, dict):
-        return tool
-    schema = tool.get("schema") or {"type": "object", "properties": {}}
-    if isinstance(schema, str):
-        schema = json.loads(schema)
-    return {
-        "type": "function",
-        "function": {
-            "name": tool["name"],
-            "description": tool.get("description", ""),
-            "parameters": schema,
-        },
-    }
+def _openai_tool(tool: ProviderToolContract) -> dict[str, Any]:
+    return deepcopy(dict(tool.payload))

@@ -1,6 +1,10 @@
 import json
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
 from threading import Barrier, Lock
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -8,16 +12,152 @@ import pytest
 import offerpilot.ai.agent as agent_module
 from offerpilot.ai.agent import (
     ChatRunCancelled,
-    LangGraphAgentRunner,
+    LangGraphAgentRunner as ProductionLangGraphAgentRunner,
     PendingAction,
     StalePendingActionError,
-    prepare_pending_action,
-    resume_after_confirm,
-    run_turn,
+    prepare_pending_action as production_prepare_pending_action,
+    resume_after_confirm as production_resume_after_confirm,
+    run_turn as production_run_turn,
+)
+from offerpilot.ai.tool_runtime.catalog import ToolCatalog
+from offerpilot.ai.tool_runtime.context import ToolCapability, ToolExecutionContext
+from offerpilot.ai.tool_runtime.contracts import (
+    ProviderToolContract,
+    ToolExceptionMapping,
+    ToolFailure,
+    ToolSpec,
 )
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.agent_runtime.events import ContextManifestInput
 from offerpilot.agent_runtime.journal import EventInput
+from offerpilot.agent_runtime.journal import NullRunRecorder
+from offerpilot.db import init_database
+from offerpilot.repositories.application_events import ApplicationEventsRepository
+from offerpilot.repositories.applications import ApplicationsRepository
+from offerpilot.repositories.jd import JDAnalysesRepository
+from offerpilot.repositories.notes import NotesRepository
+from offerpilot.repositories.offers import OffersRepository
+from offerpilot.repositories.resumes import ResumesRepository
+
+
+_TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="offerpilot-agent-tests-"))
+_TEST_SESSIONS = init_database(_TEST_DATA_DIR / "agent.db")
+
+
+def _test_runtime(registry: dict[str, dict[str, Any]]) -> tuple[ToolCatalog, ToolExecutionContext]:
+    specs = []
+    names = []
+    for name, tool in registry.items():
+        if tool.get("model_visible", True) is False:
+            continue
+        names.append(name)
+        schema = tool.get("schema") or {"type": "object", "properties": {}}
+        description = str(tool.get("description") or name)
+        contract = ProviderToolContract(
+            payload={"type": "function", "function": {"name": name, "description": description, "parameters": schema}},
+            name=name,
+            description=description,
+            parameters=schema,
+        )
+        handler = tool.get("handler") or (lambda args: "{}")
+        validate = tool.get("validate")
+
+        def decoder(values: Any) -> dict[str, Any]:
+            return dict(values)
+
+        def executor(args: dict[str, Any], context: Any, handler: Any = handler) -> str:
+            del context
+            return str(handler(json.dumps(args, ensure_ascii=False, separators=(",", ":"))))
+
+        def preflight(args: dict[str, Any], context: Any, validate: Any = validate) -> ToolFailure | None:
+            del context
+            if not callable(validate):
+                return None
+            try:
+                detail = str(validate(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or "")
+            except Exception:
+                detail = "工具参数验证失败，请检查后重试。"
+            return ToolFailure("validation_error", "test_validation", detail) if detail else None
+
+        describe = tool.get("describe")
+
+        def confirmation_description(args: dict[str, Any], describe: Any = describe, name: str = name) -> str:
+            if not callable(describe):
+                return ""
+            return str(describe(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or name)
+
+        is_write = bool(tool.get("write"))
+        specs.append(
+            ToolSpec(
+                contract=contract,
+                kind="write" if is_write else "read",
+                decoder=decoder,
+                executor=executor,
+                confirmation_policy="required" if is_write else "none",
+                editable_fields=tuple(tool.get("editable_fields") or ()),
+                preflight=preflight if callable(validate) else None,
+                mutable_validator=preflight if callable(validate) else None,
+                declared_failure_categories=frozenset({"validation_error", "internal_error"}),
+                exception_map=(ToolExceptionMapping(Exception, "internal_error", "test_handler_error", str),),
+                success_renderer=lambda result: str(result),
+                confirmation_description=confirmation_description,
+            )
+        )
+    catalog = ToolCatalog(specs, expected_names=names)
+    context = ToolExecutionContext(
+        applications=ApplicationsRepository(_TEST_SESSIONS),
+        capabilities=frozenset(ToolCapability),
+        current_bindings={},
+        events=ApplicationEventsRepository(_TEST_SESSIONS),
+        jd_analyses=JDAnalysesRepository(_TEST_SESSIONS),
+        notes=NotesRepository(_TEST_SESSIONS),
+        offers=OffersRepository(_TEST_SESSIONS),
+        resumes=ResumesRepository(_TEST_SESSIONS),
+        run_recorder=NullRunRecorder(),
+    )
+    return catalog, context
+
+
+class LangGraphAgentRunner:
+    def __init__(self, model: Any, registry: dict[str, dict[str, Any]], **kwargs: Any) -> None:
+        catalog, context = _test_runtime(registry)
+        if kwargs.get("run_recorder") is not None:
+            context = replace(context, run_recorder=kwargs["run_recorder"])
+        self._inner = ProductionLangGraphAgentRunner(model, catalog, context, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "_inner" or "_inner" not in self.__dict__:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._inner, name, value)
+
+
+def run_turn(model: Any, registry: dict[str, dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
+    catalog, context = _test_runtime(registry)
+    if kwargs.get("run_recorder") is not None:
+        context = replace(context, run_recorder=kwargs["run_recorder"])
+    return production_run_turn(model, catalog, *args, tool_context=context, **kwargs)
+
+
+def resume_after_confirm(model: Any, registry: dict[str, dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
+    catalog, context = _test_runtime(registry)
+    if kwargs.get("run_recorder") is not None:
+        context = replace(context, run_recorder=kwargs["run_recorder"])
+    return production_resume_after_confirm(model, catalog, *args, tool_context=context, **kwargs)
+
+
+def prepare_pending_action(pending: PendingAction, registry: dict[str, dict[str, Any]], edits: Any) -> PendingAction:
+    catalog, _ = _test_runtime(registry)
+    prepared = production_prepare_pending_action(pending, catalog, edits)
+    validate = (registry.get(pending.tool_name) or {}).get("validate")
+    if callable(validate):
+        detail = str(validate(prepared.args) or "")
+        if detail:
+            raise ValueError(detail)
+    return prepared
 
 
 class RecordingRunRecorder:
@@ -160,7 +300,7 @@ def test_agent_hides_internal_jd_tool_but_preserves_other_model_tools():
         auto_approve=False,
     )
 
-    assert [tool["name"] for tool in model.tools[0]] == [
+    assert [tool.name for tool in model.tools[0]] == [
         "list_applications",
         "update_application_status",
     ]
@@ -834,7 +974,12 @@ def test_checkpoint_rejects_non_finite_overflow_args(overflow_source):
         ),
         registry,
     )
-    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    added, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    if overflow_source == "original":
+        assert pending is None
+        assert any(message.role == "tool" for message in added)
+        assert calls == []
+        return
     assert pending is not None
     if overflow_source == "effective":
         pending = PendingAction(
@@ -1452,14 +1597,14 @@ def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path
             auto_approve=False,
             checkpoint_path=checkpoint_path,
             thread_id="conversation:result-sink",
-            confirmation_result_sink=lambda effective, approved, message: outcomes.append(
-                (effective, approved, message)
+            confirmation_result_sink=lambda effective, approved, message, record: outcomes.append(
+                (effective, approved, message, record)
             ),
         )
 
     assert len(calls) == 1
     assert len(outcomes) == 1
-    effective, approved, message = outcomes[0]
+    effective, approved, message, record = outcomes[0]
     assert effective.tool_call_id == stored_pending.tool_call_id
     assert effective.tool_name == stored_pending.tool_name
     assert json.loads(effective.args) == json.loads(stored_pending.args)
@@ -1467,6 +1612,7 @@ def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path
     assert message.role == "tool"
     assert message.tool_call_id == stored_pending.tool_call_id
     assert message.content == '{"ok":true}'
+    assert record is not None
 
 
 def test_confirmation_result_sink_records_approved_tool_error():
@@ -1481,19 +1627,20 @@ def test_confirmation_result_sink_records_approved_tool_error():
         _pending(),
         approved=True,
         auto_approve=False,
-        confirmation_result_sink=lambda effective, approved, message: outcomes.append(
-            (effective, approved, message)
+        confirmation_result_sink=lambda effective, approved, message, record: outcomes.append(
+            (effective, approved, message, record)
         ),
     )
 
     assert len(outcomes) == 1
-    effective, approved, message = outcomes[0]
+    effective, approved, message, record = outcomes[0]
     assert effective.tool_call_id == _pending().tool_call_id
     assert effective.tool_name == _pending().tool_name
     assert json.loads(effective.args) == json.loads(_pending().args)
     assert approved is True
     assert message.content == "错误：write failed"
     assert added[0] == message
+    assert record is not None
 
 
 @pytest.mark.parametrize("use_checkpoint", [False, True])
@@ -1855,10 +2002,10 @@ def test_journal_records_legacy_tool_error_without_changing_agent_result():
     _, reply, pending = run_turn(
         model,
         {
-            "list_applications": {
-                "write": False,
-                "handler": lambda _args: "错误：legacy failure",
-            }
+                "list_applications": {
+                    "write": False,
+                    "handler": lambda _args: (_ for _ in ()).throw(ValueError("legacy failure")),
+                }
         },
         [],
         auto_approve=False,
