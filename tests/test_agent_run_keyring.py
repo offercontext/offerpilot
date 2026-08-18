@@ -1,7 +1,6 @@
 import base64
 import json
 import os
-import stat
 import threading
 import time
 from pathlib import Path
@@ -49,12 +48,18 @@ def test_invalid_existing_key_disables_journal(tmp_path: Path) -> None:
     assert load_or_create_journal_key(tmp_path) is None
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are not enforced on Windows")
 def test_posix_key_file_is_owner_only(tmp_path: Path) -> None:
-    domain = load_or_create_journal_key(tmp_path, platform_name="posix")
+    calls: list[tuple[Path, int]] = []
+    domain = load_or_create_journal_key(
+        tmp_path,
+        platform_name="posix",
+        chmod_file=lambda path, mode: calls.append((path, mode)),
+    )
 
     assert domain is not None
-    assert stat.S_IMODE((tmp_path / JOURNAL_KEY_FILENAME).stat().st_mode) == 0o600
+    assert len(calls) == 2
+    assert all(mode == 0o600 for _, mode in calls)
+    assert calls[-1][0] == tmp_path.resolve() / JOURNAL_KEY_FILENAME
 
 
 def test_windows_key_inherits_data_directory_acl_without_posix_chmod(tmp_path: Path) -> None:
