@@ -897,7 +897,7 @@ def test_smoke_database_disposal_waits_before_engine_disposal(monkeypatch, tmp_p
     assert calls == [10, None]
 
 
-def test_smoke_database_disposal_orders_engines_after_worker_stop():
+def test_smoke_database_disposal_orders_engine_after_worker_stop():
     events: list[str] = []
 
     class _Runtime:
@@ -915,10 +915,9 @@ def test_smoke_database_disposal_orders_engines_after_worker_stop():
     _dispose_smoke_app_database(SimpleNamespace(state=SimpleNamespace(
         knowledge_runtime=_Runtime(),
         db_engine=_Engine(),
-        journal_db_engine=_Engine(),
     )))
 
-    assert events == ["stop:10", "dispose", "dispose"]
+    assert events == ["stop:10", "dispose"]
 
 
 def test_smoke_database_disposal_never_disposes_live_worker():
