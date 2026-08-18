@@ -4752,17 +4752,25 @@ def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert sum(message["role"] == "tool" for message in stored) == 1
-    runs, _, _ = _journal_rows(tmp_path)
-    assert len(runs) == 1
-    assert runs[0].status == "completed"
-    trace = reconstruct_agent_run(
-        AgentRunRepository(journal_session_factory_for_data_dir(tmp_path)),
-        runs[0].id,
-        as_of=datetime.now(timezone.utc),
-        stale_after=None,
-    )
+    deadline = time.monotonic() + 2
+    while True:
+        runs, _, _ = _journal_rows(tmp_path)
+        assert len(runs) == 1
+        trace = reconstruct_agent_run(
+            AgentRunRepository(journal_session_factory_for_data_dir(tmp_path)),
+            runs[0].id,
+            as_of=datetime.now(timezone.utc),
+            stale_after=None,
+        )
+        if runs[0].status == "completed" and "recording_degraded" in trace.anomalies:
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                "background confirmation Journal did not converge to durable degraded state: "
+                f"status={runs[0].status!r}, anomalies={trace.anomalies!r}"
+            )
+        time.sleep(0.01)
     assert trace.completion_status == "terminal"
-    assert "recording_degraded" in trace.anomalies
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])

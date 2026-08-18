@@ -2,6 +2,7 @@ from typing import Any
 
 from offerpilot.ai import client as ai_client
 from offerpilot.ai.client import ConfiguredAIClient
+from offerpilot.ai.tool_runtime.contracts import ProviderToolContract
 from offerpilot.ai.types import Message, ToolCall
 from offerpilot.config import AIProviderProfile, Config
 
@@ -70,7 +71,7 @@ def test_reasoning_content_round_trips_for_thinking_models(monkeypatch):
     assert assistant.provider_blocks == {"reasoning_content": "looked up the application"}
 
 
-def test_client_accepts_openai_wrapped_tool_schema(monkeypatch):
+def test_client_preserves_provider_tool_contract_envelope(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_completion(**kwargs: Any) -> dict[str, Any]:
@@ -88,7 +89,14 @@ def test_client_accepts_openai_wrapped_tool_schema(monkeypatch):
         },
     }
 
-    client.complete([Message(role="user", content="analyse")], [tool])
+    contract = ProviderToolContract(
+        payload=tool,
+        name="submit_analysis",
+        description="Submit analysis.",
+        parameters={"type": "object", "properties": {}},
+    )
+
+    client.complete([Message(role="user", content="analyse")], [contract])
 
     assert captured["tools"] == [tool]
 
