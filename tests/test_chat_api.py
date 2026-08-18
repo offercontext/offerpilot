@@ -7,9 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.ai.agent import PendingAction, StalePendingActionError
+from offerpilot.agent_runtime.journal import NullRunRecorderFactory
 from offerpilot.api import (
     _has_write_attempt,
     _stored_messages_to_ai,
@@ -20,6 +22,9 @@ from offerpilot.api import (
 from offerpilot.config import Config, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
+    AgentContextSnapshot,
+    AgentEvent,
+    AgentRun,
     ApplicationMaterialKit,
     JDAnalysis,
     Question,
@@ -28,6 +33,24 @@ from offerpilot.models import (
 )
 from offerpilot.repositories.applications import ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
+
+
+def _journal_rows(tmp_path):
+    factory = session_factory_for_data_dir(tmp_path)
+    with factory() as session:
+        runs = list(session.scalars(select(AgentRun).order_by(AgentRun.started_at, AgentRun.id)))
+        events = list(session.scalars(select(AgentEvent).order_by(AgentEvent.run_id, AgentEvent.seq)))
+        snapshots = list(
+            session.scalars(
+                select(AgentContextSnapshot).order_by(
+                    AgentContextSnapshot.run_id,
+                    AgentContextSnapshot.created_at,
+                )
+            )
+        )
+        for row in [*runs, *events, *snapshots]:
+            session.expunge(row)
+    return runs, events, snapshots
 
 
 class ScriptedModel:
@@ -132,6 +155,255 @@ class CountingFailingModel:
     def complete(self, messages, tools):
         self.calls += 1
         raise AssertionError("deterministic Pilot JD flow must not call a model")
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        ({"message": "", "conversation_id": 0}, 400),
+        ({"message": "hello", "conversation_id": 999999}, 404),
+    ],
+)
+def test_chat_ingress_rejection_does_not_create_journal_run(
+    tmp_path, payload, expected_status
+):
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=ScriptedModel([Assistant(content="unused")]),
+        )
+    )
+
+    response = client.post("/api/chat", json=payload)
+
+    assert response.status_code == expected_status
+    assert _journal_rows(tmp_path) == ([], [], [])
+
+
+def test_chat_sync_records_complete_journal_lifecycle(tmp_path):
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=ScriptedModel([Assistant(content="journal reply")]),
+            title_model=ScriptedModel([Assistant(content="title")]),
+        )
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "hello", "conversation_id": 0},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "journal reply"
+    runs, events, snapshots = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    assert runs[0].input_message_id is not None
+    assert [event.event_type for event in events] == [
+        "run.started",
+        "segment.started",
+        "route.selected",
+        "context.captured",
+        "context.captured",
+        "model.requested",
+        "model.completed",
+        "assistant.persisted",
+        "run.completed",
+        "segment.finished",
+    ]
+    assert [snapshot.snapshot_kind for snapshot in snapshots] == ["initial", "model_input"]
+
+
+def test_chat_stream_records_journal_without_changing_sse_identity(tmp_path):
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=StreamingModel(),
+            title_model=ScriptedModel([Assistant(content="title")]),
+        )
+    )
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"message": "hello", "conversation_id": 0},
+    )
+
+    assert response.status_code == 200
+    sse_events = _parse_sse_events(response.text)
+    sse_run_ids = {event["data"]["run_id"] for event in sse_events}
+    assert len(sse_run_ids) == 1
+    runs, events, snapshots = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    assert runs[0].id not in sse_run_ids
+    assert [event.seq for event in events] == list(range(1, len(events) + 1))
+    assert [snapshot.snapshot_kind for snapshot in snapshots] == ["initial", "model_input"]
+
+
+def test_deterministic_action_records_waiting_run_without_model_events(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师"},
+    ).json()
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：职位：后端工程师",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    runs, events, snapshots = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "waiting_confirmation"
+    pending = ChatRepository(session_factory_for_data_dir(tmp_path)).get_pending_action(
+        response.json()["conversation_id"]
+    )
+    assert pending is not None
+    assert runs[0].waiting_tool_call_id == pending.tool_call_id
+    assert not any(event.event_type.startswith("model.") for event in events)
+    assert [snapshot.snapshot_kind for snapshot in snapshots] == ["initial"]
+    assert model.calls == 0
+
+
+def test_deterministic_pending_replay_uses_original_journal_run(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师"},
+    ).json()
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：职位：后端工程师",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    replay = client.post(
+        "/api/chat",
+        json={
+            "message": "再次展示",
+            "conversation_id": first.json()["conversation_id"],
+            "pilot_action": {"type": "application_jd_save", "jdText": "另一份内容"},
+        },
+    )
+
+    assert replay.status_code == 200
+    runs, events, _ = _journal_rows(tmp_path)
+    assert len(runs) == 1
+    assert runs[0].status == "waiting_confirmation"
+    segment_starts = [event for event in events if event.event_type == "segment.started"]
+    assert len(segment_starts) == 2
+    assert json.loads(segment_starts[-1].payload_json)["facts"]["request_kind"] == "pending_replay"
+    assert json.loads(events[-1].payload_json)["facts"]["outcome"] == "noop"
+
+
+def test_arbitrary_context_strings_never_enter_journal_storage(tmp_path):
+    context_type_canary = "private-context-type-canary"
+    context_ref_canary = "private-context-ref-canary"
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=ScriptedModel([Assistant(content="done")]),
+            title_model=ScriptedModel([Assistant(content="title")]),
+        )
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "hello",
+            "conversation_id": 0,
+            "context_type": context_type_canary,
+            "context_ref": context_ref_canary,
+        },
+    )
+
+    assert response.status_code == 200
+    runs, events, snapshots = _journal_rows(tmp_path)
+    journal_text = "\n".join(
+        [
+            *(str(value) for run in runs for value in run.__dict__.values()),
+            *(event.payload_json for event in events),
+            *(snapshot.manifest_json for snapshot in snapshots),
+        ]
+    )
+    assert context_type_canary not in journal_text
+    assert context_ref_canary not in journal_text
+
+
+class ExplodingRunRecorderFactory:
+    diagnostics = []
+
+    def start_run(self, command):
+        del command
+        raise RuntimeError("journal create failed")
+
+    def resume_waiting_run(self, conversation_id, waiting_tool_call_id, command):
+        del conversation_id, waiting_tool_call_id, command
+        raise RuntimeError("journal lookup failed")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [NullRunRecorderFactory(), ExplodingRunRecorderFactory()],
+    ids=["disabled", "create-failure"],
+)
+def test_journal_disabled_or_create_failure_preserves_chat_behavior(tmp_path, factory):
+    control_dir = tmp_path / "control"
+    candidate_dir = tmp_path / "candidate"
+    control_model = CapturingScriptedModel([Assistant(content="same reply")])
+    candidate_model = CapturingScriptedModel([Assistant(content="same reply")])
+    control = TestClient(
+        create_app(
+            data_dir=control_dir,
+            chat_model=control_model,
+            title_model=ScriptedModel([Assistant(content="title")]),
+        )
+    )
+    candidate = TestClient(
+        create_app(
+            data_dir=candidate_dir,
+            chat_model=candidate_model,
+            title_model=ScriptedModel([Assistant(content="title")]),
+            run_recorder_factory=factory,
+        )
+    )
+
+    control_response = control.post(
+        "/api/chat", json={"message": "hello", "conversation_id": 0}
+    )
+    candidate_response = candidate.post(
+        "/api/chat", json={"message": "hello", "conversation_id": 0}
+    )
+
+    assert candidate_response.status_code == control_response.status_code
+    assert candidate_response.json() == control_response.json()
+    control_messages = ChatRepository(
+        session_factory_for_data_dir(control_dir)
+    ).list_messages(1)
+    candidate_messages = ChatRepository(
+        session_factory_for_data_dir(candidate_dir)
+    ).list_messages(1)
+    assert [
+        (message.role, message.content, message.tool_calls, message.tool_call_id)
+        for message in candidate_messages
+    ] == [
+        (message.role, message.content, message.tool_calls, message.tool_call_id)
+        for message in control_messages
+    ]
+    assert len(candidate_model.calls) == len(control_model.calls) == 1
 
 
 def test_deterministic_pilot_jd_action_creates_confirmation_without_ai(tmp_path):

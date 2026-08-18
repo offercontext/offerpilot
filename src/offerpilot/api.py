@@ -31,6 +31,7 @@ from offerpilot.ai.agent import (
     prepare_pending_action,
     resume_after_confirm,
     run_turn,
+    _journal_shape_digest,
 )
 from offerpilot.ai.deterministic_actions import (
     PilotAction,
@@ -75,7 +76,21 @@ from offerpilot.reliability.trace import (
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
-from offerpilot.agent_runtime.keyring import JOURNAL_KEY_FILENAME
+from offerpilot.agent_runtime.events import (
+    ContextManifestInput,
+    normalize_context_identity,
+    prepare_event,
+)
+from offerpilot.agent_runtime.journal import (
+    EventInput,
+    NullRunRecorder,
+    NullRunRecorderFactory,
+    RunRecorder,
+    RunRecorderFactory,
+    SuspendedDisposition,
+    TerminalDisposition,
+)
+from offerpilot.agent_runtime.keyring import JOURNAL_KEY_FILENAME, load_or_create_journal_key
 from offerpilot.application_status import application_status_options, normalize_application_status
 from offerpilot.config import (
     AIProviderProfile,
@@ -85,7 +100,7 @@ from offerpilot.config import (
     resolve_data_dir,
     save_config,
 )
-from offerpilot.db import session_factory_for_data_dir
+from offerpilot.db import journal_session_factory_for_data_dir, session_factory_for_data_dir
 from offerpilot.diagnostics import append_log_entry, read_recent_log_page
 from offerpilot.knowledge import (
     EVIDENCE_POLICY_VERSION,
@@ -110,6 +125,11 @@ from offerpilot.knowledge.worker import (
     KnowledgeWorkerRuntime,
 )
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
+from offerpilot.repositories.agent_runs import (
+    AgentRunRepository,
+    StartRunCommand,
+    StartSegmentCommand,
+)
 from offerpilot.repositories.application_jd_versions import (
     ApplicationJDService,
     JDVersionError,
@@ -1056,17 +1076,136 @@ def _log_mock_interview_ai_failure(
     )
 
 
+def _journal_start_run_builder(
+    *,
+    conversation_id: int,
+    input_message_id: int | None,
+    origin_kind: str,
+    context_type: object,
+    context_ref: object,
+    transport_mode: str,
+    transport_run_id: str | None,
+    route_kind: str,
+    application_visible: Callable[[int], bool],
+) -> Callable[..., StartRunCommand]:
+    def build(key: Any, budget_check: Callable[[], None]) -> StartRunCommand:
+        budget_check()
+        normalized = normalize_context_identity(
+            context_type,
+            context_ref,
+            application_visible=application_visible,
+            key=key,
+            budget_check=budget_check,
+        )
+        run_id = str(uuid4())
+        segment_id = str(uuid4())
+        run_started = prepare_event(
+            event_type="run.started",
+            execution_segment_id=segment_id,
+            facts={
+                "agent_run_id": run_id,
+                "origin_kind": origin_kind,
+                "conversation_id": conversation_id,
+                "context_type": normalized.context_type,
+                "transport_mode": transport_mode,
+            },
+            budget_check=budget_check,
+        )
+        segment_started = prepare_event(
+            event_type="segment.started",
+            execution_segment_id=segment_id,
+            facts={
+                "request_kind": "initial",
+                "transport_mode": transport_mode,
+                "execution_path": (
+                    "model_turn" if route_kind == "model" else "deterministic_action"
+                ),
+                "transport_run_id": transport_run_id,
+            },
+            budget_check=budget_check,
+        )
+        budget_check()
+        return StartRunCommand(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            input_message_id=input_message_id,
+            origin_kind=origin_kind,
+            initial_context_type=normalized.context_type,
+            initial_context_entity_id=(
+                str(normalized.entity_id) if normalized.entity_id is not None else None
+            ),
+            initial_context_ref_fingerprint=normalized.ref_fingerprint,
+            fingerprint_key_id=key.key_id,
+            initial_transport_mode=transport_mode,
+            initial_route_kind=route_kind,
+            run_started=run_started,
+            segment_started=segment_started,
+        )
+
+    return build
+
+
+def _journal_pending_replay_builder(
+    *,
+    transport_mode: str,
+    transport_run_id: str | None,
+) -> Callable[..., StartSegmentCommand]:
+    def build(
+        run_id: str,
+        _key: Any,
+        budget_check: Callable[[], None],
+    ) -> StartSegmentCommand:
+        segment_id = str(uuid4())
+        event = prepare_event(
+            event_type="segment.started",
+            execution_segment_id=segment_id,
+            facts={
+                "request_kind": "pending_replay",
+                "transport_mode": transport_mode,
+                "execution_path": "deterministic_action",
+                "transport_run_id": transport_run_id,
+            },
+            budget_check=budget_check,
+        )
+        return StartSegmentCommand(run_id=run_id, segment_started=event)
+
+    return build
+
+
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
     title_model: Optional[ChatModel] = None,
     static_dir: Optional[Path] = None,
+    *,
+    run_recorder_factory: RunRecorderFactory | None = None,
 ) -> FastAPI:
     resolved_data_dir = data_dir or resolve_data_dir()
     resolved_static_dir = static_dir or _find_static_dir()
     session_factory = session_factory_for_data_dir(resolved_data_dir)
     app_config = load_config(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
+    journal_engine = None
+    if run_recorder_factory is None:
+        try:
+            journal_key = load_or_create_journal_key(resolved_data_dir)
+            journal_sessions = journal_session_factory_for_data_dir(resolved_data_dir)
+            journal_engine = journal_sessions.kw.get("bind")
+            resolved_run_recorder_factory: Any = RunRecorderFactory(
+                AgentRunRepository(journal_sessions),
+                key=journal_key,
+                diagnostic_sink=lambda code: append_log_entry(
+                    resolved_data_dir,
+                    "WARNING",
+                    f"agent_journal {code}",
+                ),
+            )
+        except Exception:
+            resolved_run_recorder_factory = NullRunRecorderFactory(
+                "journal_factory_unavailable"
+            )
+    else:
+        resolved_run_recorder_factory = run_recorder_factory
     application_jd_versions = ApplicationJDService(session_factory)
     application_outcomes = ApplicationOutcomesRepository(session_factory)
     chat = ChatRepository(session_factory)
@@ -1123,6 +1262,8 @@ def create_app(
         knowledge_repository,
     )
     app.state.db_engine = session_factory.kw.get("bind")
+    app.state.journal_db_engine = journal_engine
+    app.state.run_recorder_factory = resolved_run_recorder_factory
     app.state.knowledge_runtime = knowledge_runtime
 
     @app.on_event("startup")
@@ -1132,6 +1273,172 @@ def create_app(
     @app.on_event("shutdown")
     def _stop_knowledge_worker() -> None:
         knowledge_runtime.stop(timeout=5)
+        if journal_engine is not None:
+            journal_engine.dispose()
+
+    def _start_journal_run(
+        conversation: Any,
+        *,
+        input_message_id: int | None,
+        origin_kind: str,
+        route_kind: str,
+        transport_mode: str,
+        transport_run_id: str | None,
+    ) -> RunRecorder:
+        try:
+            return cast(
+                RunRecorder,
+                cast(Any, resolved_run_recorder_factory).start_run(
+                    _journal_start_run_builder(
+                        conversation_id=int(conversation.id),
+                        input_message_id=input_message_id,
+                        origin_kind=origin_kind,
+                        context_type=conversation.context_type,
+                        context_ref=conversation.context_ref,
+                        transport_mode=transport_mode,
+                        transport_run_id=transport_run_id,
+                        route_kind=route_kind,
+                        application_visible=lambda application_id: (
+                            applications.get(application_id) is not None
+                        ),
+                    )
+                )
+            )
+        except Exception:
+            return NullRunRecorder(["journal_run_create_failed"])
+
+    def _resume_journal_replay(
+        conversation_id: int,
+        pending: PendingAction,
+        *,
+        transport_mode: str,
+        transport_run_id: str | None,
+    ) -> RunRecorder:
+        try:
+            return cast(
+                RunRecorder,
+                cast(Any, resolved_run_recorder_factory).resume_waiting_run(
+                    conversation_id,
+                    pending.tool_call_id,
+                    _journal_pending_replay_builder(
+                        transport_mode=transport_mode,
+                        transport_run_id=transport_run_id,
+                    ),
+                ),
+            )
+        except Exception:
+            return NullRunRecorder(["journal_run_lookup_failed"])
+
+    def _journal_call(operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except Exception:
+            return None
+
+    def _record_journal_route(
+        recorder: RunRecorder,
+        *,
+        route_kind: str,
+        route_reason_code: str,
+    ) -> None:
+        _journal_call(
+            lambda: recorder.append_event(
+                EventInput(
+                    event_type="route.selected",
+                    facts={
+                        "route_kind": route_kind,
+                        "route_reason_code": route_reason_code,
+                    },
+                )
+            )
+        )
+
+    def _capture_initial_journal_context(
+        recorder: RunRecorder,
+        conversation: Any,
+        *,
+        tool_names: tuple[str, ...] = (),
+    ) -> None:
+        stored_messages = chat.list_messages(int(conversation.id))
+        logical_input = {
+            "conversation_id": int(conversation.id),
+            "context_type": str(conversation.context_type or "workspace"),
+            "context_ref": str(conversation.context_ref or ""),
+            "mode": str(conversation.mode or "general"),
+            "message_count": len(stored_messages),
+            "tool_names": list(tool_names),
+        }
+        manifest = ContextManifestInput(
+            conversation_message_ids=tuple(int(message.id) for message in stored_messages),
+            tool_names=tool_names,
+            attachment_refs=(),
+            domain_source_refs=(),
+        )
+        _journal_call(
+            lambda: recorder.capture_context(
+                logical_input,
+                manifest,
+                snapshot_kind="initial",
+            )
+        )
+
+    def _record_persisted_messages(recorder: RunRecorder, messages: list[Any]) -> None:
+        for message in messages:
+            if message.role not in {"assistant", "tool"}:
+                continue
+            message_id = int(message.id)
+            message_kind = str(message.role)
+            _journal_call(
+                lambda: recorder.append_event(
+                    EventInput(
+                        event_type="assistant.persisted",
+                        facts={
+                            "message_id": message_id,
+                            "message_kind": message_kind,
+                        },
+                        source_ref_type="message",
+                        source_ref_id=message_id,
+                    )
+                )
+            )
+
+    def _suspend_journal(recorder: RunRecorder, pending: PendingAction) -> None:
+        _journal_call(
+            lambda: recorder.suspend(
+                SuspendedDisposition(
+                    tool_call_id=pending.tool_call_id,
+                    tool_name=pending.tool_name,
+                    tool_kind="write",
+                    args_shape_digest=_journal_shape_digest(pending.args),
+                    pending_identity={
+                        "tool_call_id": pending.tool_call_id,
+                        "tool_name": pending.tool_name,
+                        "args": pending.args,
+                    },
+                )
+            )
+        )
+
+    def _finish_journal(
+        recorder: RunRecorder,
+        status: Literal["completed", "failed", "cancelled", "timed_out"],
+        failure_code: str | None = None,
+    ) -> None:
+        _journal_call(
+            lambda: recorder.finish(
+                TerminalDisposition(status=status, failure_code=failure_code)
+            )
+        )
+
+    def _finish_journal_replay(recorder: RunRecorder) -> None:
+        _journal_call(
+            lambda: recorder.append_event(
+                EventInput(
+                    event_type="segment.finished",
+                    facts={"outcome": "noop", "terminal_run_status": None},
+                )
+            )
+        )
 
     def _deterministic_pilot_pending_messages(pending: PendingAction) -> list[dict[str, str]]:
         return [
@@ -1181,12 +1488,46 @@ def create_app(
             return error_response(404, "application not found")
         return None
 
+    def _is_deterministic_pilot_route(
+        payload: dict[str, Any],
+        message: str,
+        conversation: Any,
+    ) -> bool:
+        if "pilot_action" in payload:
+            return True
+        clarification = chat.get_pending_clarification(int(conversation.id))
+        if (
+            clarification is not None
+            and clarification[0].tool_name == "save_application_jd_version"
+        ):
+            return True
+        application = _deterministic_pilot_application(conversation)
+        if isinstance(application, JSONResponse):
+            return False
+        current_jd = application_jd_versions.get_current(application.id)
+        return (
+            decide_pilot_action(
+                message,
+                has_current_jd=current_jd is not None,
+                collecting_jd=False,
+            ).kind
+            != "normal_agent"
+        )
+
     def _deterministic_pilot_chat(
         payload: dict[str, Any],
         message: str,
         conversation_id: int,
         conversation: Any,
+        *,
+        on_user_message_persisted: Callable[[Any], None] | None = None,
     ) -> JSONResponse | dict[str, Any] | None:
+        def append_user_message() -> Any:
+            persisted = chat.append_message(conversation_id, "user", content=message)
+            if on_user_message_persisted is not None:
+                on_user_message_persisted(persisted)
+            return persisted
+
         explicit_action = "pilot_action" in payload
         action = None
         if explicit_action:
@@ -1237,7 +1578,7 @@ def create_app(
                     key_factory=lambda: uuid4().hex,
                 )
             )
-            chat.append_message(conversation_id, "user", content=message)
+            append_user_message()
             if not chat.persist_pending_action(
                 conversation_id, pending, _deterministic_pilot_pending_messages(pending)
             ):
@@ -1285,7 +1626,7 @@ def create_app(
             }
 
         if decision_kind == "cancelled":
-            chat.append_message(conversation_id, "user", content=message)
+            append_user_message()
             chat.clear_pending_clarification(conversation_id)
             chat.append_message(conversation_id, "assistant", content="已取消保存岗位资料。")
             return {
@@ -1304,7 +1645,7 @@ def create_app(
                 id_factory=lambda: uuid4().hex,
                 key_factory=lambda: uuid4().hex,
             )
-            chat.append_message(conversation_id, "user", content=message)
+            append_user_message()
             chat.clear_pending_action(conversation_id)
             chat.set_pending_clarification(conversation_id, pending, decision_question)
             chat.append_message(conversation_id, "assistant", content=decision_question)
@@ -1351,7 +1692,7 @@ def create_app(
             id_factory=id_factory,
             key_factory=key_factory,
         )
-        chat.append_message(conversation_id, "user", content=message)
+        append_user_message()
         if not chat.persist_pending_action(
             conversation_id,
             pending,
@@ -1367,14 +1708,17 @@ def create_app(
     def _deterministic_pilot_stream_response(
         conversation: Any,
         response: dict[str, Any],
+        *,
+        run: SseRun | None = None,
     ) -> StreamingResponse:
-        run = SseRun(
-            run_id=str(uuid4()),
-            conversation_id=int(response["conversation_id"]),
-            context_type=str(conversation.context_type or "workspace"),
-            context_ref=str(conversation.context_ref or ""),
-            mode=str(conversation.mode or "general"),
-        )
+        if run is None:
+            run = SseRun(
+                run_id=str(uuid4()),
+                conversation_id=int(response["conversation_id"]),
+                context_type=str(conversation.context_type or "workspace"),
+                context_ref=str(conversation.context_ref or ""),
+                mode=str(conversation.mode or "general"),
+            )
 
         def emit(event: str, data: dict[str, Any] | None = None) -> str:
             envelope = run.envelope(event, data)
@@ -4513,23 +4857,78 @@ def create_app(
             if conversation is None:
                 return error_response(404, "conversation not found")
 
-        deterministic_response = _deterministic_pilot_chat(
-            payload,
-            message,
-            conversation_id,
-            conversation,
-        )
-        if isinstance(deterministic_response, JSONResponse):
-            return deterministic_response
-        if deterministic_response is not None:
-            return JSONResponse(deterministic_response)
+        if _is_deterministic_pilot_route(payload, message, conversation):
+            replay_pending = chat.get_pending_action(conversation_id)
+            if replay_pending is not None:
+                deterministic_recorder = _resume_journal_replay(
+                    conversation_id,
+                    replay_pending,
+                    transport_mode="sync",
+                    transport_run_id=None,
+                )
+                route_reason = "pending_action_replay"
+            else:
+                deterministic_recorder = _start_journal_run(
+                    conversation,
+                    input_message_id=None,
+                    origin_kind="pilot_action",
+                    route_kind="deterministic",
+                    transport_mode="sync",
+                    transport_run_id=None,
+                )
+                route_reason = "deterministic_action_match"
+            _record_journal_route(
+                deterministic_recorder,
+                route_kind="deterministic",
+                route_reason_code=route_reason,
+            )
+            _capture_initial_journal_context(deterministic_recorder, conversation)
+            deterministic_response = _deterministic_pilot_chat(
+                payload,
+                message,
+                conversation_id,
+                conversation,
+                on_user_message_persisted=lambda persisted: _journal_call(
+                    lambda: deterministic_recorder.attach_input_message(int(persisted.id))
+                ),
+            )
+            if replay_pending is not None:
+                _finish_journal_replay(deterministic_recorder)
+            elif isinstance(deterministic_response, JSONResponse):
+                _finish_journal(deterministic_recorder, "failed", "unknown")
+            elif deterministic_response is not None:
+                persisted_pending = chat.get_pending_action(conversation_id)
+                if (
+                    deterministic_response.get("type") == "confirmation_required"
+                    and persisted_pending is not None
+                ):
+                    _suspend_journal(deterministic_recorder, persisted_pending)
+                else:
+                    _finish_journal(deterministic_recorder, "completed")
+            if isinstance(deterministic_response, JSONResponse):
+                return deterministic_response
+            if deterministic_response is not None:
+                return JSONResponse(deterministic_response)
 
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
 
         clarification = chat.get_pending_clarification(conversation_id)
-        chat.append_message(conversation_id, "user", content=message)
+        input_message = chat.append_message(conversation_id, "user", content=message)
+        run_recorder = _start_journal_run(
+            conversation,
+            input_message_id=int(input_message.id),
+            origin_kind="user_message",
+            route_kind="model",
+            transport_mode="sync",
+            transport_run_id=None,
+        )
+        _record_journal_route(
+            run_recorder,
+            route_kind="model",
+            route_reason_code="model_default",
+        )
         if created_new:
             background_tasks.add_task(
                 _generate_conversation_title,
@@ -4565,6 +4964,11 @@ def create_app(
             jd_analyses=jd_analyses,
             application_jd_versions=application_jd_versions,
         )
+        _capture_initial_journal_context(
+            run_recorder,
+            conversation,
+            tool_names=tuple(registry),
+        )
         try:
             added, reply, pending = _run_chat_agent_with_timeout(
                 lambda: run_turn(
@@ -4575,12 +4979,17 @@ def create_app(
                     max_iter=DEFAULT_MAX_ITERATIONS,
                     checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
+                    run_recorder=run_recorder,
                 )
             )
         except ChatAgentTimedOut:
-            chat.append_message(conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE)
+            timeout_message = chat.append_message(
+                conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE
+            )
             chat.clear_pending_action(conversation_id)
             chat.clear_pending_clarification(conversation_id)
+            _record_persisted_messages(run_recorder, [timeout_message])
+            _finish_journal(run_recorder, "timed_out", "timeout")
             return JSONResponse(
                 {
                     "type": "message",
@@ -4589,6 +4998,7 @@ def create_app(
                 }
             )
         except Exception as exc:
+            _finish_journal(run_recorder, "failed", "provider_error")
             return _ai_provider_error(exc, resolved_data_dir)
         added, forced_reply = _with_write_error_followup(added)
         reply = forced_reply or _user_facing_assistant_content(reply)
@@ -4596,10 +5006,16 @@ def create_app(
         if pending is not None:
             missing_question = _pending_action_missing_question(pending, applications)
             if missing_question:
-                _persist_ai_messages(chat, conversation_id, added)
+                persisted = _persist_ai_messages(chat, conversation_id, added)
                 chat.clear_pending_action(conversation_id)
                 chat.set_pending_clarification(conversation_id, pending, missing_question)
-                chat.append_message(conversation_id, "assistant", content=missing_question)
+                persisted.append(
+                    chat.append_message(
+                        conversation_id, "assistant", content=missing_question
+                    )
+                )
+                _record_persisted_messages(run_recorder, persisted)
+                _finish_journal(run_recorder, "completed")
                 return JSONResponse(
                     {
                         "type": "message",
@@ -4610,7 +5026,9 @@ def create_app(
             if not chat.persist_pending_action(
                 conversation_id, pending, _persistable_ai_messages(added)
             ):
+                _finish_journal(run_recorder, "failed", "unknown")
                 return error_response(409, "对话已归档，无法保存待确认操作。")
+            _suspend_journal(run_recorder, pending)
             return JSONResponse(
                 {
                     "type": "confirmation_required",
@@ -4618,7 +5036,7 @@ def create_app(
                     "pending_action": _pending_action_json(pending, applications),
                 }
             )
-        _persist_ai_messages(chat, conversation_id, added)
+        persisted = _persist_ai_messages(chat, conversation_id, added)
         if forced_reply:
             forced_pending = _pending_action_from_added_write_call(added, registry)
             if forced_pending is not None:
@@ -4629,6 +5047,8 @@ def create_app(
             chat.set_pending_clarification(conversation_id, pending_clarification, reply)
         elif not forced_reply:
             chat.clear_pending_clarification(conversation_id)
+        _record_persisted_messages(run_recorder, persisted)
+        _finish_journal(run_recorder, "completed")
         response_payload: dict[str, Any] = {
             "type": "message",
             "conversation_id": conversation_id,
@@ -4685,23 +5105,76 @@ def create_app(
             if conversation is None:
                 return error_response(404, "conversation not found")
 
-        deterministic_response = _deterministic_pilot_chat(
-            payload,
-            message,
-            conversation_id,
-            conversation,
-        )
-        if isinstance(deterministic_response, JSONResponse):
-            return deterministic_response
-        if deterministic_response is not None:
-            return _deterministic_pilot_stream_response(conversation, deterministic_response)
+        if _is_deterministic_pilot_route(payload, message, conversation):
+            deterministic_sse_run = SseRun(
+                run_id=str(uuid4()),
+                conversation_id=conversation_id,
+                context_type=str(conversation.context_type or "workspace"),
+                context_ref=str(conversation.context_ref or ""),
+                mode=str(conversation.mode or "general"),
+            )
+            replay_pending = chat.get_pending_action(conversation_id)
+            if replay_pending is not None:
+                deterministic_recorder = _resume_journal_replay(
+                    conversation_id,
+                    replay_pending,
+                    transport_mode="stream",
+                    transport_run_id=deterministic_sse_run.run_id,
+                )
+                route_reason = "pending_action_replay"
+            else:
+                deterministic_recorder = _start_journal_run(
+                    conversation,
+                    input_message_id=None,
+                    origin_kind="pilot_action",
+                    route_kind="deterministic",
+                    transport_mode="stream",
+                    transport_run_id=deterministic_sse_run.run_id,
+                )
+                route_reason = "deterministic_action_match"
+            _record_journal_route(
+                deterministic_recorder,
+                route_kind="deterministic",
+                route_reason_code=route_reason,
+            )
+            _capture_initial_journal_context(deterministic_recorder, conversation)
+            deterministic_response = _deterministic_pilot_chat(
+                payload,
+                message,
+                conversation_id,
+                conversation,
+                on_user_message_persisted=lambda persisted: _journal_call(
+                    lambda: deterministic_recorder.attach_input_message(int(persisted.id))
+                ),
+            )
+            if replay_pending is not None:
+                _finish_journal_replay(deterministic_recorder)
+            elif isinstance(deterministic_response, JSONResponse):
+                _finish_journal(deterministic_recorder, "failed", "unknown")
+            elif deterministic_response is not None:
+                persisted_pending = chat.get_pending_action(conversation_id)
+                if (
+                    deterministic_response.get("type") == "confirmation_required"
+                    and persisted_pending is not None
+                ):
+                    _suspend_journal(deterministic_recorder, persisted_pending)
+                else:
+                    _finish_journal(deterministic_recorder, "completed")
+            if isinstance(deterministic_response, JSONResponse):
+                return deterministic_response
+            if deterministic_response is not None:
+                return _deterministic_pilot_stream_response(
+                    conversation,
+                    deterministic_response,
+                    run=deterministic_sse_run,
+                )
 
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
 
         clarification = chat.get_pending_clarification(conversation_id)
-        chat.append_message(conversation_id, "user", content=message)
+        input_message = chat.append_message(conversation_id, "user", content=message)
         if created_new:
             background_tasks.add_task(
                 _generate_conversation_title,
@@ -4744,6 +5217,24 @@ def create_app(
             context_ref=str(conversation.context_ref or ""),
             mode=str(conversation.mode or "general"),
         )
+        run_recorder = _start_journal_run(
+            conversation,
+            input_message_id=int(input_message.id),
+            origin_kind="user_message",
+            route_kind="model",
+            transport_mode="stream",
+            transport_run_id=run.run_id,
+        )
+        _record_journal_route(
+            run_recorder,
+            route_kind="model",
+            route_reason_code="model_default",
+        )
+        _capture_initial_journal_context(
+            run_recorder,
+            conversation,
+            tool_names=tuple(registry),
+        )
 
         def emit(event: str, data: dict[str, Any] | None = None) -> str:
             envelope = run.envelope(event, data)
@@ -4773,15 +5264,21 @@ def create_app(
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
                         cancel_check=cancel_check,
+                        run_recorder=run_recorder,
                     ),
                     emit,
                 )
             except ChatRunCancelled:
+                _finish_journal(run_recorder, "cancelled", "cancelled")
                 return
             except ChatAgentTimedOut:
-                chat.append_message(conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE)
+                timeout_message = chat.append_message(
+                    conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE
+                )
                 chat.clear_pending_action(conversation_id)
                 chat.clear_pending_clarification(conversation_id)
+                _record_persisted_messages(run_recorder, [timeout_message])
+                _finish_journal(run_recorder, "timed_out", "timeout")
                 yield emit(
                     "error",
                     {
@@ -4793,6 +5290,7 @@ def create_app(
                 )
                 return
             except Exception as exc:
+                _finish_journal(run_recorder, "failed", "provider_error")
                 yield emit(
                     "error",
                     {
@@ -4810,10 +5308,16 @@ def create_app(
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
-                    _persist_ai_messages(chat, conversation_id, added)
+                    persisted = _persist_ai_messages(chat, conversation_id, added)
                     chat.clear_pending_action(conversation_id)
                     chat.set_pending_clarification(conversation_id, pending, missing_question)
-                    chat.append_message(conversation_id, "assistant", content=missing_question)
+                    persisted.append(
+                        chat.append_message(
+                            conversation_id, "assistant", content=missing_question
+                        )
+                    )
+                    _record_persisted_messages(run_recorder, persisted)
+                    _finish_journal(run_recorder, "completed")
                     response = {
                         "type": "message",
                         "conversation_id": conversation_id,
@@ -4825,6 +5329,7 @@ def create_app(
                 if not chat.persist_pending_action(
                     conversation_id, pending, _persistable_ai_messages(added)
                 ):
+                    _finish_journal(run_recorder, "failed", "unknown")
                     yield emit(
                         "error",
                         {
@@ -4835,6 +5340,7 @@ def create_app(
                         },
                     )
                     return
+                _suspend_journal(run_recorder, pending)
                 pending_payload = _pending_action_json(pending, applications)
                 response = {
                     "type": "confirmation_required",
@@ -4845,7 +5351,7 @@ def create_app(
                 yield emit("confirmation_required", {"pending_action": pending_payload})
                 yield emit("completed", {"response": response, "persisted": True})
                 return
-            _persist_ai_messages(chat, conversation_id, added)
+            persisted = _persist_ai_messages(chat, conversation_id, added)
             if forced_reply:
                 forced_pending = _pending_action_from_added_write_call(added, registry)
                 if forced_pending is not None:
@@ -4860,6 +5366,8 @@ def create_app(
                 chat.set_pending_clarification(conversation_id, pending_clarification, reply)
             elif not forced_reply:
                 chat.clear_pending_clarification(conversation_id)
+            _record_persisted_messages(run_recorder, persisted)
+            _finish_journal(run_recorder, "completed")
             response = {
                 "type": "message",
                 "conversation_id": conversation_id,
@@ -8262,16 +8770,20 @@ def _chat_model_supports_delta(model: ChatModel) -> bool:
 
 def _persist_ai_messages(
     repo: ChatRepository, conversation_id: int, messages: list[Message]
-) -> None:
+) -> list[Any]:
+    persisted_messages: list[Any] = []
     for message in _persistable_ai_messages(messages):
-        repo.append_message(
-            conversation_id,
-            message["role"],
-            content=message["content"],
-            tool_calls=message["tool_calls"],
-            tool_call_id=message["tool_call_id"],
-            provider_blocks=message["provider_blocks"],
+        persisted_messages.append(
+            repo.append_message(
+                conversation_id,
+                message["role"],
+                content=message["content"],
+                tool_calls=message["tool_calls"],
+                tool_call_id=message["tool_call_id"],
+                provider_blocks=message["provider_blocks"],
+            )
         )
+    return persisted_messages
 
 
 def _persistable_ai_messages(messages: list[Message]) -> list[dict[str, str]]:
