@@ -109,4 +109,4 @@ def test_validate_arguments_reports_stable_schema_code() -> None:
     with pytest.raises(ArgumentValidationError) as error:
         validate_arguments(validator, {"id": "1"})
 
-    assert error.value.code == "schema_validation"
+    assert error.value.code == "schema_validation_failed"

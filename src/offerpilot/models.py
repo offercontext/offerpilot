@@ -1346,6 +1346,11 @@ class Conversation(Base):
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pending_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    pending_confirmation_claim_id: Mapped[str] = mapped_column(
+        String,
+        default="",
+        server_default="",
+    )
     pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_args: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_human: Mapped[str] = mapped_column(String, default="", server_default="")

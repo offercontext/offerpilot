@@ -9,7 +9,7 @@ from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.ai.agent import PendingAction, StalePendingActionError
@@ -38,6 +38,7 @@ from offerpilot.models import (
     AgentEvent,
     AgentRun,
     ApplicationMaterialKit,
+    Conversation,
     JDAnalysis,
     Question,
     Resume,
@@ -46,6 +47,29 @@ from offerpilot.models import (
 from offerpilot.repositories.applications import ApplicationsRepository
 from offerpilot.repositories.agent_runs import AgentRunRepository
 from offerpilot.repositories.chat import ChatRepository
+
+
+def _force_replace_claimed_pending_for_cas_test(
+    repo: ChatRepository,
+    conversation_id: int,
+    pending: PendingAction,
+) -> None:
+    """Simulate an out-of-band generation change after a confirmation claim."""
+
+    with repo._session_factory() as session:
+        session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(
+                pending_tool_call_id=pending.tool_call_id,
+                pending_confirmation_claim_id="",
+                pending_tool_name=pending.tool_name,
+                pending_args=pending.args,
+                pending_human=pending.human,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
 
 
 def _journal_rows(tmp_path):
@@ -2598,6 +2622,114 @@ def test_chat_stream_emits_tool_call_and_result_events(tmp_path):
     assert tool_result["changed_entities"] == []
 
 
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+@pytest.mark.parametrize(
+    ("kinds", "expected_ids", "expected_tool_messages", "expects_pending"),
+    [
+        (("read", "read"), ["first", "second"], 2, False),
+        (("write", "read"), ["first"], 0, True),
+        (("read", "write"), ["first"], 1, False),
+        (("write", "write"), ["first"], 0, True),
+    ],
+)
+def test_http_and_sse_multi_tool_call_selection_match_baseline(
+    tmp_path,
+    endpoint,
+    kinds,
+    expected_ids,
+    expected_tool_messages,
+    expects_pending,
+):
+    seed = TestClient(create_app(data_dir=tmp_path))
+    application = seed.post(
+        "/api/applications",
+        json={
+            "company_name": "Matrix Co",
+            "position_name": "Backend Engineer",
+            "status": "applied",
+        },
+    ).json()
+
+    def call(kind, call_id):
+        if kind == "write":
+            return ToolCall(
+                id=call_id,
+                name="update_application_status",
+                args=json.dumps({"id": application["id"], "status": "offer"}),
+            )
+        return ToolCall(id=call_id, name="list_applications", args="{}")
+
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    call(kinds[0], "first"),
+                    call(kinds[1], "second"),
+                ]
+            ),
+            Assistant(content="done"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post(
+        endpoint,
+        json={"message": "matrix", "conversation_id": 0},
+    )
+
+    assert response.status_code == 200
+    body = (
+        _parse_sse_events(response.text)[-1]["data"]["data"]["response"]
+        if endpoint.endswith("/stream")
+        else response.json()
+    )
+    assert (body["type"] == "confirmation_required") is expects_pending
+    conversation_id = body["conversation_id"]
+    stored = ChatRepository(session_factory_for_data_dir(tmp_path)).list_messages(
+        conversation_id
+    )
+    assistant_with_calls = next(message for message in stored if message.tool_calls)
+    assert [item["id"] for item in json.loads(assistant_with_calls.tool_calls)] == expected_ids
+    assert sum(message.role == "tool" for message in stored) == expected_tool_messages
+    assert len(model.calls) == (1 if expects_pending else 2)
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+def test_http_and_sse_continue_second_read_after_first_read_failure(tmp_path, endpoint):
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="missing", name="get_application", args='{"id":999}'),
+                    ToolCall(id="list", name="list_applications", args="{}"),
+                ]
+            ),
+            Assistant(content="done"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post(
+        endpoint,
+        json={"message": "read after failure", "conversation_id": 0},
+    )
+
+    assert response.status_code == 200
+    body = (
+        _parse_sse_events(response.text)[-1]["data"]["data"]["response"]
+        if endpoint.endswith("/stream")
+        else response.json()
+    )
+    stored = ChatRepository(session_factory_for_data_dir(tmp_path)).list_messages(
+        body["conversation_id"]
+    )
+    assert [message.tool_call_id for message in stored if message.role == "tool"] == [
+        "missing",
+        "list",
+    ]
+    assert len(model.calls) == 2
+
+
 def test_chat_stream_keeps_tool_events_when_followup_model_call_fails(tmp_path):
     model = FailAfterWriteModel(
         ToolCall(id="read-before-fail", name="list_applications", args="{}")
@@ -4410,7 +4542,7 @@ def test_chat_confirm_result_cas_loss_preserves_newer_pending(tmp_path, monkeypa
 
     def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
         del kwargs
-        self.set_pending_action(conversation_id, newer)
+        _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
         return False
 
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
@@ -4479,7 +4611,7 @@ def test_chat_confirm_cas_loss_aborts_before_auto_approved_second_write(
 
     def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
         del kwargs
-        self.set_pending_action(conversation_id, newer)
+        _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
         self.set_pending_clarification(conversation_id, newer, "newer question")
         self.set_last_write_undo(conversation_id, newer_undo)
         return None
@@ -4533,7 +4665,7 @@ def test_chat_confirm_tool_error_uses_expected_pending_cas(tmp_path, monkeypatch
     def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
         del kwargs
         assert tool_message.content.startswith("错误：")
-        self.set_pending_action(conversation_id, newer)
+        _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
         return False
 
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
@@ -4671,7 +4803,7 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
 
     def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
         del kwargs
-        self.set_pending_action(conversation_id, newer)
+        _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
         return None
 
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)

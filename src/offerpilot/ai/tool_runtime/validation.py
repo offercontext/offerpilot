@@ -132,5 +132,5 @@ def validate_arguments(
 ) -> dict[str, JSONValue]:
     copied = _mapping_copy(arguments)
     if next(validator.iter_errors(copied), None) is not None:
-        raise ArgumentValidationError("schema_validation")
+        raise ArgumentValidationError("schema_validation_failed")
     return copied

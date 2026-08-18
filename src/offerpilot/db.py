@@ -64,6 +64,17 @@ def init_database(db_path: Path) -> SessionFactory:
     mock_interview_migration_needed = _prepare_event_bound_mock_interview_migration(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    _ensure_column(
+        engine,
+        "conversations",
+        "pending_confirmation_claim_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _record_migration(
+        engine,
+        "0025_pending_confirmation_claim",
+        "Add private Pending Action confirmation claim identity",
+    )
     _record_migration(
         engine,
         "0024_durable_execution_journal",

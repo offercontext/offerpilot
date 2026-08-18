@@ -60,6 +60,7 @@
 - `src/offerpilot/ai/types.py`: keep persisted `Message` wire shape; add no typed outcome fields.
 - `src/offerpilot/api.py`: construct runtime Context, route trusted deterministic Pending Actions, consume `ToolExecutionRecord`, and stop parsing compatibility strings.
 - `src/offerpilot/repositories/chat.py`: add the narrow durable pre-executor Pending Action claim CAS used by typed confirmation recovery; preserve the public Pending Action representation.
+- `src/offerpilot/models.py` and `src/offerpilot/db.py`: add the private `0025_pending_confirmation_claim` column/migration; never encode claim state into Provider-controlled fields.
 - `src/offerpilot/ai/tools.py`: delete after all production call sites move; no model-visible code remains here.
 - `pyproject.toml`, `uv.lock`: direct exact `jsonschema==4.26.0` dependency.
 
@@ -123,6 +124,8 @@ New-Item -ItemType Directory -Force -Path $gate | Out-Null
   'src/offerpilot/ai/tool_runtime/'
   'src/offerpilot/ai/tool_specs/'
   'src/offerpilot/api.py'
+  'src/offerpilot/db.py'
+  'src/offerpilot/models.py'
   'src/offerpilot/repositories/chat.py'
   'src/offerpilot/smoke.py'
   'tests/tool_pipeline/'
@@ -969,13 +972,18 @@ git commit -m "refactor: AI isolate deterministic legacy tools"
 - Modify: `src/offerpilot/ai/agent.py`
 - Modify: `src/offerpilot/ai/client.py`
 - Modify: `src/offerpilot/api.py`
+- Modify: `src/offerpilot/db.py`
+- Modify: `src/offerpilot/models.py`
+- Modify: `src/offerpilot/repositories/chat.py`
 - Modify: `src/offerpilot/smoke.py`
 - Delete: `src/offerpilot/ai/tools.py`
 - Modify: `tests/test_ai_agent.py`
 - Modify: `tests/test_chat_api.py`
+- Modify: `tests/test_chat_repository.py`
 - Modify: `tests/test_ai_tools.py`
 - Modify: `tests/test_knowledge_sources_api.py`
 - Create: `tests/tool_pipeline/test_checkpoint.py`
+- Create: `tests/tool_pipeline/test_confirmation_claim_schema.py`
 - Modify: `tests/tool_pipeline/test_transport.py`
 - Modify: `tests/tool_pipeline/test_journal.py`
 

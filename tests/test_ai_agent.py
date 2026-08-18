@@ -1,10 +1,10 @@
 import json
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Barrier, Lock
-from typing import Any
+from typing import Any, Callable, Literal, Mapping
 from uuid import UUID
 
 import pytest
@@ -14,6 +14,7 @@ from offerpilot.ai.agent import (
     ChatRunCancelled,
     LangGraphAgentRunner as ProductionLangGraphAgentRunner,
     PendingAction,
+    PendingActionValidationError,
     StalePendingActionError,
     prepare_pending_action as production_prepare_pending_action,
     resume_after_confirm as production_resume_after_confirm,
@@ -45,49 +46,115 @@ _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="offerpilot-agent-tests-"))
 _TEST_SESSIONS = init_database(_TEST_DATA_DIR / "agent.db")
 
 
-def _test_runtime(registry: dict[str, dict[str, Any]]) -> tuple[ToolCatalog, ToolExecutionContext]:
+@dataclass(frozen=True)
+class _ToolDefinition:
+    name: str
+    kind: Literal["read", "write"] = "read"
+    executor: Callable[[str], str] = lambda _args: "{}"
+    description: str = ""
+    parameters: Mapping[str, Any] | None = None
+    validator: Callable[[str], str] | None = None
+    confirmation_description: Callable[[str], str] | None = None
+    editable_fields: tuple[Mapping[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class _ToolSet:
+    definitions: tuple[_ToolDefinition, ...] = ()
+
+    def with_tool(self, definition: _ToolDefinition) -> "_ToolSet":
+        return _ToolSet(
+            tuple(item for item in self.definitions if item.name != definition.name)
+            + (definition,)
+        )
+
+    def replace(self, name: str, **changes: Any) -> "_ToolSet":
+        current = next(item for item in self.definitions if item.name == name)
+        return self.with_tool(replace(current, **changes))
+
+
+def _tool(
+    name: str,
+    *,
+    write: bool = False,
+    executor: Callable[[str], str] | None = None,
+    description: str = "",
+    parameters: Mapping[str, Any] | None = None,
+    validator: Callable[[str], str] | None = None,
+    confirmation_description: Callable[[str], str] | None = None,
+    editable_fields: tuple[Mapping[str, Any], ...] = (),
+) -> _ToolDefinition:
+    return _ToolDefinition(
+        name=name,
+        kind="write" if write else "read",
+        executor=executor or (lambda _args: "{}"),
+        description=description,
+        parameters=parameters,
+        validator=validator,
+        confirmation_description=confirmation_description,
+        editable_fields=editable_fields,
+    )
+
+
+def _tools(*definitions: _ToolDefinition) -> _ToolSet:
+    return _ToolSet(tuple(definitions))
+
+
+def _test_runtime(tools: _ToolSet) -> tuple[ToolCatalog, ToolExecutionContext]:
     specs = []
     names = []
-    for name, tool in registry.items():
-        if tool.get("model_visible", True) is False:
-            continue
-        names.append(name)
-        schema = tool.get("schema") or {"type": "object", "properties": {}}
-        description = str(tool.get("description") or name)
+    for definition in tools.definitions:
+        name = definition.name
+        names.append(definition.name)
+        schema = definition.parameters or {"type": "object", "properties": {}}
+        description = definition.description or name
         contract = ProviderToolContract(
             payload={"type": "function", "function": {"name": name, "description": description, "parameters": schema}},
             name=name,
             description=description,
             parameters=schema,
         )
-        handler = tool.get("handler") or (lambda args: "{}")
-        validate = tool.get("validate")
+        executor_callable = definition.executor
+        validator = definition.validator
 
         def decoder(values: Any) -> dict[str, Any]:
             return dict(values)
 
-        def executor(args: dict[str, Any], context: Any, handler: Any = handler) -> str:
+        def executor(
+            args: dict[str, Any],
+            context: Any,
+            executor_callable: Callable[[str], str] = executor_callable,
+        ) -> str:
             del context
-            return str(handler(json.dumps(args, ensure_ascii=False, separators=(",", ":"))))
+            return str(
+                executor_callable(json.dumps(args, ensure_ascii=False, separators=(",", ":")))
+            )
 
-        def preflight(args: dict[str, Any], context: Any, validate: Any = validate) -> ToolFailure | None:
+        def preflight(
+            args: dict[str, Any],
+            context: Any,
+            validator: Callable[[str], str] | None = validator,
+        ) -> ToolFailure | None:
             del context
-            if not callable(validate):
+            if validator is None:
                 return None
             try:
-                detail = str(validate(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or "")
+                detail = str(
+                    validator(json.dumps(args, ensure_ascii=False, separators=(",", ":")))
+                    or ""
+                )
             except Exception:
                 detail = "工具参数验证失败，请检查后重试。"
             return ToolFailure("validation_error", "test_validation", detail) if detail else None
 
-        describe = tool.get("describe")
+        describe = definition.confirmation_description
 
         def confirmation_description(args: dict[str, Any], describe: Any = describe, name: str = name) -> str:
             if not callable(describe):
                 return ""
             return str(describe(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or name)
 
-        is_write = bool(tool.get("write"))
+        is_write = definition.kind == "write"
         specs.append(
             ToolSpec(
                 contract=contract,
@@ -95,9 +162,9 @@ def _test_runtime(registry: dict[str, dict[str, Any]]) -> tuple[ToolCatalog, Too
                 decoder=decoder,
                 executor=executor,
                 confirmation_policy="required" if is_write else "none",
-                editable_fields=tuple(tool.get("editable_fields") or ()),
-                preflight=preflight if callable(validate) else None,
-                mutable_validator=preflight if callable(validate) else None,
+                editable_fields=definition.editable_fields,
+                preflight=preflight if validator is not None else None,
+                mutable_validator=preflight if validator is not None else None,
                 declared_failure_categories=frozenset({"validation_error", "internal_error"}),
                 exception_map=(ToolExceptionMapping(Exception, "internal_error", "test_handler_error", str),),
                 success_renderer=lambda result: str(result),
@@ -120,8 +187,8 @@ def _test_runtime(registry: dict[str, dict[str, Any]]) -> tuple[ToolCatalog, Too
 
 
 class LangGraphAgentRunner:
-    def __init__(self, model: Any, registry: dict[str, dict[str, Any]], **kwargs: Any) -> None:
-        catalog, context = _test_runtime(registry)
+    def __init__(self, model: Any, tools: _ToolSet, **kwargs: Any) -> None:
+        catalog, context = _test_runtime(tools)
         if kwargs.get("run_recorder") is not None:
             context = replace(context, run_recorder=kwargs["run_recorder"])
         self._inner = ProductionLangGraphAgentRunner(model, catalog, context, **kwargs)
@@ -136,26 +203,30 @@ class LangGraphAgentRunner:
             setattr(self._inner, name, value)
 
 
-def run_turn(model: Any, registry: dict[str, dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
-    catalog, context = _test_runtime(registry)
+def run_turn(model: Any, tools: _ToolSet, *args: Any, **kwargs: Any) -> Any:
+    catalog, context = _test_runtime(tools)
     if kwargs.get("run_recorder") is not None:
         context = replace(context, run_recorder=kwargs["run_recorder"])
     return production_run_turn(model, catalog, *args, tool_context=context, **kwargs)
 
 
-def resume_after_confirm(model: Any, registry: dict[str, dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
-    catalog, context = _test_runtime(registry)
+def resume_after_confirm(model: Any, tools: _ToolSet, *args: Any, **kwargs: Any) -> Any:
+    catalog, context = _test_runtime(tools)
     if kwargs.get("run_recorder") is not None:
         context = replace(context, run_recorder=kwargs["run_recorder"])
     return production_resume_after_confirm(model, catalog, *args, tool_context=context, **kwargs)
 
 
-def prepare_pending_action(pending: PendingAction, registry: dict[str, dict[str, Any]], edits: Any) -> PendingAction:
-    catalog, _ = _test_runtime(registry)
+def prepare_pending_action(pending: PendingAction, tools: _ToolSet, edits: Any) -> PendingAction:
+    catalog, _ = _test_runtime(tools)
     prepared = production_prepare_pending_action(pending, catalog, edits)
-    validate = (registry.get(pending.tool_name) or {}).get("validate")
-    if callable(validate):
-        detail = str(validate(prepared.args) or "")
+    definition = next(
+        (item for item in tools.definitions if item.name == pending.tool_name),
+        None,
+    )
+    validator = definition.validator if definition is not None else None
+    if validator is not None:
+        detail = str(validator(prepared.args) or "")
         if detail:
             raise ValueError(detail)
     return prepared
@@ -288,15 +359,14 @@ class CapturingToolsModel:
         return Assistant(content="done")
 
 
-def test_agent_hides_internal_jd_tool_but_preserves_other_model_tools():
+def test_agent_exposes_only_tools_composed_into_typed_catalog():
     model = CapturingToolsModel()
-    registry = {
-        "save_application_jd_version": {"write": True, "model_visible": False},
-        "list_applications": {"write": False},
-        "update_application_status": {"write": True},
-    }
+    tools = _tools(
+        _tool("list_applications"),
+        _tool("update_application_status", write=True),
+    )
 
-    LangGraphAgentRunner(model, registry).run_turn(
+    LangGraphAgentRunner(model, tools).run_turn(
         [Message(role="user", content="继续")],
         auto_approve=False,
     )
@@ -307,11 +377,13 @@ def test_agent_hides_internal_jd_tool_but_preserves_other_model_tools():
     ]
 
 
-def _editable_registry(calls=None, validate=None):
+def _editable_tools(calls=None, validate=None):
     calls = calls if calls is not None else []
-    tool = {
-        "write": True,
-        "editable_fields": [
+    return _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            editable_fields=(
             {"field": "status", "type": "enum", "options": ["offer", "rejected"]},
             {"field": "title", "type": "string"},
             {"field": "note", "type": "long_text"},
@@ -325,12 +397,11 @@ def _editable_registry(calls=None, validate=None):
                 "clear_value": "",
             },
             {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
-        ],
-        "handler": lambda args: calls.append(args) or '{"ok":true}',
-    }
-    if validate is not None:
-        tool["validate"] = validate
-    return {"update_application_status": tool}
+            ),
+            executor=lambda args: calls.append(args) or '{"ok":true}',
+            validator=validate,
+        )
+    )
 
 
 def _pending(args=None):
@@ -358,7 +429,7 @@ def _clear_fallback_confirmation_claims():
 def test_prepare_pending_action_merges_edited_status_and_preserves_id():
     pending = _pending({"id": 7, "status": "offer", "note": "old"})
 
-    prepared = prepare_pending_action(pending, _editable_registry(), {"status": "rejected"})
+    prepared = prepare_pending_action(pending, _editable_tools(), {"status": "rejected"})
 
     assert prepared is not pending
     assert prepared.tool_call_id == pending.tool_call_id
@@ -371,24 +442,24 @@ def test_prepare_pending_action_merges_edited_status_and_preserves_id():
 def test_prepare_pending_action_none_edits_leave_pending_unchanged():
     pending = _pending()
 
-    assert prepare_pending_action(pending, {}, None) is pending
+    assert prepare_pending_action(pending, _tools(), None) is pending
 
 
 @pytest.mark.parametrize("edited", [["status"], "status", 1, True])
 def test_prepare_pending_action_rejects_non_object_edits(edited):
     with pytest.raises(ValueError, match="object"):
-        prepare_pending_action(_pending(), _editable_registry(), edited)
+        prepare_pending_action(_pending(), _editable_tools(), edited)
 
 
 @pytest.mark.parametrize("edited_field", ["id", "application_id", "index", "unknown"])
 def test_prepare_pending_action_rejects_non_editable_fields(edited_field):
     with pytest.raises(ValueError, match=edited_field):
-        prepare_pending_action(_pending(), _editable_registry(), {edited_field: 99})
+        prepare_pending_action(_pending(), _editable_tools(), {edited_field: 99})
 
 
 def test_prepare_pending_action_lists_all_non_editable_fields():
     with pytest.raises(ValueError) as exc_info:
-        prepare_pending_action(_pending(), _editable_registry(), {"id": 1, "unknown": "x"})
+        prepare_pending_action(_pending(), _editable_tools(), {"id": 1, "unknown": "x"})
 
     assert "id" in str(exc_info.value)
     assert "unknown" in str(exc_info.value)
@@ -398,7 +469,7 @@ def test_prepare_pending_action_rejects_unknown_tool():
     pending = PendingAction("w1", "missing", "{}", "missing")
 
     with pytest.raises(ValueError, match="missing"):
-        prepare_pending_action(pending, _editable_registry(), {})
+        prepare_pending_action(pending, _editable_tools(), {})
 
 
 @pytest.mark.parametrize(
@@ -412,13 +483,14 @@ def test_prepare_pending_action_rejects_unknown_tool():
         '{"score":Infinity}',
         '{"score":-Infinity}',
         '{"score":1e400}',
+        '{"id":1,"id":2}',
     ],
 )
 def test_prepare_pending_action_rejects_malformed_or_non_object_original_args(raw_args):
     pending = PendingAction("w1", "update_application_status", raw_args, "change status")
 
     with pytest.raises(ValueError, match="JSON object"):
-        prepare_pending_action(pending, _editable_registry(), {})
+        prepare_pending_action(pending, _editable_tools(), {})
 
 
 @pytest.mark.parametrize(
@@ -441,13 +513,13 @@ def test_prepare_pending_action_rejects_malformed_or_non_object_original_args(ra
 )
 def test_prepare_pending_action_rejects_invalid_edited_values(field, value):
     with pytest.raises(ValueError, match=field):
-        prepare_pending_action(_pending(), _editable_registry(), {field: value})
+        prepare_pending_action(_pending(), _editable_tools(), {field: value})
 
 
 def test_prepare_pending_action_accepts_all_supported_edited_types():
     prepared = prepare_pending_action(
         _pending(),
-        _editable_registry(),
+        _editable_tools(),
         {
             "status": "rejected",
             "title": "Backend Engineer",
@@ -483,7 +555,7 @@ def test_prepare_pending_action_accepts_only_exact_declared_clear_sentinels():
 
     prepared = prepare_pending_action(
         pending,
-        _editable_registry(),
+        _editable_tools(),
         {"remind_at": "", "round": 0},
     )
 
@@ -506,29 +578,33 @@ def test_prepare_pending_action_accepts_only_exact_declared_clear_sentinels():
 )
 def test_prepare_pending_action_rejects_undeclared_or_inexact_clear_values(field, value):
     with pytest.raises(ValueError, match=field):
-        prepare_pending_action(_pending(), _editable_registry(), {field: value})
+        prepare_pending_action(_pending(), _editable_tools(), {field: value})
 
 
 def test_prepare_pending_action_rejects_non_scalar_declared_clear_sentinel():
-    registry = _editable_registry()
-    registry["update_application_status"]["editable_fields"] = [
-        {
-            "field": "scheduled_at",
-            "type": "datetime",
-            "clearable": True,
-            "clear_value": {},
-        }
-    ]
+    registry = _editable_tools()
+    registry = registry.replace(
+        "update_application_status",
+        editable_fields=(
+            {
+                "field": "scheduled_at",
+                "type": "datetime",
+                "clearable": True,
+                "clear_value": {},
+            },
+        ),
+    )
 
     with pytest.raises(ValueError, match="scheduled_at"):
         prepare_pending_action(_pending(), registry, {"scheduled_at": {}})
 
 
 def test_prepare_pending_action_rejects_unknown_descriptor_type():
-    registry = _editable_registry()
-    registry["update_application_status"]["editable_fields"] = [
-        {"field": "status", "type": "object"}
-    ]
+    registry = _editable_tools()
+    registry = registry.replace(
+        "update_application_status",
+        editable_fields=({"field": "status", "type": "object"},),
+    )
 
     with pytest.raises(ValueError, match="unknown.*type|type.*unknown"):
         prepare_pending_action(_pending(), registry, {"status": "offer"})
@@ -545,7 +621,7 @@ def test_prepare_pending_action_runs_tool_validator_on_effective_args():
 
     with pytest.raises(ValueError, match="status transition is not allowed"):
         prepare_pending_action(
-            _pending(), _editable_registry(validate=validate), {"status": "rejected"}
+            _pending(), _editable_tools(validate=validate), {"status": "rejected"}
         )
 
     assert seen == [{"id": 7, "status": "rejected"}]
@@ -553,7 +629,7 @@ def test_prepare_pending_action_runs_tool_validator_on_effective_args():
 
 def test_in_memory_checkpoint_executes_effective_args():
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -593,11 +669,14 @@ def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event
 ):
     calls = []
     events = []
-    registry = _editable_registry(calls)
-    registry["other_write_tool"] = {
-        "write": True,
-        "handler": lambda args: calls.append("other:" + args) or '{"ok":true}',
-    }
+    registry = _editable_tools(calls)
+    registry = registry.with_tool(
+        _tool(
+            "other_write_tool",
+            write=True,
+            executor=lambda args: calls.append("other:" + args) or '{"ok":true}',
+        )
+    )
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -658,7 +737,7 @@ def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event
 def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
     calls = []
     events = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -764,7 +843,7 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
 
 def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -817,7 +896,7 @@ def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
 
 def test_missing_resume_identity_preserves_checkpoint(monkeypatch):
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -863,7 +942,7 @@ def test_missing_resume_identity_preserves_checkpoint(monkeypatch):
     assert new_pending is None
 
 
-def test_checkpoint_validator_exception_fails_closed_without_leaking_details():
+def test_checkpoint_validator_exception_fails_before_claim_without_leaking_details():
     calls = []
     validation_count = 0
 
@@ -874,7 +953,7 @@ def test_checkpoint_validator_exception_fails_closed_without_leaking_details():
             return ""
         raise Exception()
 
-    registry = _editable_registry(calls, validate=validate)
+    registry = _editable_tools(calls, validate=validate)
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -895,27 +974,23 @@ def test_checkpoint_validator_exception_fails_closed_without_leaking_details():
     _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
     assert pending is not None
 
-    added, _, _ = runner.resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
+    with pytest.raises(PendingActionValidationError, match="工具参数验证失败"):
+        runner.resume_after_confirm(
+            [], pending, approved=True, auto_approve=False, max_iter=8
+        )
 
     assert calls == []
-    assert added[0].content == "错误：工具参数验证失败，请检查后重试。"
 
 
 @pytest.mark.parametrize(
     ("effective_args", "expected_args"),
     [
         (' { "id" : 7, "status" : "rejected" } ', '{"id":7,"status":"rejected"}'),
-        (
-            '{"id":7,"status":"offer","status":"rejected"}',
-            '{"id":7,"status":"rejected"}',
-        ),
     ],
 )
 def test_checkpoint_executes_only_canonical_effective_args(effective_args, expected_args):
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(
         ScriptedModel(
             [
@@ -949,10 +1024,54 @@ def test_checkpoint_executes_only_canonical_effective_args(effective_args, expec
     assert calls == [expected_args]
 
 
+def test_checkpoint_rejects_duplicate_effective_argument_keys_before_claim():
+    calls = []
+    outcomes = []
+    registry = _editable_tools(calls)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args='{"id":7,"status":"offer"}',
+                        )
+                    ]
+                ),
+                Assistant(content="must not run"),
+            ]
+        ),
+        registry,
+        confirmation_result_sink=lambda *args: outcomes.append(args),
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+
+    assert pending is not None
+    duplicate = PendingAction(
+        pending.tool_call_id,
+        pending.tool_name,
+        '{"id":7,"status":"offer","status":"rejected"}',
+        pending.human,
+    )
+    with pytest.raises(PendingActionValidationError, match="valid JSON object"):
+        runner.resume_after_confirm(
+            [],
+            duplicate,
+            approved=True,
+            auto_approve=False,
+            max_iter=8,
+        )
+
+    assert calls == []
+    assert outcomes == []
+
+
 @pytest.mark.parametrize("overflow_source", ["original", "effective"])
 def test_checkpoint_rejects_non_finite_overflow_args(overflow_source):
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     original_args = (
         '{"id":7,"status":"offer","score":1e400}'
         if overflow_source == "original"
@@ -998,7 +1117,7 @@ def test_checkpoint_rejects_non_finite_overflow_args(overflow_source):
 
 def test_missing_checkpoint_fallback_executes_effective_args():
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     effective_pending = prepare_pending_action(_pending(), registry, {"status": "rejected"})
 
     _, reply, new_pending = resume_after_confirm(
@@ -1025,8 +1144,8 @@ def test_concurrent_sqlite_confirmations_execute_handler_at_most_once(tmp_path):
             calls.append(args)
         return '{"ok":true}'
 
-    registry = _editable_registry()
-    registry["update_application_status"]["handler"] = handler
+    registry = _editable_tools()
+    registry = registry.replace("update_application_status", executor=handler)
     checkpoint_path = tmp_path / "concurrent_confirmations.sqlite"
     thread_id = "conversation:concurrent-sqlite"
     creator = LangGraphAgentRunner(
@@ -1086,8 +1205,8 @@ def test_concurrent_fallback_confirmations_execute_handler_at_most_once():
             calls.append(args)
         return '{"ok":true}'
 
-    registry = _editable_registry()
-    registry["update_application_status"]["handler"] = handler
+    registry = _editable_tools()
+    registry = registry.replace("update_application_status", executor=handler)
     pending = _pending()
     thread_id = "conversation:concurrent-fallback"
     runners = [
@@ -1119,7 +1238,7 @@ def test_concurrent_fallback_confirmations_execute_handler_at_most_once():
 
 def test_rejected_fallback_claims_rejection_and_blocks_later_execution():
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     pending = _pending()
     thread_id = "conversation:rejected-fallback"
 
@@ -1145,8 +1264,8 @@ def test_fallback_handler_error_remains_claimed_against_replay():
         calls.append(args)
         raise RuntimeError("failed after side effect")
 
-    registry = _editable_registry()
-    registry["update_application_status"]["handler"] = handler
+    registry = _editable_tools()
+    registry = registry.replace("update_application_status", executor=handler)
     pending = _pending()
     thread_id = "conversation:fallback-handler-error"
 
@@ -1171,7 +1290,7 @@ def test_fallback_validation_error_remains_retryable_without_approval_or_sink():
     calls = []
     events = []
     outcomes = []
-    registry = _editable_registry(calls, validate=lambda args: "blocked arguments")
+    registry = _editable_tools(calls, validate=lambda args: "blocked arguments")
     pending = _pending()
     thread_id = "conversation:fallback-validation-error"
 
@@ -1193,11 +1312,42 @@ def test_fallback_validation_error_remains_retryable_without_approval_or_sink():
     )
 
 
+def test_mutable_validation_failure_never_claims_or_persists_confirmation_result():
+    calls = []
+    attempts = []
+    outcomes = []
+    checks = 0
+
+    def validate(args):
+        nonlocal checks
+        checks += 1
+        return "state changed before execution" if checks > 1 else ""
+
+    with pytest.raises(ValueError, match="state changed before execution"):
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content="must not run")]),
+            _editable_tools(calls, validate=validate),
+            thread_id="conversation:mutable-validation",
+            confirmation_attempt_sink=lambda *args: attempts.append(args),
+            confirmation_result_sink=lambda *args: outcomes.append(args),
+        ).resume_after_confirm(
+            [],
+            _pending(),
+            approved=True,
+            auto_approve=False,
+            max_iter=8,
+        )
+
+    assert calls == []
+    assert attempts == []
+    assert outcomes == []
+
+
 def test_fallback_parse_error_remains_retryable_without_consuming_claim():
     pending = PendingAction("bad-json", "update_application_status", "{", "change status")
     outcomes = []
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     thread_id = "conversation:fallback-parse-error"
 
     for _ in range(2):
@@ -1224,6 +1374,29 @@ def test_fallback_parse_error_remains_retryable_without_consuming_claim():
     assert calls == ['{"id":7,"status":"offer"}']
 
 
+def test_fallback_duplicate_argument_key_remains_retryable_without_consuming_claim():
+    pending = PendingAction(
+        "duplicate-json",
+        "update_application_status",
+        '{"id":1,"id":2,"status":"offer"}',
+        "change status",
+    )
+    outcomes = []
+    calls = []
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="valid JSON object"):
+            LangGraphAgentRunner(
+                ScriptedModel([Assistant(content="must not run")]),
+                _editable_tools(calls),
+                thread_id="conversation:duplicate-json",
+                confirmation_result_sink=lambda *args: outcomes.append(args),
+            ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
+
+    assert calls == []
+    assert outcomes == []
+
+
 def test_checkpoint_prehandler_validation_failure_keeps_interrupt_retryable(
     tmp_path,
     monkeypatch,
@@ -1246,7 +1419,7 @@ def test_checkpoint_prehandler_validation_failure_keeps_interrupt_retryable(
             Assistant(content="done"),
         ]
     )
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     _, _, stored_pending = run_turn(
         model,
         registry,
@@ -1301,8 +1474,8 @@ def test_confirmation_locks_are_scoped_by_thread_id():
             calls.append(args)
         return '{"ok":true}'
 
-    registry = _editable_registry()
-    registry["update_application_status"]["handler"] = handler
+    registry = _editable_tools()
+    registry = registry.replace("update_application_status", executor=handler)
     pending_actions = [
         PendingAction(
             tool_call_id=f"write-{index}",
@@ -1342,7 +1515,6 @@ def test_confirmation_locks_are_scoped_by_thread_id():
     "effective_args",
     [
         ' { "id" : 7, "status" : "rejected" } ',
-        '{"id":7,"status":"offer","status":"rejected"}',
     ],
 )
 def test_missing_checkpoint_executes_only_canonical_effective_args(effective_args):
@@ -1356,7 +1528,7 @@ def test_missing_checkpoint_executes_only_canonical_effective_args(effective_arg
 
     resume_after_confirm(
         ScriptedModel([Assistant(content="done")]),
-        _editable_registry(calls),
+        _editable_tools(calls),
         [],
         pending,
         approved=True,
@@ -1378,7 +1550,7 @@ def test_missing_checkpoint_executes_only_canonical_effective_args(effective_arg
 )
 def test_approved_resume_rejects_missing_or_non_string_effective_args(monkeypatch, effective_args):
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(ScriptedModel([]), registry)
     resume_payload = {
         "approved": True,
@@ -1410,7 +1582,7 @@ def test_approved_resume_rejects_missing_or_non_string_effective_args(monkeypatc
 
 def test_resume_does_not_treat_non_boolean_approval_as_approved(monkeypatch):
     calls = []
-    registry = _editable_registry(calls)
+    registry = _editable_tools(calls)
     runner = LangGraphAgentRunner(ScriptedModel([]), registry)
     monkeypatch.setattr(
         agent_module,
@@ -1444,7 +1616,7 @@ def test_resume_does_not_treat_non_boolean_approval_as_approved(monkeypatch):
 
 def test_missing_checkpoint_validates_effective_args_before_handler_execution():
     calls = []
-    registry = _editable_registry(calls, validate=lambda args: "blocked effective arguments")
+    registry = _editable_tools(calls, validate=lambda args: "blocked effective arguments")
 
     with pytest.raises(ValueError, match="blocked effective arguments"):
         resume_after_confirm(
@@ -1469,7 +1641,7 @@ def test_missing_checkpoint_validator_exception_fails_closed_without_leaking_det
     with pytest.raises(ValueError) as exc_info:
         resume_after_confirm(
             ScriptedModel([Assistant(content="not executed")]),
-            _editable_registry(calls, validate=validate),
+            _editable_tools(calls, validate=validate),
             [],
             _pending(),
             approved=True,
@@ -1499,7 +1671,7 @@ def test_missing_checkpoint_rejects_non_finite_effective_args(raw_args):
     with pytest.raises(ValueError, match="valid JSON object"):
         resume_after_confirm(
             ScriptedModel([Assistant(content="not executed")]),
-            _editable_registry(calls),
+            _editable_tools(calls),
             [],
             pending,
             approved=True,
@@ -1515,7 +1687,7 @@ def test_missing_checkpoint_does_not_treat_non_boolean_approval_as_approved():
 
     added, _, _ = resume_after_confirm(
         ScriptedModel([Assistant(content="not executed")]),
-        _editable_registry(calls),
+        _editable_tools(calls),
         [],
         _pending(),
         approved="false",
@@ -1533,7 +1705,7 @@ def test_rejection_feedback_reaches_next_model_turn_without_handler_execution():
 
     added, reply, new_pending = resume_after_confirm(
         model,
-        _editable_registry(calls),
+        _editable_tools(calls),
         [],
         _pending(),
         approved=False,
@@ -1556,7 +1728,7 @@ def test_empty_rejection_feedback_keeps_generic_rejection_message():
 
     added, _, _ = resume_after_confirm(
         model,
-        _editable_registry(calls),
+        _editable_tools(calls),
         [],
         _pending(),
         approved=False,
@@ -1582,7 +1754,7 @@ def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path
     )
     _, _, stored_pending = run_turn(
         model,
-        _editable_registry(calls),
+        _editable_tools(calls),
         [],
         auto_approve=False,
         checkpoint_path=checkpoint_path,
@@ -1592,7 +1764,7 @@ def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path
     with pytest.raises(RuntimeError, match="provider failed after confirmed tool"):
         resume_after_confirm(
             model,
-            _editable_registry(calls),
+            _editable_tools(calls),
             [],
             stored_pending,
             approved=True,
@@ -1619,8 +1791,11 @@ def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path
 
 def test_confirmation_result_sink_records_approved_tool_error():
     outcomes = []
-    registry = _editable_registry()
-    registry["update_application_status"]["handler"] = lambda args: "错误：write failed"
+    registry = _editable_tools()
+    registry = registry.replace(
+        "update_application_status",
+        executor=lambda args: "错误：write failed",
+    )
 
     added, _, _ = resume_after_confirm(
         ScriptedModel([Assistant(content="handled")]),
@@ -1659,8 +1834,8 @@ def test_confirmation_attempt_sink_runs_immediately_before_handler(
         calls.append(args)
         return '{"ok":true}'
 
-    registry = _editable_registry()
-    registry[pending.tool_name]["handler"] = handler
+    registry = _editable_tools()
+    registry = registry.replace(pending.tool_name, executor=handler)
     checkpoint_path = tmp_path / "attempt.sqlite" if use_checkpoint else None
     model = ScriptedModel([Assistant(content="done")])
     if use_checkpoint:
@@ -1712,13 +1887,14 @@ def test_confirmation_attempt_sink_runs_immediately_before_handler(
 
 def test_write_tool_pauses_before_execution():
     calls = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "describe": lambda args: "change status",
-            "handler": lambda args: calls.append(args) or "{}",
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            confirmation_description=lambda args: "change status",
+            executor=lambda args: calls.append(args) or "{}",
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -1744,13 +1920,14 @@ def test_write_tool_pauses_before_execution():
 
 def test_confirm_executes_pending_write():
     calls = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "describe": lambda args: "change status",
-            "handler": lambda args: calls.append(args) or '{"ok":true}',
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            confirmation_description=lambda args: "change status",
+            executor=lambda args: calls.append(args) or '{"ok":true}',
+        )
+    )
     model = ScriptedModel([Assistant(content="done")])
     pending = PendingAction(
         tool_call_id="w1",
@@ -1777,12 +1954,13 @@ def test_confirm_executes_pending_write():
 
 def test_reject_does_not_execute_pending_write():
     calls = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "handler": lambda args: calls.append(args) or '{"ok":true}',
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            executor=lambda args: calls.append(args) or '{"ok":true}',
+        )
+    )
     model = ScriptedModel([Assistant(content="cancelled")])
     pending = PendingAction(
         tool_call_id="w1",
@@ -1809,13 +1987,13 @@ def test_reject_does_not_execute_pending_write():
 
 def test_event_sink_emits_read_tool_call_and_result():
     events = []
-    registry = {
-        "list_applications": {
-            "write": False,
-            "description": "List job applications.",
-            "handler": lambda args: '{"items":[]}',
-        }
-    }
+    registry = _tools(
+        _tool(
+            "list_applications",
+            description="List job applications.",
+            executor=lambda args: '{"items":[]}',
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]),
@@ -1868,7 +2046,7 @@ def test_journal_records_one_model_answer_lifecycle():
 
     added, reply, pending = run_turn(
         ScriptedModel([Assistant(content="done")]),
-        {},
+        _tools(),
         [Message(role="user", content="hello")],
         auto_approve=False,
         run_recorder=recorder,
@@ -1902,12 +2080,12 @@ def test_journal_records_read_tool_loop_and_increments_model_step():
 
     _, reply, pending = run_turn(
         model,
-        {
-            "list_applications": {
-                "write": False,
-                "handler": lambda _args: '{"items":[]}',
-            }
-        },
+        _tools(
+            _tool(
+                "list_applications",
+                executor=lambda _args: '{"items":[]}',
+            )
+        ),
         [],
         auto_approve=False,
         run_recorder=recorder,
@@ -1951,12 +2129,13 @@ def test_journal_write_tool_stops_at_proposal_before_confirmation():
                 )
             ]
         ),
-        {
-            "update_application_status": {
-                "write": True,
-                "handler": lambda args: calls.append(args) or "{}",
-            }
-        },
+        _tools(
+            _tool(
+                "update_application_status",
+                write=True,
+                executor=lambda args: calls.append(args) or "{}",
+            )
+        ),
         [],
         auto_approve=False,
         run_recorder=recorder,
@@ -1984,7 +2163,7 @@ def test_journal_records_provider_failure_and_preserves_exception():
     with pytest.raises(RuntimeError, match="sensitive provider detail"):
         run_turn(
             FailingProvider(),
-            {},
+            _tools(),
             [],
             auto_approve=False,
             run_recorder=recorder,
@@ -2001,7 +2180,7 @@ def test_journal_records_provider_failure_and_preserves_exception():
     assert "sensitive provider detail" not in repr(failed)
 
 
-def test_journal_records_legacy_tool_error_without_changing_agent_result():
+def test_journal_records_typed_tool_error_without_changing_agent_result():
     recorder = RecordingRunRecorder()
     model = RecordingScriptedModel(
         [
@@ -2014,12 +2193,14 @@ def test_journal_records_legacy_tool_error_without_changing_agent_result():
 
     _, reply, pending = run_turn(
         model,
-        {
-                "list_applications": {
-                    "write": False,
-                    "handler": lambda _args: (_ for _ in ()).throw(ValueError("legacy failure")),
-                }
-        },
+        _tools(
+            _tool(
+                "list_applications",
+                executor=lambda _args: (_ for _ in ()).throw(
+                    ValueError("typed failure")
+                ),
+            )
+        ),
         [],
         auto_approve=False,
         run_recorder=recorder,
@@ -2027,29 +2208,29 @@ def test_journal_records_legacy_tool_error_without_changing_agent_result():
 
     assert reply == "recovered"
     assert pending is None
-    assert model.message_batches[1][-1].content == "错误：legacy failure"
+    assert model.message_batches[1][-1].content == "错误：typed failure"
     assert recorder.event_types[3:6] == [
         "tool.proposed",
         "tool.started",
         "tool.failed",
     ]
-    assert "legacy failure" not in repr(recorder.events)
+    assert "typed failure" not in repr(recorder.events)
 
 
 def test_executes_multiple_read_only_tool_calls_from_one_assistant_turn():
     calls = []
-    registry = {
-        "list_applications": {
-            "write": False,
-            "description": "查看投递列表",
-            "handler": lambda args: calls.append(("apps", args)) or "[]",
-        },
-        "list_notes": {
-            "write": False,
-            "description": "查看复盘记录",
-            "handler": lambda args: calls.append(("notes", args)) or "[]",
-        },
-    }
+    registry = _tools(
+        _tool(
+            "list_applications",
+            description="查看投递列表",
+            executor=lambda args: calls.append(("apps", args)) or "[]",
+        ),
+        _tool(
+            "list_notes",
+            description="查看复盘记录",
+            executor=lambda args: calls.append(("notes", args)) or "[]",
+        ),
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -2072,16 +2253,110 @@ def test_executes_multiple_read_only_tool_calls_from_one_assistant_turn():
     assert [message.tool_call_id for message in added if message.role == "tool"] == ["r1", "r2"]
 
 
+@pytest.mark.parametrize(
+    ("kinds", "expected_calls", "expected_tool_call_ids", "expects_pending"),
+    [
+        (("read", "read"), ["first", "second"], ["first", "second"], False),
+        (("write", "read"), [], ["first"], True),
+        (("read", "write"), ["first"], ["first"], False),
+        (("write", "write"), [], ["first"], True),
+    ],
+)
+def test_multi_tool_call_selection_matches_baseline_matrix(
+    kinds,
+    expected_calls,
+    expected_tool_call_ids,
+    expects_pending,
+):
+    calls = []
+    tools = _tools(
+        *(
+            _tool(
+                f"{kind}_tool_{index}",
+                write=kind == "write",
+                executor=lambda _args, label=label: calls.append(label) or "{}",
+            )
+            for index, (kind, label) in enumerate(
+                zip(kinds, ("first", "second"), strict=True),
+                start=1,
+            )
+        )
+    )
+    tool_calls = [
+        ToolCall(id=label, name=definition.name, args="{}")
+        for label, definition in zip(("first", "second"), tools.definitions, strict=True)
+    ]
+    model = ScriptedModel(
+        [Assistant(tool_calls=tool_calls), Assistant(content="done")]
+    )
+
+    added, reply, pending = run_turn(
+        model,
+        tools,
+        [],
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == expected_calls
+    assert [call.id for call in added[0].tool_calls] == expected_tool_call_ids
+    assert (pending is not None) is expects_pending
+    assert reply == ("" if expects_pending else "done")
+
+
+def test_failed_first_read_does_not_block_second_read_in_same_turn():
+    calls = []
+
+    def fail_first(_args):
+        calls.append("first")
+        raise ValueError("private read failure")
+
+    tools = _tools(
+        _tool("first_read", executor=fail_first),
+        _tool(
+            "second_read",
+            executor=lambda _args: calls.append("second") or "{}",
+        ),
+    )
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="first", name="first_read", args="{}"),
+                    ToolCall(id="second", name="second_read", args="{}"),
+                ]
+            ),
+            Assistant(content="done"),
+        ]
+    )
+
+    added, reply, pending = run_turn(
+        model,
+        tools,
+        [],
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == ["first", "second"]
+    assert [message.tool_call_id for message in added if message.role == "tool"] == [
+        "first",
+        "second",
+    ]
+    assert reply == "done"
+    assert pending is None
+
+
 def test_always_confirm_write_pauses_even_when_auto_approve_is_enabled():
     calls = []
-    registry = {
-        "delete_note": {
-            "write": True,
-            "always_confirm": True,
-            "describe": lambda args: "删除复盘记录",
-            "handler": lambda args: calls.append(args) or "{}",
-        }
-    }
+    registry = _tools(
+        _tool(
+            "delete_note",
+            write=True,
+            confirmation_description=lambda args: "删除复盘记录",
+            executor=lambda args: calls.append(args) or "{}",
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -2107,14 +2382,15 @@ def test_always_confirm_write_pauses_even_when_auto_approve_is_enabled():
 
 def test_every_write_pauses_even_when_auto_approve_is_enabled():
     calls: list[str] = []
-    registry = {
-        "write_tool": {
-            "write": True,
-            "handler": lambda args: calls.append(args) or "written",
-            "validate": lambda args: "",
-            "describe": lambda args: "写入测试数据",
-        }
-    }
+    registry = _tools(
+        _tool(
+            "write_tool",
+            write=True,
+            executor=lambda args: calls.append(args) or "written",
+            validator=lambda args: "",
+            confirmation_description=lambda args: "写入测试数据",
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -2133,15 +2409,16 @@ def test_every_write_pauses_even_when_auto_approve_is_enabled():
 
 def test_auto_approved_write_still_runs_validation_before_execution():
     calls = []
-    registry = {
-        "create_application": {
-            "write": True,
-            "validate": lambda args: (
+    registry = _tools(
+        _tool(
+            "create_application",
+            write=True,
+            validator=lambda args: (
                 "create_application requires explicit user confirmation before adding a new position"
             ),
-            "handler": lambda args: calls.append(args) or "{}",
-        }
-    }
+            executor=lambda args: calls.append(args) or "{}",
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -2168,13 +2445,14 @@ def test_auto_approved_write_still_runs_validation_before_execution():
 
 def test_cancelled_run_does_not_execute_auto_approved_write():
     calls = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "describe": lambda args: "更新投递状态",
-            "handler": lambda args: calls.append(args) or "{}",
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            confirmation_description=lambda args: "更新投递状态",
+            executor=lambda args: calls.append(args) or "{}",
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -2208,7 +2486,7 @@ def test_event_sink_emits_assistant_delta_from_streaming_model():
 
     added, reply, pending = run_turn(
         StreamingScriptedModel(),
-        {},
+        _tools(),
         [],
         auto_approve=False,
         max_iter=8,
@@ -2227,14 +2505,15 @@ def test_event_sink_emits_assistant_delta_from_streaming_model():
 def test_event_sink_emits_write_tool_call_before_pending_confirmation():
     calls = []
     events = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "description": "Update application status.",
-            "describe": lambda args: "change status",
-            "handler": lambda args: calls.append(args) or "{}",
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            description="Update application status.",
+            confirmation_description=lambda args: "change status",
+            executor=lambda args: calls.append(args) or "{}",
+        )
+    )
     model = ScriptedModel(
         [
             Assistant(
@@ -2281,13 +2560,14 @@ def test_event_sink_emits_write_tool_call_before_pending_confirmation():
 def test_event_sink_emits_tool_events_when_confirm_resumes_without_checkpoint():
     calls = []
     events = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "description": "Update application status.",
-            "handler": lambda args: calls.append(args) or '{"ok":true}',
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            description="Update application status.",
+            executor=lambda args: calls.append(args) or '{"ok":true}',
+        )
+    )
     pending = PendingAction(
         tool_call_id="w1",
         tool_name="update_application_status",
@@ -2318,13 +2598,14 @@ def test_event_sink_emits_tool_events_when_confirm_resumes_without_checkpoint():
 
 def test_langgraph_runner_resumes_pending_write_from_sqlite_checkpoint(tmp_path):
     calls = []
-    registry = {
-        "update_application_status": {
-            "write": True,
-            "describe": lambda args: "change status",
-            "handler": lambda args: calls.append(args) or '{"ok":true}',
-        }
-    }
+    registry = _tools(
+        _tool(
+            "update_application_status",
+            write=True,
+            confirmation_description=lambda args: "change status",
+            executor=lambda args: calls.append(args) or '{"ok":true}',
+        )
+    )
     checkpoint_path = tmp_path / "agent_checkpoints.sqlite"
     thread_id = "conversation:1"
 

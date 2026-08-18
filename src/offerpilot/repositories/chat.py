@@ -13,23 +13,6 @@ from offerpilot.ai.types import Message
 from offerpilot.models import ChatMessage, Conversation
 
 
-_PENDING_CONFIRMATION_CLAIM_PREFIX = "\x1eofferpilot-confirmation-claim:"
-
-
-def claimed_pending_tool_call_id(tool_call_id: str, claim_id: str) -> str:
-    if not claim_id or ":" in claim_id:
-        raise ValueError("confirmation claim id must be non-empty and contain no colon")
-    return f"{_PENDING_CONFIRMATION_CLAIM_PREFIX}{claim_id}:{tool_call_id}"
-
-
-def visible_pending_tool_call_id(tool_call_id: str) -> str:
-    if not tool_call_id.startswith(_PENDING_CONFIRMATION_CLAIM_PREFIX):
-        return tool_call_id
-    claimed = tool_call_id[len(_PENDING_CONFIRMATION_CLAIM_PREFIX) :]
-    _, separator, visible = claimed.partition(":")
-    return visible if separator else tool_call_id
-
-
 @dataclass(frozen=True)
 class ConversationArchiveUpdate:
     status: Literal["updated", "not_found", "pending"]
@@ -180,7 +163,7 @@ class ChatRepository:
             if conversation is None or not conversation.pending_tool_name:
                 return None
             return PendingAction(
-                tool_call_id=visible_pending_tool_call_id(conversation.pending_tool_call_id),
+                tool_call_id=conversation.pending_tool_call_id,
                 tool_name=conversation.pending_tool_name,
                 args=conversation.pending_args,
                 human=conversation.pending_human or conversation.pending_tool_name,
@@ -192,8 +175,10 @@ class ChatRepository:
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
                 .where(Conversation.archived_at.is_(None))
+                .where(Conversation.pending_confirmation_claim_id == "")
                 .values(
                     pending_tool_call_id=pending.tool_call_id,
+                    pending_confirmation_claim_id="",
                     pending_tool_name=pending.tool_name,
                     pending_args=pending.args,
                     pending_human=pending.human,
@@ -215,8 +200,10 @@ class ChatRepository:
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
                 .where(Conversation.archived_at.is_(None))
+                .where(Conversation.pending_confirmation_claim_id == "")
                 .values(
                     pending_tool_call_id=pending.tool_call_id,
+                    pending_confirmation_claim_id="",
                     pending_tool_name=pending.tool_name,
                     pending_args=pending.args,
                     pending_human=pending.human,
@@ -250,8 +237,10 @@ class ChatRepository:
             session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_confirmation_claim_id == "")
                 .values(
                     pending_tool_call_id="",
+                    pending_confirmation_claim_id="",
                     pending_tool_name="",
                     pending_args="",
                     pending_human="",
@@ -268,7 +257,8 @@ class ChatRepository:
     ) -> bool:
         """Atomically claim one Pending Action while preserving its public representation."""
 
-        claimed_tool_call_id = claimed_pending_tool_call_id(expected.tool_call_id, claim_id)
+        if not claim_id:
+            raise ValueError("confirmation claim id must be non-empty")
         with self._session_factory() as session:
             result = session.execute(
                 update(Conversation)
@@ -277,8 +267,9 @@ class ChatRepository:
                 .where(Conversation.pending_tool_call_id == expected.tool_call_id)
                 .where(Conversation.pending_tool_name == expected.tool_name)
                 .where(Conversation.pending_args == expected.args)
+                .where(Conversation.pending_confirmation_claim_id == "")
                 .values(
-                    pending_tool_call_id=claimed_tool_call_id,
+                    pending_confirmation_claim_id=claim_id,
                     updated_at=datetime.now(timezone.utc),
                 )
             )
@@ -298,6 +289,7 @@ class ChatRepository:
         """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
         values: dict[str, Any] = {
             "pending_tool_call_id": "",
+            "pending_confirmation_claim_id": "",
             "pending_tool_name": "",
             "pending_args": "",
             "pending_human": "",
@@ -312,19 +304,18 @@ class ChatRepository:
         with self._session_factory() as session:
             now = _next_conversation_timestamp(session, conversation_id)
             values["updated_at"] = now
-            expected_tool_call_id = (
-                claimed_pending_tool_call_id(expected.tool_call_id, claim_id)
-                if claim_id is not None
-                else expected.tool_call_id
-            )
-            result = session.execute(
+            statement = (
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
-                .where(Conversation.pending_tool_call_id == expected_tool_call_id)
+                .where(Conversation.pending_tool_call_id == expected.tool_call_id)
                 .where(Conversation.pending_tool_name == expected.tool_name)
                 .where(Conversation.pending_args == expected.args)
-                .values(**values)
             )
+            statement = statement.where(
+                Conversation.pending_confirmation_claim_id
+                == (claim_id if claim_id is not None else "")
+            )
+            result = session.execute(statement.values(**values))
             if getattr(result, "rowcount", 0) != 1:
                 session.rollback()
                 return None
@@ -360,6 +351,7 @@ class ChatRepository:
         """Atomically replace a stale pending card only when the original still owns it."""
         values: dict[str, Any] = {
             "pending_tool_call_id": replacement.tool_call_id,
+            "pending_confirmation_claim_id": "",
             "pending_tool_name": replacement.tool_name,
             "pending_args": replacement.args,
             "pending_human": replacement.human,
@@ -381,6 +373,7 @@ class ChatRepository:
                 .where(Conversation.pending_tool_call_id == expected.tool_call_id)
                 .where(Conversation.pending_tool_name == expected.tool_name)
                 .where(Conversation.pending_args == expected.args)
+                .where(Conversation.pending_confirmation_claim_id == "")
                 .values(**values)
             )
             if getattr(result, "rowcount", 0) != 1:
@@ -421,6 +414,7 @@ class ChatRepository:
             values.update(
                 {
                     "pending_tool_call_id": pending.tool_call_id,
+                    "pending_confirmation_claim_id": "",
                     "pending_tool_name": pending.tool_name,
                     "pending_args": pending.args,
                     "pending_human": pending.human,
@@ -436,6 +430,7 @@ class ChatRepository:
             values.update(
                 {
                     "pending_tool_call_id": "",
+                    "pending_confirmation_claim_id": "",
                     "pending_tool_name": "",
                     "pending_args": "",
                     "pending_human": "",

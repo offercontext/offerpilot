@@ -35,7 +35,7 @@ from offerpilot.ai.tool_runtime.contracts import (
 from offerpilot.ai.tool_runtime.pipeline import Rejected, execute_prepared, prepare_call
 from offerpilot.ai.tool_runtime.rendering import render_compatibility
 from offerpilot.ai.tool_runtime.transport import project_transport_event
-from offerpilot.ai.tool_runtime.validation import parse_arguments
+from offerpilot.ai.tool_runtime.validation import ArgumentValidationError, parse_arguments
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.agent_runtime.events import ContextManifestInput
 from offerpilot.agent_runtime.journal import EventInput, NullRunRecorder, RunRecorder
@@ -485,9 +485,13 @@ class LangGraphAgentRunner:
                         if not isinstance(prepared_result, ConfirmationRequired):
                             if isinstance(prepared_result, Rejected):
                                 self._failures.append(prepared_result.failure)
-                                result = render_compatibility(spec, prepared_result.failure)
-                            else:
-                                result = "错误：确认操作状态不一致"
+                                raise PendingActionValidationError(
+                                    prepared_result.failure.compatibility_detail
+                                    or prepared_result.failure.code
+                                )
+                            raise PendingActionValidationError(
+                                "pending tool no longer requires confirmation"
+                            )
                         else:
                             def claim(
                                 prepared: PreparedToolCall[Any, Any],
@@ -537,6 +541,12 @@ class LangGraphAgentRunner:
                             ):
                                 raise StalePendingActionError(
                                     "stale pending action: confirmation claim failed"
+                                )
+                            if not record.execution_started:
+                                assert isinstance(record.outcome, ToolFailure)
+                                raise PendingActionValidationError(
+                                    record.outcome.compatibility_detail
+                                    or record.outcome.code
                                 )
                             result = render_compatibility(spec, record.outcome)
                     else:
@@ -745,10 +755,21 @@ class LangGraphAgentRunner:
             self._records.append(record)
             if (
                 isinstance(record.outcome, ToolFailure)
-                and record.outcome.code == "fallback_confirmation_consumed"
+                and record.outcome.code
+                in {
+                    "authorization_mismatch",
+                    "confirmation_claim_failed",
+                    "confirmation_claim_lost",
+                    "fallback_confirmation_consumed",
+                }
             ):
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
+                )
+            if not record.execution_started:
+                assert isinstance(record.outcome, ToolFailure)
+                raise PendingActionValidationError(
+                    record.outcome.compatibility_detail or record.outcome.code
                 )
             result = render_compatibility(spec, record.outcome)
         else:
@@ -1193,13 +1214,10 @@ def _mapped_resume_payload() -> tuple[bool, dict[str, Any], str]:
 
 def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:
     try:
-        parsed = json.loads(raw, parse_constant=_reject_non_json_constant)
-        _validate_finite_json_numbers(parsed)
-    except (ValueError, TypeError) as exc:
+        parsed = parse_arguments(raw)
+    except ArgumentValidationError as exc:
         raise ValueError(error_message) from exc
-    if not isinstance(parsed, dict):
-        raise ValueError(error_message)
-    return parsed
+    return cast(dict[str, Any], parsed)
 
 
 def _encode_json_object(value: dict[str, Any]) -> str:

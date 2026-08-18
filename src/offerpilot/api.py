@@ -164,7 +164,7 @@ from offerpilot.repositories.adaptive_interview_practice import (
     AdaptivePracticeRepository,
     AdaptivePracticeValidationError,
 )
-from offerpilot.repositories.chat import ChatRepository, visible_pending_tool_call_id
+from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
     ApplicationEventCreate,
     ApplicationEventsRepository,
@@ -9509,13 +9509,19 @@ def _confirmation_result_recorder(
             # therefore clear the previous undo fail-closed.
             undo_update = undo if approved else None
             terminal_message = _confirmation_fallback_message(approved, succeeded) if timed_out else ""
+            claim_id = confirmation_claim_id()
+            if claim_id is None:
+                outcome["cas_lost"] = True
+                raise StalePendingActionError(
+                    "stale pending action: confirmation result has no successful claim"
+                )
             if terminal_message:
                 continuation_generation = repo.resolve_pending_confirmation(
                     conversation_id,
                     expected_pending,
                     tool_message,
                     undo_update,
-                    claim_id=confirmation_claim_id(),
+                    claim_id=claim_id,
                     terminal_assistant_content=terminal_message,
                 )
             else:
@@ -9524,7 +9530,7 @@ def _confirmation_result_recorder(
                     expected_pending,
                     tool_message,
                     undo_update,
-                    claim_id=confirmation_claim_id(),
+                    claim_id=claim_id,
                 )
             if continuation_generation is None:
                 outcome["cas_lost"] = True
@@ -10047,7 +10053,7 @@ def _conversation_json(
     if conversation.pending_tool_name:
         payload["pending_action"] = _pending_action_json(
             PendingAction(
-                tool_call_id=visible_pending_tool_call_id(conversation.pending_tool_call_id),
+                tool_call_id=conversation.pending_tool_call_id,
                 tool_name=conversation.pending_tool_name,
                 args=conversation.pending_args,
                 human=conversation.pending_human or conversation.pending_tool_name,

@@ -554,7 +554,7 @@ Pipeline 只捕获普通 `Exception`。`KeyboardInterrupt`、`SystemExit`、取�
 
 Pending Action 继续保存现有字段。`PreparedToolCall`、Context、capability 和 binding 结果不进入 Pending Action。
 
-Typed 确认恢复在 executor 前通过 Chat Repository 对现有 Pending Action 身份做一次持久 CAS claim。claim 仅把内部 tool-call identity 临时编码为不可由客户端构造的 claimed 形式；Repository/API 对外仍投影原始 Pending Action 字段与 confirmation token。结果持久化必须匹配同一 claim identity 后才能清除 Pending Action。该机制不新增业务 Ledger、不承诺进程崩溃后的 exactly-once，也不改变三个 deterministic Legacy Adapter 的既有确认实现。
+Typed 确认恢复在 executor 前通过 Chat Repository 对现有 Pending Action 身份做一次持久 CAS claim。`0025_pending_confirmation_claim` 只为 `conversations` 增加私有的 `pending_confirmation_claim_id` 列；Provider 的 `tool_call_id` 必须原样持久化，禁止把 claim marker 编入任何 Provider 可控字段。Repository/API 对外仍投影原始 Pending Action 字段与 confirmation token。结果持久化必须匹配同一 claim identity 后才能清除 Pending Action；普通 Chat 的 clear/replace/persist 路径必须以 claim 列为空为条件，不能覆盖正在执行的确认。执行前 validation、capability、preflight、stale 或 authorization 失败若尚未取得 claim，不得调用结果持久化，也不得清除 Pending Action。该机制不新增业务 Ledger、不承诺进程崩溃后的 exactly-once，也不改变三个 deterministic Legacy Adapter 的既有确认实现。
 
 ### 10.2 批准与修改
 

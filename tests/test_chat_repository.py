@@ -168,6 +168,51 @@ def test_pending_confirmation_claim_is_durable_private_and_single_winner(tmp_pat
     assert [message.content for message in repo.list_messages(conversation.id)] == ['{"id":1}']
 
 
+def test_pending_confirmation_claim_never_rewrites_provider_tool_call_id(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    provider_id = "\x1eofferpilot-confirmation-claim:provider:owned"
+    pending = PendingAction(
+        provider_id,
+        "update_application_status",
+        '{"id":1}',
+        "update",
+    )
+    repo.set_pending_action(conversation.id, pending)
+
+    assert repo.claim_pending_confirmation(conversation.id, pending, "claim-one") is True
+    assert repo.get_pending_action(conversation.id) == pending
+    stored = repo.get_conversation(conversation.id)
+    assert stored is not None
+    assert stored.pending_tool_call_id == provider_id
+    assert stored.pending_confirmation_claim_id == "claim-one"
+
+
+def test_generic_pending_mutations_cannot_clear_or_replace_active_claim(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    replacement = PendingAction("write-2", "update_application_status", '{"id":2}', "new")
+    repo.set_pending_action(conversation.id, pending)
+    assert repo.claim_pending_confirmation(conversation.id, pending, "claim-one") is True
+
+    repo.clear_pending_action(conversation.id)
+    assert repo.set_pending_action(conversation.id, replacement) is False
+    assert repo.persist_pending_action(conversation.id, replacement, []) is False
+
+    assert repo.get_pending_action(conversation.id) == pending
+    assert (
+        repo.resolve_pending_confirmation(
+            conversation.id,
+            pending,
+            Message(role="tool", content="unclaimed", tool_call_id="write-1"),
+            {},
+        )
+        is None
+    )
+    assert repo.get_pending_action(conversation.id) == pending
+
+
 def test_pending_confirmation_claim_has_one_winner_across_repository_instances(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     first = ChatRepository(session_factory)
