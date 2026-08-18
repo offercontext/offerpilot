@@ -17,6 +17,9 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolFailure,
     ToolSpec,
 )
+from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG, MODEL_TOOL_NAMES
+
+from golden import canonical_json, load_golden
 
 
 def _contract(name: str, schema: dict[str, Any] | None = None) -> ProviderToolContract:
@@ -145,3 +148,15 @@ def test_transient_runtime_values_reject_pickle_and_hide_sensitive_fields() -> N
     assert "private exception text" not in rendered
     assert "private pending identity" not in rendered
     assert "sensitive-argument-value" not in rendered
+
+
+def test_model_catalog_is_exact_provider_golden_in_exact_order() -> None:
+    manifest = load_golden("provider_manifest_30c944f.json")
+    contracts = MODEL_TOOL_CATALOG.provider_contracts()
+
+    assert len(MODEL_TOOL_NAMES) == 25
+    assert len(set(MODEL_TOOL_NAMES)) == 25
+    assert tuple(contract.name for contract in contracts) == MODEL_TOOL_NAMES
+    assert canonical_json([contract.payload for contract in contracts]) == canonical_json(
+        manifest["tools"]
+    )
