@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Generic, Literal, NoReturn, Protocol, SupportsIndex, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, SupportsIndex, TypeAlias, TypeVar
+
+if TYPE_CHECKING:
+    from offerpilot.ai.tool_runtime.context import ToolExecutionContext
 
 
 JSONValue: TypeAlias = (
@@ -69,10 +72,24 @@ class ProviderToolContract:
 class BindingAudit:
     status: BindingStatus
     target_count: int
+    entity_kinds: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.target_count < 0:
             raise ValueError("binding target_count must be non-negative")
+
+
+@dataclass(frozen=True)
+class BindingTarget:
+    entity_kind: str
+    identity: int | str | None = field(repr=False)
+    available: bool
+
+    def __post_init__(self) -> None:
+        if not self.entity_kind:
+            raise ValueError("binding target entity_kind is required")
+        if self.available != (self.identity is not None):
+            raise ValueError("binding target availability is inconsistent")
 
 
 @dataclass(frozen=True)
@@ -90,11 +107,6 @@ class ToolSuccess(TransientToolRuntimeValue, Generic[ResultT]):
 ToolOutcome: TypeAlias = ToolSuccess[ResultT] | ToolFailure
 
 
-class ToolExecutionContextProtocol(Protocol):
-    capabilities: frozenset[str]
-    repositories: object
-
-
 @dataclass(frozen=True)
 class ToolExceptionMapping:
     exception_type: type[Exception]
@@ -108,9 +120,9 @@ class ToolExceptionMapping:
 
 
 ToolDecoder: TypeAlias = Callable[[Mapping[str, JSONValue]], ArgsT]
-ToolCheck: TypeAlias = Callable[[ArgsT, ToolExecutionContextProtocol], ToolFailure | None]
-ToolExecutor: TypeAlias = Callable[[ArgsT, ToolExecutionContextProtocol], ResultT]
-BindingResolver: TypeAlias = Callable[[ArgsT, ToolExecutionContextProtocol], object]
+ToolCheck: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], ToolFailure | None]
+ToolExecutor: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], ResultT]
+BindingResolver: TypeAlias = Callable[[ArgsT, "ToolExecutionContext"], BindingTarget]
 
 
 @dataclass(frozen=True)
