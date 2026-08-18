@@ -25,6 +25,7 @@ from offerpilot.ai.tool_runtime.context import ToolExecutionContext
 from offerpilot.ai.tool_runtime.contracts import (
     ConfirmationRequired,
     ExecutionAuthorization,
+    PreparedToolCall,
     ProviderToolContract,
     ReadyToExecute,
     ToolExecutionRecord,
@@ -117,7 +118,10 @@ ConfirmationResultSink = Callable[
     [PendingAction, bool, Message, ToolExecutionRecord[Any, Any] | None],
     None,
 ]
-ConfirmationAttemptSink = Callable[[PendingAction], None]
+ConfirmationAttemptSink = Callable[
+    [PendingAction, PreparedToolCall[Any, Any] | None],
+    ExecutionAuthorization | ToolFailure | None,
+]
 
 
 @contextmanager
@@ -485,12 +489,28 @@ class LangGraphAgentRunner:
                             else:
                                 result = "错误：确认操作状态不一致"
                         else:
-                            def claim(prepared: Any) -> ExecutionAuthorization:
+                            def claim(
+                                prepared: PreparedToolCall[Any, Any],
+                            ) -> ExecutionAuthorization | ToolFailure:
                                 if self._confirmation_attempt_sink is not None:
-                                    try:
-                                        self._confirmation_attempt_sink(effective_pending)
-                                    except StalePendingActionError as exc:
-                                        raise exc
+                                    claimed = self._confirmation_attempt_sink(
+                                        effective_pending,
+                                        prepared,
+                                    )
+                                    if isinstance(claimed, (ExecutionAuthorization, ToolFailure)):
+                                        return claimed
+                                    return ToolFailure(
+                                        "conflict",
+                                        "confirmation_claim_failed",
+                                    )
+                                if not _claim_fallback_confirmation(
+                                    self._confirmation_lock_key(),
+                                    effective_pending,
+                                ):
+                                    return ToolFailure(
+                                        "stale_state",
+                                        "fallback_confirmation_consumed",
+                                    )
                                 return ExecutionAuthorization(
                                     pending_identity=prepared.pending_identity,
                                     pending_action_revision=cast(int, prepared.pending_action_revision),
@@ -507,13 +527,45 @@ class LangGraphAgentRunner:
                             self._records.append(record)
                             if (
                                 isinstance(record.outcome, ToolFailure)
-                                and record.outcome.code == "confirmation_claim_failed"
+                                and record.outcome.code
+                                in {
+                                    "authorization_mismatch",
+                                    "confirmation_claim_failed",
+                                    "confirmation_claim_lost",
+                                    "fallback_confirmation_consumed",
+                                }
                             ):
                                 raise StalePendingActionError(
                                     "stale pending action: confirmation claim failed"
                                 )
                             result = render_compatibility(spec, record.outcome)
                     else:
+                        if self._confirmation_attempt_sink is not None:
+                            rejected_claim = self._confirmation_attempt_sink(
+                                PendingAction(
+                                    tool_call_id=tool_call_id,
+                                    tool_name=tool_name,
+                                    args=tool_args,
+                                    human=str(pending["human"]),
+                                ),
+                                None,
+                            )
+                            if isinstance(rejected_claim, ToolFailure):
+                                raise StalePendingActionError(
+                                    "stale pending action: rejection claim failed"
+                                )
+                        elif not _claim_fallback_confirmation(
+                            self._confirmation_lock_key(),
+                            PendingAction(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                args=tool_args,
+                                human=str(pending["human"]),
+                            ),
+                        ):
+                            raise StalePendingActionError(
+                                "stale pending action: rejection was already consumed"
+                            )
                         self._emit_pending_tool_call(
                             PendingAction(
                                 tool_call_id=tool_call_id,
@@ -524,6 +576,13 @@ class LangGraphAgentRunner:
                             "rejected",
                         )
                         result = _rejection_result(resume_value.get("rejection_feedback"))
+                        self._failures.append(
+                            ToolFailure(
+                                "confirmation_rejected",
+                                "confirmation_rejected",
+                                result,
+                            )
+                        )
                         confirmed_outcome = (
                             PendingAction(
                                 tool_call_id=tool_call_id,
@@ -664,7 +723,10 @@ class LangGraphAgentRunner:
 
             def claim(prepared: Any) -> ExecutionAuthorization | ToolFailure:
                 if self._confirmation_attempt_sink is not None:
-                    self._confirmation_attempt_sink(sink_pending)
+                    claimed = self._confirmation_attempt_sink(sink_pending, prepared)
+                    if isinstance(claimed, (ExecutionAuthorization, ToolFailure)):
+                        return claimed
+                    return ToolFailure("conflict", "confirmation_claim_failed")
                 if not _claim_fallback_confirmation(confirmation_lock_key, pending):
                     return ToolFailure("stale_state", "fallback_confirmation_consumed", "stale pending action: fallback confirmation was already consumed")
                 return ExecutionAuthorization(
@@ -690,8 +752,25 @@ class LangGraphAgentRunner:
                 )
             result = render_compatibility(spec, record.outcome)
         else:
+            if self._confirmation_attempt_sink is not None:
+                rejected_claim = self._confirmation_attempt_sink(pending, None)
+                if isinstance(rejected_claim, ToolFailure):
+                    raise StalePendingActionError(
+                        "stale pending action: rejection claim failed"
+                    )
+            elif not _claim_fallback_confirmation(confirmation_lock_key, pending):
+                raise StalePendingActionError(
+                    "stale pending action: rejection was already consumed"
+                )
             self._emit_pending_tool_call(pending, "rejected")
             result = _rejection_result(rejection_feedback)
+            self._failures.append(
+                ToolFailure(
+                    "confirmation_rejected",
+                    "confirmation_rejected",
+                    result,
+                )
+            )
         self._emit_tool_result(pending.tool_call_id, pending.tool_name, result, record)
 
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)

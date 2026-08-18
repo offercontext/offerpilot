@@ -120,6 +120,7 @@ def prepare_call(
         arguments=arguments,
         arguments_digest=_arguments_digest(arguments),
         binding=binding,
+        contract_fingerprint=_contract_fingerprint(spec.contract.payload),
         pending_action_revision=pending_action_revision,
         pending_identity=pending_identity,
         spec=spec,
@@ -238,6 +239,11 @@ def _schema_validation_failure(
 
 def _arguments_digest(arguments: dict[str, JSONValue]) -> str:
     encoded = canonical_json(arguments).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _contract_fingerprint(payload: Mapping[str, JSONValue]) -> str:
+    encoded = canonical_json(dict(payload)).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

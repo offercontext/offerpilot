@@ -554,6 +554,8 @@ Pipeline 只捕获普通 `Exception`。`KeyboardInterrupt`、`SystemExit`、取�
 
 Pending Action 继续保存现有字段。`PreparedToolCall`、Context、capability 和 binding 结果不进入 Pending Action。
 
+Typed 确认恢复在 executor 前通过 Chat Repository 对现有 Pending Action 身份做一次持久 CAS claim。claim 仅把内部 tool-call identity 临时编码为不可由客户端构造的 claimed 形式；Repository/API 对外仍投影原始 Pending Action 字段与 confirmation token。结果持久化必须匹配同一 claim identity 后才能清除 Pending Action。该机制不新增业务 Ledger、不承诺进程崩溃后的 exactly-once，也不改变三个 deterministic Legacy Adapter 的既有确认实现。
+
 ### 10.2 批准与修改
 
 ```text

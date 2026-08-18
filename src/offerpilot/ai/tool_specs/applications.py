@@ -69,14 +69,16 @@ def _validate_create(args: ApplicationArgs, context: ToolExecutionContext) -> To
     same_company = [
         item for item in context.applications.list() if item.company_name.strip().casefold() == company.casefold()
     ]
-    existing_positions = sorted(
-        {item.position_name.strip() for item in same_company if item.position_name.strip().casefold() != position.casefold()}
-    )
-    if not existing_positions:
+    if not same_company:
         return None
+    if any(item.position_name.strip().casefold() == position.casefold() for item in same_company):
+        return None
+    existing_positions = "、".join(
+        sorted({item.position_name for item in same_company if item.position_name})
+    )
     detail = (
         "create_application requires explicit user confirmation before adding a new position "
-        f"for existing company {company}. Existing positions: {', '.join(existing_positions)}."
+        f"for existing company {company}. Existing positions: {existing_positions or 'unknown'}."
     )
     return ToolFailure("conflict", "new_position_confirmation_required", detail)
 

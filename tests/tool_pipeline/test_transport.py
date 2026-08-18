@@ -47,6 +47,7 @@ def _record(spec: ToolSpec[Any, Any], outcome: Any) -> ToolExecutionRecord[Any, 
         arguments={},
         arguments_digest="sha256:" + "a" * 64,
         binding=BindingAudit("unavailable", 0),
+        contract_fingerprint="sha256:" + "b" * 64,
         spec=spec,
         tool_call_id="read-1",
         typed_args={},
@@ -111,7 +112,8 @@ def test_renderer_or_transport_failure_never_changes_outcome() -> None:
 
     outcome = ToolSuccess({"ok": True})
     renderer_record = _record(_spec(renderer=fail), outcome)
-    assert render_compatibility(renderer_record.prepared.spec, outcome) == "错误：工具结果交付失败。"
+    with pytest.raises(RuntimeError, match="projector failed"):
+        render_compatibility(renderer_record.prepared.spec, outcome)
     assert renderer_record.outcome is outcome
     assert executor_calls == 1
 

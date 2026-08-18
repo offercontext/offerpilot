@@ -137,6 +137,60 @@ def test_resolve_pending_confirmation_atomically_persists_result_and_clears_stat
     assert [(message.role, message.tool_call_id) for message in messages] == [("tool", "write-1")]
 
 
+def test_pending_confirmation_claim_is_durable_private_and_single_winner(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    repo.set_pending_action(conversation.id, pending)
+
+    assert repo.claim_pending_confirmation(conversation.id, pending, "claim-one") is True
+    assert repo.claim_pending_confirmation(conversation.id, pending, "claim-two") is False
+    assert repo.get_pending_action(conversation.id) == pending
+
+    wrong = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content="wrong", tool_call_id="write-1"),
+        {},
+        claim_id="claim-two",
+    )
+    resolved = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content='{"id":1}', tool_call_id="write-1"),
+        {},
+        claim_id="claim-one",
+    )
+
+    assert wrong is None
+    assert resolved is not None
+    assert repo.get_pending_action(conversation.id) is None
+    assert [message.content for message in repo.list_messages(conversation.id)] == ['{"id":1}']
+
+
+def test_pending_confirmation_claim_has_one_winner_across_repository_instances(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    first = ChatRepository(session_factory)
+    second = ChatRepository(session_factory)
+    conversation = first.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    first.set_pending_action(conversation.id, pending)
+    barrier = Barrier(2)
+
+    def claim(repo: ChatRepository, claim_id: str) -> bool:
+        barrier.wait()
+        return repo.claim_pending_confirmation(conversation.id, pending, claim_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = (
+            pool.submit(claim, first, "claim-one"),
+            pool.submit(claim, second, "claim-two"),
+        )
+
+    assert sum(result.result() for result in results) == 1
+    assert first.get_pending_action(conversation.id) == pending
+
+
 def test_resolve_pending_confirmation_cas_does_not_clear_newer_pending(tmp_path):
     repo = ChatRepository(init_database(tmp_path / "data.db"))
     conversation = repo.create_conversation("confirm")

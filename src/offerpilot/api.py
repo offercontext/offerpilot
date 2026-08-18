@@ -75,7 +75,13 @@ from offerpilot.reliability.trace import (
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tool_runtime.context import ToolCapability, ToolExecutionContext
 from offerpilot.ai.tool_runtime.catalog import ToolCatalog
-from offerpilot.ai.tool_runtime.contracts import ToolExecutionRecord, ToolFailure, ToolSuccess
+from offerpilot.ai.tool_runtime.contracts import (
+    ExecutionAuthorization,
+    PreparedToolCall,
+    ToolExecutionRecord,
+    ToolFailure,
+    ToolSuccess,
+)
 from offerpilot.ai.tool_runtime.journal import journal_shape_digest as _journal_shape_digest
 from offerpilot.ai.tool_runtime.legacy import prepare_legacy_arguments
 from offerpilot.ai.tool_specs.catalog import (
@@ -158,7 +164,7 @@ from offerpilot.repositories.adaptive_interview_practice import (
     AdaptivePracticeRepository,
     AdaptivePracticeValidationError,
 )
-from offerpilot.repositories.chat import ChatRepository
+from offerpilot.repositories.chat import ChatRepository, visible_pending_tool_call_id
 from offerpilot.repositories.application_events import (
     ApplicationEventCreate,
     ApplicationEventsRepository,
@@ -5812,15 +5818,6 @@ def create_app(
             conversation,
             tool_names=tuple(contract.name for contract in catalog.provider_contracts()),
         )
-        if not approved:
-            _record_journal_approval(
-                confirmation_recorder,
-                confirmation_attempt_id=confirmation_attempt_id,
-                original_pending=pending,
-                effective_pending=effective_pending,
-                approved=False,
-                edited=False,
-            )
         context_message = _chat_context_message(
             conversation,
             applications,
@@ -5828,6 +5825,7 @@ def create_app(
             jd_analyses,
         )
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
+        confirmation_claim: dict[str, str] = {}
         (
             confirmed_outcome,
             confirmation_result_sink,
@@ -5839,6 +5837,7 @@ def create_app(
                 conversation_id,
                 pending,
                 undo_seed,
+                lambda: confirmation_claim.get("id"),
             )
         )
         confirmation_attempted = Event()
@@ -5863,26 +5862,48 @@ def create_app(
             ):
                 _finish_journal(confirmation_recorder, "completed")
 
-        def start_confirmation_attempt(action: PendingAction) -> None:
+        def start_confirmation_attempt(
+            action: PendingAction,
+            prepared: PreparedToolCall[Any, Any] | None,
+        ) -> ExecutionAuthorization | ToolFailure | None:
             with confirmation_attempt_lock:
+                if prepared is not None and (
+                    prepared.pending_identity is None
+                    or prepared.pending_action_revision is None
+                ):
+                    return ToolFailure("conflict", "confirmation_claim_failed")
                 current = chat.get_pending_action(conversation_id)
                 if (
                     confirmation_cancelled.is_set()
                     or current is None
                     or not compare_digest(confirmation_token, _confirmation_token(current))
                 ):
-                    raise StalePendingActionError(
-                        "stale pending action: action changed before handler attempt"
+                    return ToolFailure(
+                        "stale_state",
+                        "confirmation_claim_lost",
                     )
+                claim_id = uuid4().hex
+                if not chat.claim_pending_confirmation(conversation_id, pending, claim_id):
+                    return ToolFailure("stale_state", "confirmation_claim_lost")
+                confirmation_claim["id"] = claim_id
                 _record_journal_approval(
                     confirmation_recorder,
                     confirmation_attempt_id=confirmation_attempt_id,
                     original_pending=pending,
                     effective_pending=action,
-                    approved=True,
-                    edited=edited_args is not None,
+                    approved=prepared is not None,
+                    edited=prepared is not None and edited_args is not None,
                 )
                 confirmation_attempted.set()
+                if prepared is None:
+                    return None
+                return ExecutionAuthorization(
+                    pending_identity=prepared.pending_identity,
+                    pending_action_revision=cast(int, prepared.pending_action_revision),
+                    tool_call_id=prepared.tool_call_id,
+                    tool_name=prepared.spec.name,
+                    arguments_digest=prepared.arguments_digest,
+                )
 
         try:
             turn_result = _run_chat_agent_with_timeout(
@@ -6223,16 +6244,6 @@ def create_app(
             conversation,
             tool_names=tuple(contract.name for contract in catalog.provider_contracts()),
         )
-        if not approved:
-            _record_journal_approval(
-                confirmation_recorder,
-                confirmation_attempt_id=confirmation_attempt_id,
-                original_pending=pending,
-                effective_pending=effective_pending,
-                approved=False,
-                edited=False,
-            )
-
         context_message = _chat_context_message(
             conversation,
             applications,
@@ -6240,6 +6251,7 @@ def create_app(
             jd_analyses,
         )
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
+        confirmation_claim: dict[str, str] = {}
         (
             confirmed_outcome,
             confirmation_result_sink,
@@ -6251,6 +6263,7 @@ def create_app(
                 conversation_id,
                 pending,
                 undo_seed,
+                lambda: confirmation_claim.get("id"),
             )
         )
         confirmation_attempted = Event()
@@ -6275,26 +6288,48 @@ def create_app(
             ):
                 _finish_journal(confirmation_recorder, "completed")
 
-        def start_confirmation_attempt(action: PendingAction) -> None:
+        def start_confirmation_attempt(
+            action: PendingAction,
+            prepared: PreparedToolCall[Any, Any] | None,
+        ) -> ExecutionAuthorization | ToolFailure | None:
             with confirmation_attempt_lock:
+                if prepared is not None and (
+                    prepared.pending_identity is None
+                    or prepared.pending_action_revision is None
+                ):
+                    return ToolFailure("conflict", "confirmation_claim_failed")
                 current = chat.get_pending_action(conversation_id)
                 if (
                     confirmation_cancelled.is_set()
                     or current is None
                     or not compare_digest(confirmation_token, _confirmation_token(current))
                 ):
-                    raise StalePendingActionError(
-                        "stale pending action: action changed before handler attempt"
+                    return ToolFailure(
+                        "stale_state",
+                        "confirmation_claim_lost",
                     )
+                claim_id = uuid4().hex
+                if not chat.claim_pending_confirmation(conversation_id, pending, claim_id):
+                    return ToolFailure("stale_state", "confirmation_claim_lost")
+                confirmation_claim["id"] = claim_id
                 _record_journal_approval(
                     confirmation_recorder,
                     confirmation_attempt_id=confirmation_attempt_id,
                     original_pending=pending,
                     effective_pending=action,
-                    approved=True,
-                    edited=edited_args is not None,
+                    approved=prepared is not None,
+                    edited=prepared is not None and edited_args is not None,
                 )
                 confirmation_attempted.set()
+                if prepared is None:
+                    return None
+                return ExecutionAuthorization(
+                    pending_identity=prepared.pending_identity,
+                    pending_action_revision=cast(int, prepared.pending_action_revision),
+                    tool_call_id=prepared.tool_call_id,
+                    tool_name=prepared.spec.name,
+                    arguments_digest=prepared.arguments_digest,
+                )
 
         def stream() -> Any:
             yield emit(
@@ -9444,6 +9479,7 @@ def _confirmation_result_recorder(
     conversation_id: int,
     expected_pending: PendingAction,
     undo_seed: dict[str, Any],
+    confirmation_claim_id: Callable[[], str | None],
 ) -> tuple[
     dict[str, Any],
     Callable[[PendingAction, bool, Message, ToolExecutionRecord[Any, Any] | None], None],
@@ -9479,6 +9515,7 @@ def _confirmation_result_recorder(
                     expected_pending,
                     tool_message,
                     undo_update,
+                    claim_id=confirmation_claim_id(),
                     terminal_assistant_content=terminal_message,
                 )
             else:
@@ -9487,6 +9524,7 @@ def _confirmation_result_recorder(
                     expected_pending,
                     tool_message,
                     undo_update,
+                    claim_id=confirmation_claim_id(),
                 )
             if continuation_generation is None:
                 outcome["cas_lost"] = True
@@ -10009,7 +10047,7 @@ def _conversation_json(
     if conversation.pending_tool_name:
         payload["pending_action"] = _pending_action_json(
             PendingAction(
-                tool_call_id=conversation.pending_tool_call_id,
+                tool_call_id=visible_pending_tool_call_id(conversation.pending_tool_call_id),
                 tool_name=conversation.pending_tool_name,
                 args=conversation.pending_args,
                 human=conversation.pending_human or conversation.pending_tool_name,
@@ -10143,12 +10181,11 @@ def _write_error_followup(
         record.outcome for record in records if isinstance(record.outcome, ToolFailure)
     )
     for failure in reversed((*recorded_failures, *failures)):
-        error = failure.compatibility_detail
-        if error.startswith("add_note date is unclear"):
+        if failure.code == "unclear_note_date":
             return "这次复盘的具体面试日期还不明确。请告诉我具体日期，或回复“日期待定”确认先按待定保存。"
-        if error.startswith("add_note requires company"):
+        if failure.code == "company_required":
             return "这次复盘还缺少公司信息。请告诉我公司名称，或先说明不关联具体公司。"
-        if error.startswith("create_application requires explicit user confirmation"):
+        if failure.code == "new_position_confirmation_required":
             return "我找到同公司已有不同岗位记录。请确认是否为这个新岗位单独新建一条投递记录？确认后我再继续整理。"
     return ""
 
@@ -10366,13 +10403,14 @@ def _write_outcome(
 ) -> tuple[str, str]:
     if not attempted:
         return "none", ""
-    record = _last_record(records)
-    if record is not None and isinstance(record.outcome, ToolFailure):
-        return "failed", record.outcome.compatibility_detail or record.outcome.code
+    write_records = tuple(record for record in records if record.prepared.spec.kind == "write")
+    for record in reversed(write_records):
+        if isinstance(record.outcome, ToolFailure):
+            return "failed", record.outcome.compatibility_detail or record.outcome.code
     if failures:
         failure = failures[-1]
         return "failed", failure.compatibility_detail or failure.code
-    payload = _last_successful_tool_payload(records)
+    payload = _last_successful_tool_payload(write_records)
     if payload:
         if payload.get("deleted") is False:
             return "failed", "目标记录不存在"

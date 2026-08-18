@@ -46,9 +46,12 @@ def test_application_event_spec_matches_baseline_case(
     case: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    visible, projection = execute_case(application_event_specs(), case, tmp_path / "case.db")
+    visible, projection, handler_calls = execute_case(
+        application_event_specs(), case, tmp_path / "case.db"
+    )
 
     assert visible == case["visible_result"]
+    assert handler_calls == case["handler_calls"]
     if case["business_projection"]:
         assert projection == {
             "table": case["business_projection"]["table"],

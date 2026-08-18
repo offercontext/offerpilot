@@ -22,6 +22,7 @@ from offerpilot.ai.agent import (
 from offerpilot.ai.tool_runtime.catalog import ToolCatalog
 from offerpilot.ai.tool_runtime.context import ToolCapability, ToolExecutionContext
 from offerpilot.ai.tool_runtime.contracts import (
+    ExecutionAuthorization,
     ProviderToolContract,
     ToolExceptionMapping,
     ToolFailure,
@@ -1116,7 +1117,7 @@ def test_concurrent_fallback_confirmations_execute_handler_at_most_once():
     assert sorted(outcomes) == ["stale", "success"]
 
 
-def test_rejected_fallback_does_not_claim_write_execution():
+def test_rejected_fallback_claims_rejection_and_blocks_later_execution():
     calls = []
     registry = _editable_registry(calls)
     pending = _pending()
@@ -1127,13 +1128,14 @@ def test_rejected_fallback_does_not_claim_write_execution():
         registry,
         thread_id=thread_id,
     ).resume_after_confirm([], pending, approved=False, auto_approve=False, max_iter=8)
-    LangGraphAgentRunner(
-        ScriptedModel([Assistant(content="approved later")]),
-        registry,
-        thread_id=thread_id,
-    ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
+    with pytest.raises(StalePendingActionError):
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content="approved later")]),
+            registry,
+            thread_id=thread_id,
+        ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
-    assert calls == ['{"id":7,"status":"offer"}']
+    assert calls == []
 
 
 def test_fallback_handler_error_remains_claimed_against_replay():
@@ -1681,6 +1683,17 @@ def test_confirmation_attempt_sink_runs_immediately_before_handler(
             thread_id="conversation:attempt",
         )
 
+    def claim(action, prepared):
+        attempts.append(action.tool_call_id)
+        assert prepared is not None
+        return ExecutionAuthorization(
+            pending_identity=prepared.pending_identity,
+            pending_action_revision=prepared.pending_action_revision,
+            tool_call_id=prepared.tool_call_id,
+            tool_name=prepared.spec.name,
+            arguments_digest=prepared.arguments_digest,
+        )
+
     resume_after_confirm(
         model,
         registry,
@@ -1690,7 +1703,7 @@ def test_confirmation_attempt_sink_runs_immediately_before_handler(
         auto_approve=False,
         checkpoint_path=checkpoint_path,
         thread_id="conversation:attempt",
-        confirmation_attempt_sink=lambda action: attempts.append(action.tool_call_id),
+        confirmation_attempt_sink=claim,
     )
 
     assert attempts == [pending.tool_call_id]

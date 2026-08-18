@@ -179,6 +179,7 @@ class PreparedToolCall(TransientToolRuntimeValue, Generic[ArgsT, ResultT]):
     arguments: Mapping[str, JSONValue] = field(repr=False)
     typed_args: ArgsT = field(repr=False)
     arguments_digest: str
+    contract_fingerprint: str
     binding: BindingAudit
     pending_identity: object | None = field(default=None, repr=False, compare=False)
     pending_action_revision: int | None = None

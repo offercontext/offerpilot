@@ -15,10 +15,30 @@ from offerpilot.ai.types import Assistant, Message, ToolCall
 
 
 class PendingWriteModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def complete(self, messages: list[Message], tools: list[ProviderToolContract]) -> Assistant:
         del messages, tools
+        self.calls += 1
+        if self.calls > 1:
+            return Assistant(content="done")
         return Assistant(
             tool_calls=[ToolCall(id="write-1", name="write_one", args='{"id":1}')]
+        )
+
+
+class ReadThenFinishModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages: list[Message], tools: list[ProviderToolContract]) -> Assistant:
+        del messages, tools
+        self.calls += 1
+        if self.calls > 1:
+            return Assistant(content="done")
+        return Assistant(
+            tool_calls=[ToolCall(id="read-1", name="read_one", args='{"id":1}')]
         )
 
 
@@ -71,6 +91,54 @@ def _runtime(checkpoint_path: Path) -> LangGraphAgentRunner:
     )
 
 
+def _read_runtime(checkpoint_path: Path) -> LangGraphAgentRunner:
+    parameters = {
+        "type": "object",
+        "properties": {"id": {"type": "integer"}},
+        "required": ["id"],
+    }
+    contract = ProviderToolContract(
+        payload={
+            "type": "function",
+            "function": {
+                "name": "read_one",
+                "description": "read",
+                "parameters": parameters,
+            },
+        },
+        name="read_one",
+        description="read",
+        parameters=parameters,
+    )
+    spec = ToolSpec(
+        contract=contract,
+        kind="read",
+        decoder=lambda values: dict(values),
+        executor=lambda args, context: args,
+        required_capabilities=frozenset({ToolCapability.APPLICATIONS_READ}),
+    )
+    catalog = ToolCatalog((spec,), expected_names=(spec.name,))
+    dependency = cast(Any, object())
+    context = ToolExecutionContext(
+        applications=dependency,
+        capabilities=frozenset({ToolCapability.APPLICATIONS_READ}),
+        current_bindings={"application": 1},
+        events=dependency,
+        jd_analyses=dependency,
+        notes=dependency,
+        offers=dependency,
+        resumes=dependency,
+        run_recorder=NullRunRecorder(),
+    )
+    return LangGraphAgentRunner(
+        ReadThenFinishModel(),
+        catalog,
+        context,
+        checkpoint_path=checkpoint_path,
+        thread_id="checkpoint-read-negative-gate",
+    )
+
+
 def _walk(value: object) -> list[object]:
     found = [value]
     if isinstance(value, Mapping):
@@ -85,19 +153,12 @@ def _walk(value: object) -> list[object]:
     return found
 
 
-def test_checkpoint_contains_only_compatible_messages_and_control_state(tmp_path: Path) -> None:
-    checkpoint_path = tmp_path / "agent-checkpoint.sqlite"
-    result = _runtime(checkpoint_path).run_turn(
-        [Message(role="user", content="write")],
-        auto_approve=False,
-    )
-    assert result.pending is not None
-    assert result.records == ()
-
+def _assert_checkpoint_has_no_transient_runtime_values(
+    checkpoint_path: Path,
+    thread_id: str,
+) -> None:
     with SqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
-        checkpoint = saver.get_tuple(
-            {"configurable": {"thread_id": "checkpoint-negative-gate"}}
-        )
+        checkpoint = saver.get_tuple({"configurable": {"thread_id": thread_id}})
     assert checkpoint is not None
     values = _walk(
         {
@@ -124,3 +185,60 @@ def test_checkpoint_contains_only_compatible_messages_and_control_state(tmp_path
         for value in values
     )
     assert all(not isinstance(value, BaseException) for value in values)
+
+
+def test_checkpoint_contains_only_compatible_messages_and_control_state(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "agent-checkpoint.sqlite"
+    result = _runtime(checkpoint_path).run_turn(
+        [Message(role="user", content="write")],
+        auto_approve=False,
+    )
+    assert result.pending is not None
+    assert result.records == ()
+
+    _assert_checkpoint_has_no_transient_runtime_values(
+        checkpoint_path,
+        "checkpoint-negative-gate",
+    )
+
+
+def test_checkpoint_after_read_execution_contains_no_transient_runtime_values(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "read-checkpoint.sqlite"
+    result = _read_runtime(checkpoint_path).run_turn(
+        [Message(role="user", content="read")],
+        auto_approve=False,
+    )
+
+    assert result.pending is None
+    assert len(result.records) == 1
+    _assert_checkpoint_has_no_transient_runtime_values(
+        checkpoint_path,
+        "checkpoint-read-negative-gate",
+    )
+
+
+def test_checkpoint_after_confirmed_write_contains_no_transient_runtime_values(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "write-checkpoint.sqlite"
+    runner = _runtime(checkpoint_path)
+    initial = runner.run_turn(
+        [Message(role="user", content="write")],
+        auto_approve=False,
+    )
+    assert initial.pending is not None
+
+    result = runner.resume_after_confirm(
+        [Message(role="user", content="write")],
+        initial.pending,
+        approved=True,
+        auto_approve=False,
+    )
+
+    assert len(result.records) == 1
+    _assert_checkpoint_has_no_transient_runtime_values(
+        checkpoint_path,
+        "checkpoint-negative-gate",
+    )

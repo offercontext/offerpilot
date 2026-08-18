@@ -6,8 +6,28 @@ import pytest
 
 from offerpilot.ai import client as ai_client
 from offerpilot.ai.client import ConfiguredAIClient
+from offerpilot.ai.tool_runtime.contracts import ProviderToolContract
 from offerpilot.ai.types import Message
 from offerpilot.config import AIProviderProfile, Config
+
+
+def _provider_tool(name: str) -> ProviderToolContract:
+    parameters = {"type": "object"}
+    description = name
+    payload = {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+    return ProviderToolContract(
+        payload=payload,
+        name=name,
+        description=description,
+        parameters=parameters,
+    )
 
 
 def test_client_audits_request_metadata_without_prompt_or_secret(monkeypatch, tmp_path):
@@ -115,7 +135,7 @@ def test_client_routes_openai_compatible_calls_through_litellm(monkeypatch):
 
     assistant = client.complete(
         [Message(role="user", content="hello")],
-        [{"name": "update_application_status", "schema": {"type": "object"}}],
+        [_provider_tool("update_application_status")],
     )
 
     assert captured["model"] == "openai/gpt-4o"
@@ -290,7 +310,7 @@ def test_client_streams_tool_calls_through_litellm(monkeypatch):
 
     assistant = client.stream_complete(
         [Message(role="user", content="hello")],
-        [{"name": "list_applications", "schema": {"type": "object"}}],
+        [_provider_tool("list_applications")],
         deltas.append,
     )
 

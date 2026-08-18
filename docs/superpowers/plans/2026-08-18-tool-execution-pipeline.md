@@ -59,6 +59,7 @@
 - `src/offerpilot/ai/client.py`: accept `ProviderToolContract`, send its complete payload unchanged, remove dict-registry conversion.
 - `src/offerpilot/ai/types.py`: keep persisted `Message` wire shape; add no typed outcome fields.
 - `src/offerpilot/api.py`: construct runtime Context, route trusted deterministic Pending Actions, consume `ToolExecutionRecord`, and stop parsing compatibility strings.
+- `src/offerpilot/repositories/chat.py`: add the narrow durable pre-executor Pending Action claim CAS used by typed confirmation recovery; preserve the public Pending Action representation.
 - `src/offerpilot/ai/tools.py`: delete after all production call sites move; no model-visible code remains here.
 - `pyproject.toml`, `uv.lock`: direct exact `jsonschema==4.26.0` dependency.
 
@@ -80,7 +81,7 @@
 - `tests/fixtures/tool_pipeline/provider_manifest_30c944f.json`: full final Provider payload.
 - `tests/fixtures/tool_pipeline/tool_outcomes_30c944f.json`: synthetic visible strings and normalized business projections.
 - `tests/fixtures/tool_pipeline/journal_sequences_30c944f.json`: canonical first-phase event sequences.
-- Modify existing `tests/test_ai_tools.py`, `tests/test_ai_agent.py`, `tests/test_chat_api.py`, and `tests/test_knowledge_sources_api.py` to use the new public interfaces or remove superseded legacy-registry assertions.
+- Delete superseded `tests/test_ai_tools.py` registry assertions; modify `tests/test_ai_agent.py`, `tests/test_chat_api.py`, `tests/test_chat_repository.py`, `tests/test_litellm_client.py`, and `tests/test_knowledge_sources_api.py` to use the new public interfaces and durable claim boundary.
 - Create `docs/reports/2026-08-18-tool-execution-pipeline-release-verification.md` only after all gates pass.
 
 ---
@@ -122,13 +123,16 @@ New-Item -ItemType Directory -Force -Path $gate | Out-Null
   'src/offerpilot/ai/tool_runtime/'
   'src/offerpilot/ai/tool_specs/'
   'src/offerpilot/api.py'
+  'src/offerpilot/repositories/chat.py'
   'src/offerpilot/smoke.py'
   'tests/tool_pipeline/'
   'tests/fixtures/tool_pipeline/'
   'tests/test_ai_tools.py'
   'tests/test_ai_agent.py'
   'tests/test_chat_api.py'
+  'tests/test_chat_repository.py'
   'tests/test_knowledge_sources_api.py'
+  'tests/test_litellm_client.py'
   'docs/superpowers/specs/2026-08-18-tool-execution-pipeline-design.md'
   'docs/superpowers/plans/2026-08-18-tool-execution-pipeline.md'
   'docs/reports/2026-08-18-tool-execution-pipeline-release-verification.md'

@@ -73,6 +73,8 @@ def _literal_protocol_key(node: ast.AST) -> str | None:
 
 def test_deleted_registry_symbols_and_modules_cannot_return() -> None:
     assert not (AI / "tools.py").exists()
+    assert not (ROOT / "tests" / "tool_pipeline" / "compat_registry.py").exists()
+    assert not (ROOT / "tests" / "test_ai_tools.py").exists()
     findings: list[str] = []
     for path in _production_files():
         for node in ast.walk(_tree(path)):

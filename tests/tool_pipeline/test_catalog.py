@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import pickle
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from offerpilot.ai import client as ai_client
+from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tool_runtime.catalog import ToolCatalog
 from offerpilot.ai.tool_runtime.contracts import (
     BindingAudit,
@@ -19,6 +22,8 @@ from offerpilot.ai.tool_runtime.contracts import (
 )
 from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG, MODEL_TOOL_NAMES
 from offerpilot.ai.tool_runtime.legacy import LEGACY_DETERMINISTIC_NAMES
+from offerpilot.ai.types import Message
+from offerpilot.config import Config
 
 from golden import canonical_json, load_golden
 
@@ -122,6 +127,7 @@ def test_transient_runtime_values_reject_pickle_and_hide_sensitive_fields() -> N
         arguments={"private": "sensitive-argument-value"},
         arguments_digest="sha256:" + "a" * 64,
         binding=BindingAudit(status="unavailable", target_count=0),
+        contract_fingerprint="sha256:" + "b" * 64,
         spec=spec,
         tool_call_id="call-1",
         typed_args={"private": "sensitive-argument-value"},
@@ -161,6 +167,29 @@ def test_model_catalog_is_exact_provider_golden_in_exact_order() -> None:
     assert canonical_json([contract.payload for contract in contracts]) == canonical_json(
         manifest["tools"]
     )
+    actual_fingerprints = {
+        contract.name: "sha256:"
+        + hashlib.sha256(canonical_json(contract.parameters).encode("utf-8")).hexdigest()
+        for contract in contracts
+    }
+    assert actual_fingerprints == manifest["schema_fingerprints"]
+
+
+def test_final_provider_adapter_receives_exact_golden_envelopes(monkeypatch) -> None:
+    manifest = load_golden("provider_manifest_30c944f.json")
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": "done"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    ConfiguredAIClient(Config(api_key="synthetic-key")).complete(
+        [Message(role="user", content="synthetic")],
+        list(MODEL_TOOL_CATALOG.provider_contracts()),
+    )
+
+    assert canonical_json(captured["tools"]) == canonical_json(manifest["tools"])
 
 
 def test_complete_tool_classification_is_exactly_twenty_five_typed_plus_three_legacy() -> None:

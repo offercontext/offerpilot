@@ -28,5 +28,8 @@ def test_jd_analysis_specs_preserve_provider_contracts() -> None:
 
 @pytest.mark.parametrize("case", _cases(), ids=lambda case: f"{case['tool_name']}:{case['case']}")
 def test_jd_analysis_spec_matches_baseline_case(case: dict[str, Any], tmp_path: Path) -> None:
-    visible, projection = execute_case(jd_analysis_specs(), case, tmp_path / "case.db")
+    visible, projection, handler_calls = execute_case(
+        jd_analysis_specs(), case, tmp_path / "case.db"
+    )
     assert visible == case["visible_result"]
+    assert handler_calls == case["handler_calls"]

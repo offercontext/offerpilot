@@ -28,7 +28,10 @@ def test_offer_specs_preserve_provider_contracts() -> None:
 
 @pytest.mark.parametrize("case", _cases(), ids=lambda case: f"{case['tool_name']}:{case['case']}")
 def test_offer_spec_matches_baseline_case(case: dict[str, Any], tmp_path: Path) -> None:
-    visible, projection = execute_case(offer_specs(), case, tmp_path / "case.db")
+    visible, projection, handler_calls = execute_case(
+        offer_specs(), case, tmp_path / "case.db"
+    )
     assert visible == case["visible_result"]
+    assert handler_calls == case["handler_calls"]
     if case["business_projection"]:
         assert projection == {"table": case["business_projection"]["table"], "row_count": case["business_projection"]["row_count"]}

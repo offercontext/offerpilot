@@ -24,9 +24,6 @@ def render_compatibility(
     if isinstance(outcome, ToolFailure):
         detail = outcome.compatibility_detail or _FAILURE_TEXT[outcome.category]
         return detail if detail.startswith("错误：") else "错误：" + detail
-    try:
-        if spec.success_renderer is None:
-            return str(outcome.result)
-        return spec.success_renderer(outcome.result)
-    except Exception:
-        return "错误：工具结果交付失败。"
+    if spec.success_renderer is None:
+        return str(outcome.result)
+    return spec.success_renderer(outcome.result)

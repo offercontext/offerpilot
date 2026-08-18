@@ -17,6 +17,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     BindingAudit,
     PreparedToolCall,
     ToolExecutionRecord,
+    ToolFailure,
     ToolSuccess,
 )
 from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG
@@ -1082,7 +1083,24 @@ def test_write_status_does_not_report_missing_delete_as_success():
     assert _write_outcome((record,), attempted=True) == ("failed", "目标记录不存在")
 
 
+def test_write_status_scans_failed_write_before_later_successful_read():
+    failed_write = _tool_record(
+        "update_application_status",
+        ToolFailure("not_found", "record_not_found", "application not found"),
+    )
+    successful_read = _tool_record("list_applications", ToolSuccess([]))
+
+    assert _write_outcome(
+        (failed_write, successful_read),
+        attempted=True,
+    ) == ("failed", "application not found")
+
+
 def _successful_tool_record(tool_name: str, result: dict[str, object]) -> ToolExecutionRecord:
+    return _tool_record(tool_name, ToolSuccess(result))
+
+
+def _tool_record(tool_name: str, outcome: object) -> ToolExecutionRecord:
     spec = MODEL_TOOL_CATALOG.resolve(tool_name)
     assert spec is not None
     prepared = PreparedToolCall(
@@ -1092,8 +1110,9 @@ def _successful_tool_record(tool_name: str, result: dict[str, object]) -> ToolEx
         typed_args={},
         arguments_digest="sha256:" + "0" * 64,
         binding=BindingAudit(status="unbound", target_count=0),
+        contract_fingerprint="sha256:" + "0" * 64,
     )
-    return ToolExecutionRecord(prepared=prepared, outcome=ToolSuccess(result), execution_started=True)
+    return ToolExecutionRecord(prepared=prepared, outcome=outcome, execution_started=True)
 
 
 def test_stored_messages_to_ai_repairs_orphan_tool_calls():
@@ -4389,7 +4408,8 @@ def test_chat_confirm_result_cas_loss_preserves_newer_pending(tmp_path, monkeypa
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo):
+    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
+        del kwargs
         self.set_pending_action(conversation_id, newer)
         return False
 
@@ -4457,7 +4477,8 @@ def test_chat_confirm_cas_loss_aborts_before_auto_approved_second_write(
     )
     newer_undo = {"kind": "create_application", "application_id": 404}
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo):
+    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
+        del kwargs
         self.set_pending_action(conversation_id, newer)
         self.set_pending_clarification(conversation_id, newer, "newer question")
         self.set_last_write_undo(conversation_id, newer_undo)
@@ -4509,7 +4530,8 @@ def test_chat_confirm_tool_error_uses_expected_pending_cas(tmp_path, monkeypatch
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo):
+    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
+        del kwargs
         assert tool_message.content.startswith("错误：")
         self.set_pending_action(conversation_id, newer)
         return False
@@ -4566,6 +4588,54 @@ def test_chat_confirm_tool_error_provider_failure_is_durable(tmp_path, endpoint)
     assert sum(message["role"] == "tool" for message in stored) == 1
 
 
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_confirmed_failed_write_followed_by_successful_read_stays_failed(
+    tmp_path,
+    endpoint,
+):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="failed-write-before-read",
+                        name="update_application_status",
+                        args=json.dumps({"id": 999, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="successful-read-after-write",
+                        name="list_applications",
+                        args="{}",
+                    )
+                ]
+            ),
+            Assistant(content="done"),
+        ]
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    if endpoint.endswith("/stream"):
+        body = _parse_sse_events(response.text)[-1]["data"]["data"]["response"]
+    else:
+        body = response.json()
+    assert body["write_status"] == "failed"
+    assert body["write_error"] == "application not found"
+
+
 @pytest.mark.parametrize("failure_kind", ["provider", "timeout"])
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
@@ -4599,7 +4669,8 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
         # injected CAS loss to be recorded first under a full serial test group.
         monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo):
+    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
+        del kwargs
         self.set_pending_action(conversation_id, newer)
         return None
 
@@ -4802,8 +4873,8 @@ def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
         time.sleep(0.4)
         return original_update(self, app_id, data)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo):
-        del self, conversation_id, expected, tool_message, undo
+    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
+        del self, conversation_id, expected, tool_message, undo, kwargs
         return None
 
     monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)

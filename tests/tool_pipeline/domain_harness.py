@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -171,10 +171,26 @@ def execute_case(
     specs: tuple[ToolSpec[Any, Any], ...],
     case: dict[str, Any],
     path: Path,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], int]:
     harness = build_harness(path, case["tool_name"], case["case"])
     try:
-        catalog = ToolCatalog(specs, expected_names=tuple(spec.name for spec in specs))
+        executor_calls = 0
+        stages: list[str] = []
+        selected = next(spec for spec in specs if spec.name == case["tool_name"])
+
+        def counted_executor(args: Any, context: ToolExecutionContext) -> Any:
+            nonlocal executor_calls
+            executor_calls += 1
+            return selected.executor(args, context)
+
+        instrumented = tuple(
+            replace(spec, executor=counted_executor) if spec.name == selected.name else spec
+            for spec in specs
+        )
+        catalog = ToolCatalog(
+            instrumented,
+            expected_names=tuple(spec.name for spec in instrumented),
+        )
         spec = cast(ToolSpec[Any, Any], catalog.resolve(case["tool_name"]))
         prepared = prepare_call(
             catalog,
@@ -186,9 +202,11 @@ def execute_case(
             ),
             pending_action_revision=1,
             pending_identity="golden-pending",
+            stage_sink=stages.append,
         )
         if isinstance(prepared, Rejected):
             visible = render_compatibility(spec, prepared.failure)
+            compatibility_handler_calls = 0 if stages[-1:] == ["preflight"] else 1
         else:
             assert isinstance(prepared, (ReadyToExecute, ConfirmationRequired))
 
@@ -207,6 +225,7 @@ def execute_case(
                 confirmation_claimer=claim if isinstance(prepared, ConfirmationRequired) else None,
             )
             visible = render_compatibility(spec, record.outcome)
+            compatibility_handler_calls = executor_calls
         projection: dict[str, Any] = {}
         expected_projection = case["business_projection"]
         if expected_projection:
@@ -219,7 +238,7 @@ def execute_case(
                         session.scalar(select(func.count()).select_from(model)) or 0
                     ),
                 }
-        return normalize_visible(visible), projection
+        return normalize_visible(visible), projection, compatibility_handler_calls
     finally:
         harness.close()
 
