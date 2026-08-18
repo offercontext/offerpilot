@@ -1,6 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
+from uuid import UUID
 
 import pytest
 
@@ -15,6 +16,80 @@ from offerpilot.ai.agent import (
     run_turn,
 )
 from offerpilot.ai.types import Assistant, Message, ToolCall
+from offerpilot.agent_runtime.events import ContextManifestInput
+from offerpilot.agent_runtime.journal import EventInput
+
+
+class RecordingRunRecorder:
+    def __init__(self):
+        self.run_id = "00000000-0000-0000-0000-000000000001"
+        self.segment_id = "00000000-0000-0000-0000-000000000002"
+        self.diagnostics = []
+        self.actions = []
+
+    def start_segment(self, command):
+        self.actions.append(("segment.started", command))
+
+    def attach_input_message(self, message_id):
+        self.actions.append(("input.attached", message_id))
+
+    def capture_context(
+        self,
+        logical_input,
+        manifest: ContextManifestInput,
+        *,
+        snapshot_kind,
+        model_step=None,
+        model_call_id=None,
+        estimated_token_count=None,
+        token_estimator_name=None,
+        token_estimator_version=None,
+    ):
+        del (
+            logical_input,
+            manifest,
+            estimated_token_count,
+            token_estimator_name,
+            token_estimator_version,
+        )
+        snapshot_id = "00000000-0000-0000-0000-000000000003"
+        self.actions.append(
+            (
+                "context.captured",
+                {
+                    "snapshot_id": snapshot_id,
+                    "snapshot_kind": snapshot_kind,
+                    "model_step": model_step,
+                    "model_call_id": model_call_id,
+                },
+            )
+        )
+        return snapshot_id
+
+    def append_event(self, event: EventInput):
+        self.actions.append((event.event_type, event))
+
+    def suspend(self, command):
+        self.actions.append(("run.suspended", command))
+
+    def finish(self, command):
+        self.actions.append(("run.finished", command))
+
+    def fingerprint_model_id(self, value):
+        del value
+        return "a" * 64
+
+    def fingerprint_pending_identity(self, value):
+        del value
+        return "b" * 64
+
+    @property
+    def event_types(self):
+        return [name for name, _ in self.actions]
+
+    @property
+    def events(self):
+        return [value for _, value in self.actions if isinstance(value, EventInput)]
 
 
 class ScriptedModel:
@@ -1620,6 +1695,179 @@ def test_event_sink_emits_read_tool_call_and_result():
             },
         },
     ]
+
+
+def test_journal_records_one_model_answer_lifecycle():
+    recorder = RecordingRunRecorder()
+
+    added, reply, pending = run_turn(
+        ScriptedModel([Assistant(content="done")]),
+        {},
+        [Message(role="user", content="hello")],
+        auto_approve=False,
+        run_recorder=recorder,
+    )
+
+    assert [message.role for message in added] == ["assistant"]
+    assert reply == "done"
+    assert pending is None
+    assert recorder.event_types == [
+        "context.captured",
+        "model.requested",
+        "model.completed",
+    ]
+    requested, completed = recorder.events
+    assert requested.model_step == completed.model_step == 1
+    assert requested.model_call_id == completed.model_call_id
+    assert requested.model_call_id is not None
+    UUID(requested.model_call_id)
+
+
+def test_journal_records_read_tool_loop_and_increments_model_step():
+    recorder = RecordingRunRecorder()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]
+            ),
+            Assistant(content="done"),
+        ]
+    )
+
+    _, reply, pending = run_turn(
+        model,
+        {
+            "list_applications": {
+                "write": False,
+                "handler": lambda _args: '{"items":[]}',
+            }
+        },
+        [],
+        auto_approve=False,
+        run_recorder=recorder,
+    )
+
+    assert reply == "done"
+    assert pending is None
+    assert recorder.event_types == [
+        "context.captured",
+        "model.requested",
+        "model.completed",
+        "tool.proposed",
+        "tool.started",
+        "tool.completed",
+        "context.captured",
+        "model.requested",
+        "model.completed",
+    ]
+    model_events = [event for event in recorder.events if event.event_type.startswith("model.")]
+    assert [event.model_step for event in model_events] == [1, 1, 2, 2]
+    assert model_events[0].model_call_id == model_events[1].model_call_id
+    assert model_events[2].model_call_id == model_events[3].model_call_id
+    assert model_events[0].model_call_id != model_events[2].model_call_id
+
+
+def test_journal_write_tool_stops_at_proposal_before_confirmation():
+    recorder = RecordingRunRecorder()
+    calls = []
+
+    _, reply, pending = run_turn(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args='{"id":1,"status":"offer"}',
+                        )
+                    ]
+                )
+            ]
+        ),
+        {
+            "update_application_status": {
+                "write": True,
+                "handler": lambda args: calls.append(args) or "{}",
+            }
+        },
+        [],
+        auto_approve=False,
+        run_recorder=recorder,
+    )
+
+    assert reply == ""
+    assert pending is not None
+    assert calls == []
+    assert recorder.event_types == [
+        "context.captured",
+        "model.requested",
+        "model.completed",
+        "tool.proposed",
+    ]
+
+
+def test_journal_records_provider_failure_and_preserves_exception():
+    class FailingProvider:
+        def complete(self, messages, tools):
+            del messages, tools
+            raise RuntimeError("sensitive provider detail")
+
+    recorder = RecordingRunRecorder()
+
+    with pytest.raises(RuntimeError, match="sensitive provider detail"):
+        run_turn(
+            FailingProvider(),
+            {},
+            [],
+            auto_approve=False,
+            run_recorder=recorder,
+        )
+
+    assert recorder.event_types == [
+        "context.captured",
+        "model.requested",
+        "model.failed",
+    ]
+    requested, failed = recorder.events
+    assert requested.model_step == failed.model_step == 1
+    assert requested.model_call_id == failed.model_call_id
+    assert "sensitive provider detail" not in repr(failed)
+
+
+def test_journal_records_legacy_tool_error_without_changing_agent_result():
+    recorder = RecordingRunRecorder()
+    model = RecordingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]
+            ),
+            Assistant(content="recovered"),
+        ]
+    )
+
+    _, reply, pending = run_turn(
+        model,
+        {
+            "list_applications": {
+                "write": False,
+                "handler": lambda _args: "错误：legacy failure",
+            }
+        },
+        [],
+        auto_approve=False,
+        run_recorder=recorder,
+    )
+
+    assert reply == "recovered"
+    assert pending is None
+    assert model.message_batches[1][-1].content == "错误：legacy failure"
+    assert recorder.event_types[3:6] == [
+        "tool.proposed",
+        "tool.started",
+        "tool.failed",
+    ]
+    assert "legacy failure" not in repr(recorder.events)
 
 
 def test_executes_multiple_read_only_tool_calls_from_one_assistant_turn():

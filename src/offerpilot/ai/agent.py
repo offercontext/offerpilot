@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -19,6 +20,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt, interrupt
 
 from offerpilot.ai.types import Assistant, Message
+from offerpilot.agent_runtime.events import ContextManifestInput
+from offerpilot.agent_runtime.journal import EventInput, NullRunRecorder, RunRecorder
 
 DEFAULT_MAX_ITERATIONS = 20
 _DEFAULT_THREAD_ID = "conversation:ephemeral"
@@ -144,6 +147,7 @@ class LangGraphAgentRunner:
         cancel_check: CancelCheck | None = None,
         confirmation_result_sink: ConfirmationResultSink | None = None,
         confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
+        run_recorder: RunRecorder | None = None,
     ):
         self._model = model
         self._registry = registry
@@ -153,6 +157,7 @@ class LangGraphAgentRunner:
         self._cancel_check = cancel_check
         self._confirmation_result_sink = confirmation_result_sink
         self._confirmation_attempt_sink = confirmation_attempt_sink
+        self._run_recorder = run_recorder or NullRunRecorder()
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
 
@@ -288,7 +293,7 @@ class LangGraphAgentRunner:
 
         work = [_message_from_dict(message) for message in state.get("messages", [])]
         tools = _model_visible_tools(self._registry)
-        assistant = self._complete_model(work, tools)
+        assistant = self._complete_model(work, tools, model_step=iterations + 1)
         selected_tool_calls = _select_tool_calls(assistant.tool_calls, self._registry)
         assistant_message = Message(
             role="assistant",
@@ -331,6 +336,13 @@ class LangGraphAgentRunner:
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
             tool = self._registry.get(tool_name)
+            self._record_tool_proposed(
+                tool_call_id,
+                tool_name,
+                tool_args,
+                tool,
+                auto_approve=bool(state.get("auto_approve", False)),
+            )
             has_mapped_resume, mapped_resume, mapped_interrupt_id = _mapped_resume_payload()
             if has_mapped_resume:
                 mapped_identity_error = _resume_identity_error(
@@ -403,7 +415,12 @@ class LangGraphAgentRunner:
                         self._raise_if_cancelled()
                         if self._confirmation_attempt_sink is not None:
                             self._confirmation_attempt_sink(effective_pending)
-                        result = _execute_tool(tool, effective_args)
+                        result = self._execute_tool_recorded(
+                            tool_call_id,
+                            tool_name,
+                            tool,
+                            effective_args,
+                        )
                     else:
                         self._emit_pending_tool_call(
                             PendingAction(
@@ -426,10 +443,20 @@ class LangGraphAgentRunner:
                         )
                 else:
                     self._raise_if_cancelled()
-                    result = _execute_tool(tool, tool_args)
+                    result = self._execute_tool_recorded(
+                        tool_call_id,
+                        tool_name,
+                        tool,
+                        tool_args,
+                    )
             else:
                 self._raise_if_cancelled()
-                result = _execute_tool(tool, tool_args)
+                result = self._execute_tool_recorded(
+                    tool_call_id,
+                    tool_name,
+                    tool,
+                    tool_args,
+                )
 
             self._emit_tool_result(tool_call_id, tool_name, result)
             tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
@@ -524,7 +551,12 @@ class LangGraphAgentRunner:
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
                 )
-            result = _execute_tool(tool, effective_args)
+            result = self._execute_tool_recorded(
+                pending.tool_call_id,
+                pending.tool_name,
+                tool,
+                effective_args,
+            )
         else:
             self._emit_pending_tool_call(pending, "rejected")
             result = _rejection_result(rejection_feedback)
@@ -583,15 +615,202 @@ class LangGraphAgentRunner:
     def _emit_tool_result(self, tool_call_id: str, tool_name: str, result: str) -> None:
         self._emit_event("tool_result", _tool_result_payload(tool_call_id, tool_name, result))
 
-    def _complete_model(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+    def _complete_model(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        model_step: int,
+    ) -> Assistant:
+        model_call_id = str(uuid4())
+        snapshot_id = self._capture_model_input(
+            messages,
+            tools,
+            model_step=model_step,
+            model_call_id=model_call_id,
+        )
         stream_complete = getattr(self._model, "stream_complete", None)
-        if callable(stream_complete):
-            return cast(StreamingChatModel, self._model).stream_complete(
-                messages,
-                tools,
-                self._emit_assistant_delta,
+        is_stream = callable(stream_complete)
+        if snapshot_id is not None:
+            provider_kind, model_id, supports_json_schema = _journal_model_metadata(
+                self._model
             )
-        return self._model.complete(messages, tools)
+            model_id_fingerprint = self._fingerprint_model_id(model_id)
+            self._append_journal_event(
+                EventInput(
+                    event_type="model.requested",
+                    facts={
+                        "snapshot_id": snapshot_id,
+                        "provider_kind": provider_kind,
+                        "model_id_fingerprint": model_id_fingerprint,
+                        "supports_tools": True,
+                        "supports_json_schema": supports_json_schema,
+                        "stream": is_stream,
+                        "tools_count": len(tools),
+                        "response_format_kind": "text",
+                    },
+                    model_step=model_step,
+                    model_call_id=model_call_id,
+                    source_ref_type="context_snapshot",
+                    source_ref_id=snapshot_id,
+                )
+            )
+        try:
+            if is_stream:
+                assistant = cast(StreamingChatModel, self._model).stream_complete(
+                    messages,
+                    tools,
+                    self._emit_assistant_delta,
+                )
+            else:
+                assistant = self._model.complete(messages, tools)
+        except Exception as exc:
+            if snapshot_id is not None:
+                failure_category, provider_outcome = _journal_model_failure(exc)
+                self._append_journal_event(
+                    EventInput(
+                        event_type="model.failed",
+                        facts={
+                            "failure_category": failure_category,
+                            "provider_outcome": provider_outcome,
+                        },
+                        model_step=model_step,
+                        model_call_id=model_call_id,
+                    )
+                )
+            raise
+        if snapshot_id is not None:
+            assistant_kind = _journal_assistant_kind(assistant)
+            self._append_journal_event(
+                EventInput(
+                    event_type="model.completed",
+                    facts={
+                        "assistant_kind": assistant_kind,
+                        "tool_call_count": len(assistant.tool_calls),
+                        "finish_category": (
+                            "tool_calls" if assistant.tool_calls else "stop"
+                        ),
+                    },
+                    model_step=model_step,
+                    model_call_id=model_call_id,
+                )
+            )
+        return assistant
+
+    def _capture_model_input(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        model_step: int,
+        model_call_id: str,
+    ) -> str | None:
+        try:
+            return self._run_recorder.capture_context(
+                _journal_model_input(messages, tools),
+                ContextManifestInput(
+                    conversation_message_ids=(),
+                    tool_names=tuple(str(tool.get("name") or "") for tool in tools),
+                    attachment_refs=(),
+                    domain_source_refs=(),
+                ),
+                snapshot_kind="model_input",
+                model_step=model_step,
+                model_call_id=model_call_id,
+            )
+        except Exception:
+            return None
+
+    def _fingerprint_model_id(self, model_id: str) -> str | None:
+        try:
+            return self._run_recorder.fingerprint_model_id(model_id)
+        except Exception:
+            return None
+
+    def _append_journal_event(self, event: EventInput) -> None:
+        try:
+            self._run_recorder.append_event(event)
+        except Exception:
+            return
+
+    def _record_tool_proposed(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        tool_args: str,
+        tool: dict[str, Any] | None,
+        *,
+        auto_approve: bool,
+    ) -> None:
+        tool_definition = tool or {}
+        requires_confirmation = bool(tool_definition.get("write")) and _requires_confirmation(
+            tool_definition,
+            auto_approve,
+        )
+        self._append_journal_event(
+            EventInput(
+                event_type="tool.proposed",
+                facts={
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "tool_kind": "write" if bool(tool_definition.get("write")) else "read",
+                    "args_shape_digest": _journal_shape_digest(tool_args),
+                    "proposal_outcome": (
+                        "confirmation_required"
+                        if requires_confirmation
+                        else "execution_allowed"
+                    ),
+                },
+                source_ref_type="tool_call",
+                source_ref_id=tool_call_id,
+            )
+        )
+
+    def _execute_tool_recorded(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        tool: dict[str, Any],
+        args: str,
+    ) -> str:
+        self._append_journal_event(
+            EventInput(
+                event_type="tool.started",
+                facts={
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "result_contract": "legacy_string_v1",
+                },
+                source_ref_type="tool_call",
+                source_ref_id=tool_call_id,
+            )
+        )
+        result = _execute_tool(tool, args)
+        if result.startswith("错误："):
+            event = EventInput(
+                event_type="tool.failed",
+                facts={
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "failure_category": "tool_error",
+                },
+                source_ref_type="tool_call",
+                source_ref_id=tool_call_id,
+            )
+        else:
+            event = EventInput(
+                event_type="tool.completed",
+                facts={
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "outcome": "completed",
+                    "result_shape_digest": _journal_shape_digest(result),
+                },
+                source_ref_type="tool_call",
+                source_ref_id=tool_call_id,
+            )
+        self._append_journal_event(event)
+        return result
 
     def _emit_assistant_delta(self, delta: str) -> None:
         if not delta:
@@ -622,6 +841,7 @@ def run_turn(
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
+    run_recorder: RunRecorder | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -630,6 +850,7 @@ def run_turn(
         thread_id=thread_id,
         event_sink=event_sink,
         cancel_check=cancel_check,
+        run_recorder=run_recorder,
     ).run_turn(messages, auto_approve=auto_approve, max_iter=max_iter)
 
 
@@ -649,6 +870,7 @@ def resume_after_confirm(
     cancel_check: CancelCheck | None = None,
     confirmation_result_sink: ConfirmationResultSink | None = None,
     confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
+    run_recorder: RunRecorder | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -659,6 +881,7 @@ def resume_after_confirm(
         cancel_check=cancel_check,
         confirmation_result_sink=confirmation_result_sink,
         confirmation_attempt_sink=confirmation_attempt_sink,
+        run_recorder=run_recorder,
     ).resume_after_confirm(
         messages,
         pending,
@@ -945,6 +1168,119 @@ def _validate_pending_action(validate: Any, args: str) -> str:
         return str(error or "")
     except Exception:
         return "工具参数验证失败，请检查后重试。"
+
+
+def _journal_model_input(
+    messages: list[Message],
+    tools: list[dict[str, Any]],
+) -> dict[str, object]:
+    return {
+        "messages": [
+            {
+                "role": message.role,
+                "content": message.content,
+                "tool_call_id": message.tool_call_id,
+                "tool_calls": [
+                    {"id": call.id, "name": call.name, "args": call.args}
+                    for call in message.tool_calls
+                ],
+            }
+            for message in messages
+        ],
+        "tools": [
+            {
+                "name": str(tool.get("name") or ""),
+                "description": str(tool.get("description") or ""),
+                "parameters": tool.get("schema") or {},
+            }
+            for tool in tools
+        ],
+    }
+
+
+def _journal_model_metadata(model: ChatModel) -> tuple[str, str, bool]:
+    provider_kind = "openai_compatible"
+    model_id = f"{type(model).__module__}.{type(model).__qualname__}"
+    supports_json_schema = getattr(model, "supports_json_schema", False) is True
+    providers = getattr(model, "_providers", None)
+    if isinstance(providers, list) and providers:
+        profile = providers[0]
+        raw_provider = str(getattr(profile, "provider", "") or "")
+        provider_kind = (
+            raw_provider
+            if raw_provider in {"openai", "openai_compatible", "litellm_proxy", "anthropic"}
+            else "openai_compatible"
+        )
+        model_id = str(getattr(profile, "model", "") or model_id)
+    else:
+        raw_provider = str(getattr(model, "provider_kind", "") or "")
+        if raw_provider in {"openai", "openai_compatible", "litellm_proxy", "anthropic"}:
+            provider_kind = raw_provider
+        model_id = str(getattr(model, "model", "") or model_id)
+    return provider_kind, model_id, supports_json_schema
+
+
+def _journal_model_failure(error: Exception) -> tuple[str, str]:
+    if isinstance(error, TimeoutError):
+        return "timeout", "timeout"
+    if isinstance(error, ConnectionError):
+        return "network_error", "network_error"
+    return "provider_error", "error"
+
+
+def _journal_assistant_kind(assistant: Assistant) -> str:
+    if assistant.content and assistant.tool_calls:
+        return "mixed"
+    if assistant.tool_calls:
+        return "tool_calls"
+    if assistant.content:
+        return "text"
+    return "empty"
+
+
+def _journal_shape_digest(raw: str) -> str:
+    if len(raw) > 65_536:
+        value: object = {"type": "oversized"}
+    else:
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            value = raw
+    shape = _journal_value_shape(value)
+    encoded = json.dumps(shape, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _journal_value_shape(value: object, *, depth: int = 0) -> object:
+    if depth >= 16:
+        return {"type": "truncated"}
+    if type(value) is dict:
+        mapping = cast(dict[object, object], value)
+        if len(mapping) > 64:
+            return {"type": "object", "field_count": len(mapping), "truncated": True}
+        return {
+            "type": "object",
+            "fields": {
+                str(key): _journal_value_shape(item, depth=depth + 1)
+                for key, item in sorted(mapping.items(), key=lambda pair: str(pair[0]))
+            },
+        }
+    if type(value) is list:
+        sequence = cast(list[object], value)
+        return {
+            "type": "array",
+            "length": len(sequence),
+            "items": [_journal_value_shape(item, depth=depth + 1) for item in sequence[:16]],
+        }
+    if value is None:
+        return {"type": "null"}
+    if type(value) is bool:
+        return {"type": "boolean"}
+    if type(value) in {int, float}:
+        return {"type": "number"}
+    if type(value) is str:
+        return {"type": "string"}
+    return {"type": "unsupported"}
 
 
 def _execute_tool(tool: dict[str, Any], args: str) -> str:
