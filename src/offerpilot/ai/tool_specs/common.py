@@ -11,7 +11,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolExceptionMapping,
 )
 from offerpilot.repositories.application_events import duration_minutes
-from offerpilot.schemas import ApplicationEventOut, ApplicationOut
+from offerpilot.schemas import ApplicationEventOut, ApplicationOut, InterviewNoteOut, OfferOut
 
 
 class ToolInputError(Exception):
@@ -100,6 +100,20 @@ def event_with_application_json(item: Any) -> dict[str, Any]:
     payload = event_json(item.event)
     payload["company_name"] = item.company_name
     payload["position_name"] = item.position_name
+    return payload
+
+
+def note_json(note: Any) -> dict[str, Any]:
+    payload = InterviewNoteOut.model_validate(note).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "note"
+    payload["note_id"] = note.id
+    return payload
+
+
+def offer_json(offer: Any) -> dict[str, Any]:
+    payload = OfferOut.model_validate(offer).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "offer"
+    payload["offer_id"] = offer.id
     return payload
 
 
