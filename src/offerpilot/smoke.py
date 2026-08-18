@@ -20,6 +20,7 @@ import uvicorn
 from sqlalchemy import delete, func, select
 
 from offerpilot.ai.agent import ChatModel
+from offerpilot.ai.tool_runtime.contracts import ProviderToolContract
 from offerpilot.ai.interview_preparation_proposals import (
     InterviewPreparationModelError,
     validate_interview_preparation,
@@ -201,7 +202,7 @@ class _SmokeChatModel(ChatModel):
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
     ) -> Assistant:
         if messages and messages[-1].role == "tool":
@@ -257,7 +258,7 @@ class _MutableSmokeChatModel(ChatModel):
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
     ) -> Assistant:
         if self.application_id is None:
@@ -314,7 +315,7 @@ class _InterviewStorySmokeChatModel(ChatModel):
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]],
+        tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
     ) -> Assistant:
         del tools, response_format

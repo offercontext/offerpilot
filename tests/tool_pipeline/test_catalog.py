@@ -18,6 +18,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolSpec,
 )
 from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG, MODEL_TOOL_NAMES
+from offerpilot.ai.tool_runtime.legacy import LEGACY_DETERMINISTIC_NAMES
 
 from golden import canonical_json, load_golden
 
@@ -160,3 +161,12 @@ def test_model_catalog_is_exact_provider_golden_in_exact_order() -> None:
     assert canonical_json([contract.payload for contract in contracts]) == canonical_json(
         manifest["tools"]
     )
+
+
+def test_complete_tool_classification_is_exactly_twenty_five_typed_plus_three_legacy() -> None:
+    typed = frozenset(MODEL_TOOL_NAMES)
+
+    assert len(typed) == 25
+    assert len(LEGACY_DETERMINISTIC_NAMES) == 3
+    assert typed.isdisjoint(LEGACY_DETERMINISTIC_NAMES)
+    assert len(typed | LEGACY_DETERMINISTIC_NAMES) == 28
