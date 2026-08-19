@@ -1062,7 +1062,7 @@ class WriteOperationCoordinator:
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable), None
         except OperationalError:
-            return OperationUnknown(operation_id, "operation_busy", True), None
+            return self._reconcile_commit_unknown(operation_id, request_fingerprint), None
         except BaseException:
             raise
 
@@ -1129,7 +1129,7 @@ class WriteOperationCoordinator:
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return OperationUnknown(operation_id, "operation_busy", True)
+            return self._reconcile_commit_unknown(operation_id, request_fingerprint)
 
     def execute_legacy(
         self,
@@ -1230,7 +1230,7 @@ class WriteOperationCoordinator:
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return OperationUnknown(operation_id, "operation_busy", True)
+            return self._reconcile_commit_unknown(operation_id, request_fingerprint)
         except Exception:
             return OperationUnknown(operation_id, "operation_not_committed", True)
 
@@ -1381,9 +1381,24 @@ class WriteOperationCoordinator:
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return OperationUnknown(operation_id, "operation_busy", True)
+            return self._reconcile_commit_unknown(operation_id, request_fingerprint)
         except Exception:
             return OperationUnknown(operation_id, "operation_not_committed", True)
+
+    def _reconcile_commit_unknown(
+        self, operation_id: str, request_fingerprint: str
+    ) -> OperationExecution:
+        """Resolve a lost COMMIT response from authoritative Ledger state."""
+        try:
+            with self.repository.session_factory() as session:
+                operation = session.get(WriteOperation, operation_id)
+                if operation is None or operation.status not in _TERMINAL_STATUSES:
+                    return OperationUnknown(operation_id, "operation_busy", True)
+                return self.repository.replay(operation, request_fingerprint)
+        except WriteOperationError as exc:
+            return OperationUnknown(operation_id, exc.code, exc.retryable)
+        except OperationalError:
+            return OperationUnknown(operation_id, "operation_busy", True)
 
     def _verify_compensation(self, operation: WriteOperation, request_fingerprint: str) -> None:
         if (

@@ -27,7 +27,6 @@ from offerpilot.ai.write_operations import (
     OperationCommitted,
     OperationFailed,
     OperationReplay,
-    OperationUnknown,
     WriteOperationCoordinator,
     WriteOperationRepository,
     load_or_create_ledger_key,
@@ -401,11 +400,10 @@ def test_primary_commit_unknown_reconciles_without_second_executor_call(
         authorization=authorization,
         request_fingerprint="hmac-sha256:" + "7" * 64,
     )
-    unknown, _ = coordinator.execute_primary(**arguments)
+    reconciled, _ = coordinator.execute_primary(**arguments)
     replay, _ = coordinator.execute_primary(**arguments)
 
-    assert isinstance(unknown, OperationUnknown)
-    assert unknown.code == "operation_busy"
+    assert isinstance(reconciled, OperationReplay)
     assert isinstance(replay, OperationReplay)
     assert calls == ["delete_note"]
 
@@ -455,10 +453,10 @@ def test_compensation_commit_unknown_and_parent_conflict_are_stable(
         compensation_kind="undo:add_note",
         executor=compensate,
     )
-    unknown = coordinator.execute_compensation(**arguments)
+    reconciled = coordinator.execute_compensation(**arguments)
     replay = coordinator.execute_compensation(**arguments)
 
-    assert isinstance(unknown, OperationUnknown)
+    assert isinstance(reconciled, OperationReplay)
     assert isinstance(replay, OperationReplay)
     assert calls == ["delete_note"]
 
