@@ -2,23 +2,32 @@
 
 ## Final readiness decision
 
-**No-Go for release.** No P0 or P1 remains. P1-03, P1-04, P1-05, P1-06, and P1-07 are closed with focused code and test evidence; P2-06 and P2-08 are also closed. P2-07 remains open because the required 12 typed + 3 legacy + 4 compensation acceptance matrix is still not executable coverage.
+**No-Go for release.** No P0 remains. P1-03, P1-04, P1-05, P1-06, P1-07, P2-06, P2-07, and P2-08 are closed with focused code and test evidence. A new P1-08 remains: commit-unknown terminal writes are returned as retryable `operation_busy` without the required fresh-session reconciliation.
 
-Open at this HEAD: **P2-07 only; no P0/P1**. P2-07 is still a completion blocker under the design’s independent-CR acceptance requirement; the code-level migration, delivery, fencing, and Journal blockers are closed.
+Open at this HEAD: **P1-08 only; no P0/P2**. The new Ledger-specific matrix and existing sync/SSE API goldens close the former P2-07 coverage gap, but the commit-unknown behavior remains a release blocker.
 
 ## Reviewed scope and method
 
 - Fixed baseline: `5e560580e86da7d1eb272e0df9d3d13304717499`.
-- Implementation HEAD: `b358c66` (`test: AI add ledger acceptance matrix`).
-- Previous reviewed implementation: `4cb9cca`.
+- Implementation HEAD: `c2c564a` (`test: AI cover ledger concurrency recovery`).
+- Included latest migration compatibility fix: `bdb32cd` (`fix: AI rebuild ledger chat schema with stale triggers`).
+- Previous reviewed implementation: `b358c66`.
 - Schema atomicity/index fix reviewed: `ff43823`.
 - Included migration compatibility commit: `5d9b88a` (`fix: AI support legacy chat ledger migration`).
 - Prior review update: `6c55fce`.
 - Compared the current source/tests with `docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md` and `docs/superpowers/plans/2026-08-19-write-operation-ledger.md`.
 - Inspected the Ledger coordinator/repository, API/SSE confirmation paths, Journal boundary, models, SQLite migration, and focused tests. Reproduced both a valid old-schema upgrade and a malformed orphan-row upgrade with temporary databases. No product source was changed by this review; only this report is updated.
+- Confirmed `tests/test_ai_agent.py` contains no skipped or `_retired_` persistent-checkpoint bodies at this HEAD; the removed checkpoint tests are not retained as dead collection-free test code.
 - The full long gate was intentionally not run because the parent task owns it.
 
 Severity: P1 blocks release because behavior can violate a required Phase 3 guarantee. P2 is a material integrity, performance, contract, or acceptance gap.
+
+## Severity summary
+
+- P0: none observed.
+- P1: P1-08 open; P1-03 through P1-07 resolved with evidence.
+- P2: P2-06, P2-07, and P2-08 resolved with evidence.
+- P3: none requiring a report finding.
 
 ## Previous open findings: resolution evidence
 
@@ -56,19 +65,21 @@ Terminal result/transport projections are built and persisted before terminal co
 
 `tests/test_schema_compatibility.py:301-355` reproduces an orphan-row upgrade twice and requires both attempts to fail, the old table to remain without the new CHECK constraints, and `0026_write_operation_ledger` to remain absent. This closes the previously observed retry-success/data-corruption window.
 
-### P2-07 — Required adapter/concurrency acceptance matrix remains incomplete
+### P1-08 — Commit-unknown terminal writes skip fresh-session reconciliation
 
-**Partially resolved; P2 remains open.** `tests/test_write_operation_acceptance_matrix.py:158-271` now provides 19 parameterized Ledger coordinator cases (12 typed + 3 legacy + 4 compensation), with one executor call and same-operation replay. `:274-330` adds a sequential expired-owner takeover, late-owner fence, message immutability, and manifest immutability case. The new file passes 20 tests, so the prior absence of adapter enumeration and basic replay evidence is closed.
+**Open; release-blocking.** Design §16.1 requires a `session.commit()` exception to discard the current Session and fresh-read the operation. If the terminal row and integrity checks are present, the request must replay/recover the durable result (and use the delivery fence when needed); only proposed, absent, or unreadable states may produce their corresponding retryable unknown result. It must never rerun the executor (`docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md:807-819`).
 
-It is not yet the full acceptance matrix required by spec §23. The new adapter tests replace each executor with a trivial function, use `NullRunRecorder`, call the coordinator directly, and do not prove the actual domain projection, sync/SSE replay, declared-failure replay, exact transition/domain-row assertions, or Provider/read-tool call counts. The remaining minimum executable scenarios are:
+The coordinator currently catches the commit exception and immediately returns retryable `operation_busy` at `src/offerpilot/ai/write_operations.py:1060-1065` (primary), `:1127-1132` (rejection), `:1226-1233` (legacy), and `:1377-1384` (compensation). The confirmation paths propagate that unknown result to the client at `src/offerpilot/api.py:6307-6311` and `:7021-7025`; they do not perform the required fresh read/replay or delivery convergence in that request. A commit that actually reached SQLite can therefore leave the first caller with a retryable error even though the terminal operation is already durable.
 
-- two connections racing one proposed operation, proving one executor/domain commit and one loser replay/conflict;
-- a primary and compensation commit-unknown injection, proving fresh-session reconciliation never runs the executor twice;
-- two expired delivery owners racing takeover, proving one generation-2 CAS winner and one loser with no duplicate messages;
-- an actual continuation/replay spy proving Provider/read-tool/renderer calls are zero after terminal commit, delivery recovery, and SSE replay;
-- one compensation parent mutation/conflict between proposal and execution, plus one chained-Pending delivery-manifest/transition reconciliation case.
+The new matrix injects exactly this “commit succeeds, response is lost” condition at `tests/test_write_operation_acceptance_matrix.py:373-410` and `:413-463`, but asserts `OperationUnknown(operation_busy)` for the first call and only observes replay on a second call. That proves the executor is not run twice, but it also codifies the missing first-call reconciliation. The fix must reconcile primary, legacy, rejection, and compensation commit exceptions in a fresh Session, and tests must assert terminal replay/fenced delivery on the first call plus proposed/absent/unreadable branches without a second executor call.
 
-Until these minimum concurrency, commit-unknown, runtime-call, and compensation/chained-delivery cases are executable, P2-07 remains a completion blocker even though the 19 adapter cases pass.
+### P2-07 — Required adapter/concurrency acceptance matrix
+
+**Resolved as an executable coverage gap.** `tests/test_write_operation_acceptance_matrix.py` now has 24 passing cases: `:165-200` enumerates all 12 typed adapters with one executor call and replay, `:203-228` covers all 3 legacy adapters, `:231-278` covers all 4 compensation kinds, `:281-337` covers late-owner fencing plus message/manifest tamper rejection, `:340-370` races two primary connections, `:373-410` injects primary commit response loss, `:413-487` covers compensation commit response loss and stable deterministic parent conflict, and `:490-528` races two expired delivery takeovers. The matrix file now passes both Ruff and strict mypy (`# mypy: disable-error-code` is limited to the test file's untyped test helpers).
+
+The direct matrix intentionally isolates Ledger coordinator behavior: it replaces catalog executors with spies and uses `NullRunRecorder`. The required runtime integration is covered by the existing API goldens, so this harness scope is no longer an open P2. `tests/test_chat_api.py:1040-1117` runs deterministic confirmation retry for both sync and SSE, verifies delivery takeover replay, exactly one domain version, and `model.calls == 0`; `:5919-5990` runs the unrelated-generation race for both sync/SSE, verifies the single SSE origin event carries the operation id, and verifies the chained Pending, persisted history, and unchanged domain result. Those four focused API cases pass, so duplicating them in the Ledger-only matrix is unnecessary.
+
+The commit-unknown tests expose P1-08 above rather than leaving a P2 coverage hole. Parent digest/trigger enforcement remains covered by the schema and compensation integrity tests described under P2-06. Therefore P2-07 is closed, with P1-08 still preventing release.
 
 ### P2-08 — Legacy ChatMessage rebuild index retention
 
@@ -77,15 +88,18 @@ Until these minimum concurrency, commit-unknown, runtime-call, and compensation/
 ## Verification performed
 
 - `uv run pytest tests/test_write_operations.py tests/tool_pipeline/test_checkpoint.py tests/test_schema_compatibility.py -q` — **30 passed**, 1 warning.
-- `uv run pytest tests/test_write_operation_acceptance_matrix.py -q` — **20 passed**, 1 warning.
+- `uv run pytest tests/test_write_operation_acceptance_matrix.py -q` — **24 passed**, 1 warning.
+- `uv run pytest tests/test_schema_compatibility.py tests/test_write_operation_acceptance_matrix.py -q` — **39 passed**, 1 warning.
+- `uv run pytest tests/test_chat_api.py -q -k "deterministic_pilot_retries_same_key_after_chat_cas_failure or chat_confirm_ledger_delivery_survives_unrelated_conversation_generation_change"` — **4 passed**, 290 deselected, 25 warnings.
 - `uv run pytest tests/test_chat_api.py -q -k "confirm_stream_executes_pending_write_and_completes or chat_confirm_stream_recovers_committed_write_when_followup_model_fails or chat_confirm_ledger_delivery_persists_fallback_after_generation_change or chat_confirm_rejection_provider_failure_records_cancellation_once or chat_confirm_result_cas_loss_stays_stale_on_followup_failure or chat_confirm_tool_error_provider_failure_is_durable"` — **12 passed**, 282 deselected, 97 warnings.
 - `uv run ruff check` on the ten changed Ledger/API/schema/Journal modules — passed.
 - `uv run mypy` on those ten modules — passed with no issues.
-- `uv run ruff check tests/test_write_operation_acceptance_matrix.py` — passed. The new test file is not mypy-clean under the repository’s strict settings (17 `no-untyped-def`/related errors); production-source mypy remains clean. This is additional test-quality debt, not a product-runtime failure.
+- `uv run ruff check tests/test_write_operation_acceptance_matrix.py` — passed.
+- `uv run mypy tests/test_write_operation_acceptance_matrix.py` — **Success: no issues found in 1 source file**.
 - Valid old-schema temporary database, initialized twice — CHECKs, operation FK, and both expected indexes present; data readable; `0026` initialization idempotent.
 - Malformed orphan-row temporary database — two initialization attempts both failed before table swap and without recording `0026`.
 - Full long release gate — not run; owned by the parent task.
 
 ## Final decision
 
-**No-Go.** P1-03, P1-04, P1-05, P1-06, P1-07, P2-06, and P2-08 are closed with code/test evidence. P2-07 is improved but remains: the required concurrency, commit-unknown, runtime-call, compensation-conflict, and chained-delivery acceptance behavior is not fully represented by executable Ledger-specific goldens. No P0/P1 was found, but the design explicitly requires an independent CR with no P0/P1/P2, so the Phase 3 gate is not green until P2-07 is closed or formally accepted by the release owner.
+**No-Go.** P1-03, P1-04, P1-05, P1-06, P1-07, P2-06, P2-07, and P2-08 are closed with code/test evidence. No P0 remains, but P1-08 is open: a terminal commit-unknown is returned as retryable busy without the required fresh-session reconciliation. The Phase 3 gate is not green until that behavior is corrected and the first-call terminal/proposed/absent/unreadable commit matrix is verified.
