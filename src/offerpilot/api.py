@@ -7126,6 +7126,7 @@ def create_app(
                 fallback = finalize_confirmation_timeout()
                 if fallback is not None:
                     _finish_journal(confirmation_recorder, "completed")
+                    yield from release_origin_events()
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
@@ -7238,6 +7239,7 @@ def create_app(
                 fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
                 if fallback is not None:
                     _finish_journal(confirmation_recorder, "completed")
+                    yield from release_origin_events()
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
@@ -10809,6 +10811,8 @@ def _persist_confirmation_fallback(
         conversation_id,
         message,
         public_undo,
+        operation_id=str(outcome.get("operation_id") or ""),
+        replayed=bool(outcome.get("replayed")),
     )
 
 
@@ -10837,11 +10841,16 @@ def _confirmation_fallback_response(
     conversation_id: int,
     message: str,
     undo: dict[str, Any],
+    *,
+    operation_id: str,
+    replayed: bool,
 ) -> dict[str, Any]:
     response: dict[str, Any] = {
         "type": "message",
         "conversation_id": conversation_id,
         "message": message,
+        "operation_id": operation_id,
+        "replayed": replayed,
     }
     if undo:
         response["undo"] = undo

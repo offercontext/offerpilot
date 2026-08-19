@@ -30,6 +30,7 @@ from offerpilot.ai.write_operations import (
     DeliveryHeartbeat,
     DeliveryOwnership,
     OperationFailed,
+    OperationUnknown,
     WriteOperationCoordinator,
     WriteOperationError,
     WriteOperationRepository,
@@ -44,7 +45,7 @@ from offerpilot.repositories.jd import JDAnalysesRepository
 from offerpilot.repositories.notes import NotesRepository
 from offerpilot.repositories.offers import OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
-from offerpilot.models import Conversation, WriteOperationTransition
+from offerpilot.models import Conversation, WriteOperation, WriteOperationTransition
 
 
 def test_write_operation_manifests_are_exact() -> None:
@@ -326,3 +327,15 @@ def test_mapped_domain_failure_rolls_back_executor_savepoint(tmp_path) -> None:
     assert isinstance(execution, OperationFailed)
     assert record is not None
     assert applications.list() == []
+
+    chat.delete_conversation(conversation.id)
+    with sessions() as session:
+        operation = session.get(WriteOperation, operation_id)
+        assert operation is not None
+        assert operation.conversation_id is None
+        operation.delivery_lease_expires_at = 0
+        session.commit()
+    takeover = repository.converge_expired_delivery(operation_id)
+    assert isinstance(takeover, OperationUnknown)
+    assert takeover.code == "operation_delivery_unknown"
+    assert takeover.retryable is False

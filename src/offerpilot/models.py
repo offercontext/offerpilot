@@ -1711,7 +1711,10 @@ class WriteOperation(Base):
             name="ck_write_operations_hmac_fingerprints",
         ),
         CheckConstraint(
-            "(terminal_payload_sha256 IS NULL OR (length(terminal_payload_sha256) = 71 "
+            "(parent_terminal_payload_sha256 IS NULL OR (length(parent_terminal_payload_sha256) = 71 "
+            "AND substr(parent_terminal_payload_sha256,1,7) = 'sha256:' "
+            "AND substr(parent_terminal_payload_sha256,8) NOT GLOB '*[^0-9a-f]*')) "
+            "AND (terminal_payload_sha256 IS NULL OR (length(terminal_payload_sha256) = 71 "
             "AND substr(terminal_payload_sha256,1,7) = 'sha256:' "
             "AND substr(terminal_payload_sha256,8) NOT GLOB '*[^0-9a-f]*')) "
             "AND (delivery_manifest_sha256 IS NULL OR (length(delivery_manifest_sha256) = 71 "

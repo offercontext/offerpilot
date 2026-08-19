@@ -1202,7 +1202,10 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
     _ensure_column(engine, "chat_messages", "delivery_ordinal", "INTEGER")
     _ensure_column(engine, "chat_messages", "tool_calls", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(engine, "chat_messages", "tool_call_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "chat_messages", "provider_blocks", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "chat_messages", "created_at", "DATETIME")
     _ensure_column(engine, "write_operations", "parent_terminal_payload_sha256", "TEXT")
+    _rebuild_chat_messages_for_write_operation_integrity(engine)
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -1267,6 +1270,10 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
                         WHERE parent.id = NEW.parent_operation_id
                           AND parent.operation_role = 'primary'
                           AND parent.status = 'committed'
+                          AND parent.terminal_payload_sha256 = NEW.parent_terminal_payload_sha256
+                          AND length(NEW.parent_terminal_payload_sha256) = 71
+                          AND substr(NEW.parent_terminal_payload_sha256,1,7) = 'sha256:'
+                          AND substr(NEW.parent_terminal_payload_sha256,8) NOT GLOB '*[^0-9a-f]*'
                     ) THEN RAISE(ABORT, 'invalid compensation parent') END;
                 END
                 """
@@ -1325,6 +1332,10 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
                         WHERE parent.id = NEW.parent_operation_id
                           AND parent.operation_role = 'primary'
                           AND parent.status = 'committed'
+                          AND parent.terminal_payload_sha256 = NEW.parent_terminal_payload_sha256
+                          AND length(NEW.parent_terminal_payload_sha256) = 71
+                          AND substr(NEW.parent_terminal_payload_sha256,1,7) = 'sha256:'
+                          AND substr(NEW.parent_terminal_payload_sha256,8) NOT GLOB '*[^0-9a-f]*'
                     ) THEN RAISE(ABORT, 'invalid compensation parent') END;
                 END
                 """
@@ -1570,6 +1581,96 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
         "0026_write_operation_ledger",
         "Add durable Agent write operation ledger and fenced delivery identity",
     )
+
+
+def _rebuild_chat_messages_for_write_operation_integrity(engine) -> None:  # type: ignore[no-untyped-def]
+    with engine.connect() as conn:
+        table_sql = str(
+            conn.scalar(
+                text(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_messages'"
+                )
+            )
+            or ""
+        )
+        foreign_keys = list(conn.execute(text("PRAGMA foreign_key_list(chat_messages)")))
+    has_operation_fk = any(
+        str(row[2]) == "write_operations" and str(row[3]) == "operation_id" for row in foreign_keys
+    )
+    if (
+        "ck_chat_messages_delivery_group" in table_sql
+        and "ck_chat_messages_delivery_shape" in table_sql
+        and has_operation_fk
+    ):
+        return
+
+    raw = engine.raw_connection()
+    cursor = raw.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys = OFF")
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("DROP TABLE IF EXISTS chat_messages_0026")
+        cursor.execute(
+            """
+            CREATE TABLE chat_messages_0026 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                conversation_id INTEGER NOT NULL,
+                role VARCHAR NOT NULL,
+                content VARCHAR NOT NULL DEFAULT '',
+                tool_calls VARCHAR NOT NULL DEFAULT '',
+                tool_call_id VARCHAR NOT NULL DEFAULT '',
+                provider_blocks VARCHAR NOT NULL DEFAULT '',
+                operation_id VARCHAR(36),
+                delivery_kind VARCHAR,
+                delivery_ordinal INTEGER,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_chat_messages_delivery_group CHECK (
+                    (operation_id IS NULL AND delivery_kind IS NULL AND delivery_ordinal IS NULL)
+                    OR
+                    (operation_id IS NOT NULL AND delivery_kind IS NOT NULL AND delivery_ordinal IS NOT NULL)
+                ),
+                CONSTRAINT ck_chat_messages_delivery_shape CHECK (
+                    operation_id IS NULL
+                    OR (delivery_kind = 'origin_tool_result' AND delivery_ordinal = 0
+                        AND role = 'tool' AND tool_call_id <> '')
+                    OR (delivery_kind = 'continuation_message' AND delivery_ordinal >= 1
+                        AND ((role = 'tool' AND tool_call_id <> '')
+                             OR (role = 'assistant' AND tool_call_id = '')))
+                ),
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY(operation_id) REFERENCES write_operations(id) ON DELETE RESTRICT
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO chat_messages_0026 (
+                id, conversation_id, role, content, tool_calls, tool_call_id,
+                provider_blocks, operation_id, delivery_kind, delivery_ordinal, created_at
+            )
+            SELECT id, conversation_id, role, coalesce(content, ''),
+                   coalesce(tool_calls, ''), coalesce(tool_call_id, ''),
+                   coalesce(provider_blocks, ''), operation_id, delivery_kind,
+                   delivery_ordinal, coalesce(created_at, CURRENT_TIMESTAMP)
+            FROM chat_messages
+            """
+        )
+        cursor.execute("DROP TABLE chat_messages")
+        cursor.execute("ALTER TABLE chat_messages_0026 RENAME TO chat_messages")
+        raw.commit()
+        cursor.execute("PRAGMA foreign_keys = ON")
+        violations = cursor.execute("PRAGMA foreign_key_check(chat_messages)").fetchall()
+        if violations:
+            raise RuntimeError("chat message foreign key migration failed")
+    except Exception:
+        raw.rollback()
+        raise
+    finally:
+        try:
+            cursor.execute("PRAGMA foreign_keys = ON")
+        finally:
+            cursor.close()
+            raw.close()
 
 
 def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped-def]

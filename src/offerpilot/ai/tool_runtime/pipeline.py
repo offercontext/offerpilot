@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, TypeAlias, cast
 
 from offerpilot.ai.tool_runtime.catalog import ToolCatalog
@@ -25,6 +25,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     TransientToolRuntimeValue,
 )
 from offerpilot.ai.tool_runtime.journal import (
+    prepare_tool_started_draft,
     project_tool_proposed,
     project_tool_started,
     project_tool_terminal,
@@ -127,6 +128,11 @@ def prepare_call(
         tool_call_id=call.id,
         typed_args=typed_args,
     )
+    if spec.kind == "write":
+        prepared = replace(
+            prepared,
+            journal_started_draft=prepare_tool_started_draft(context.run_recorder, prepared),
+        )
     if spec.confirmation_policy == "required":
         return ConfirmationRequired(prepared)
     return ReadyToExecute(prepared)
@@ -177,14 +183,13 @@ def execute_prepared(
             if record.replayed or not record.execution_started:
                 return record
             started_recorded = record.journal_started_recorded
+            if record.persisted_visible_result is None:
+                raise RuntimeError("persisted operation result is missing")
             project_tool_terminal(
                 context.run_recorder,
                 record,
                 started_recorded=started_recorded,
-                visible_result=(
-                    record.persisted_visible_result
-                    or render_compatibility(prepared.spec, record.outcome)
-                ),
+                visible_result=record.persisted_visible_result,
             )
             return record
 

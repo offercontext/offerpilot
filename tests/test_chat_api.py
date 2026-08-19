@@ -4768,8 +4768,12 @@ def test_chat_confirm_tool_error_provider_failure_is_durable(tmp_path, endpoint)
         events = _parse_sse_events(response.text)
         assert events[-1]["event"] == "completed"
         body = events[-1]["data"]["data"]["response"]
+        origin_events = [event for event in events if event["event"] == "tool_result"]
+        assert len(origin_events) == 1
+        assert origin_events[0]["data"]["data"]["operation_id"] == body["operation_id"]
     else:
         body = response.json()
+    assert body["operation_id"] == pending["pending_action"]["operation_id"]
     assert "写入未完成" in body["message"]
     assert "undo" not in body
     conversation = client.get("/api/chat/conversations").json()[0]
@@ -6031,10 +6035,20 @@ def test_chat_confirm_ledger_delivery_persists_fallback_after_generation_change(
     )
 
     if endpoint.endswith("/stream"):
-        assert _parse_sse_events(response.text)[-1]["event"] == "completed"
+        fallback_events = _parse_sse_events(response.text)
+        assert fallback_events[-1]["event"] == "completed"
+        fallback_response = fallback_events[-1]["data"]["data"]["response"]
+        assert fallback_response["operation_id"] == pending["pending_action"]["operation_id"]
+        origin_events = [event for event in fallback_events if event["event"] == "tool_result"]
+        assert len(origin_events) == 1
+        assert (
+            origin_events[0]["data"]["data"]["operation_id"]
+            == fallback_response["operation_id"]
+        )
     else:
         assert response.status_code == 200
         assert response.json()["type"] == "message"
+        assert response.json()["operation_id"] == pending["pending_action"]["operation_id"]
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert [message["content"] for message in stored].count("newer activity") == 1
     assert any("写入已完成" in message["content"] for message in stored)

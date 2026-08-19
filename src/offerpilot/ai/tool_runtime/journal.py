@@ -43,10 +43,23 @@ def project_tool_started(recorder: RunRecorder, prepared: PreparedToolCall[Any, 
 def project_tool_started_bound(
     recorder: RunRecorder, session: Any, prepared: PreparedToolCall[Any, Any]
 ) -> bool:
-    append_bound = getattr(recorder, "append_event_bound", None)
-    if callable(append_bound):
-        return bool(append_bound(session, _tool_started_event(prepared)))
-    return _append(recorder, _tool_started_event(prepared))
+    draft = prepared.journal_started_draft
+    append_prepared = getattr(recorder, "append_prepared_event_bound", None)
+    if draft is not None and callable(append_prepared):
+        return bool(append_prepared(session, draft))
+    if isinstance(draft, EventInput):
+        return _append(recorder, draft)
+    return False
+
+
+def prepare_tool_started_draft(
+    recorder: RunRecorder, prepared: PreparedToolCall[Any, Any]
+) -> object | None:
+    event = _tool_started_event(prepared)
+    prepare = getattr(recorder, "prepare_event_draft", None)
+    if callable(prepare):
+        return cast(object | None, prepare(event))
+    return event
 
 
 def _tool_started_event(prepared: PreparedToolCall[Any, Any]) -> EventInput:

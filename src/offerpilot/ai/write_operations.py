@@ -760,6 +760,9 @@ class WriteOperationRepository:
                     session.rollback()
                     return OperationUnknown(operation_id, "operation_result_unknown", True)
                 payload = payload_from_operation(operation)
+                if operation.conversation_id is None:
+                    session.rollback()
+                    return OperationUnknown(operation_id, "operation_delivery_unknown", False)
                 if operation.delivery_status != "pending":
                     session.rollback()
                     return OperationReplay(
@@ -796,7 +799,7 @@ class WriteOperationRepository:
                 if not messages:
                     session.add(
                         ChatMessage(
-                            conversation_id=cast(int, operation.conversation_id),
+                            conversation_id=operation.conversation_id,
                             role="tool",
                             content=payload.visible_result,
                             tool_call_id=operation.tool_call_id or "",
@@ -807,7 +810,7 @@ class WriteOperationRepository:
                     )
                 session.add(
                     ChatMessage(
-                        conversation_id=cast(int, operation.conversation_id),
+                        conversation_id=operation.conversation_id,
                         role="assistant",
                         content=(
                             "操作已提交，但后续说明生成失败。"

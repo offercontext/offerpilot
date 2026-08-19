@@ -346,7 +346,6 @@ class AgentRunRepository:
     def append_event_bound(self, session: Session, run_id: str, draft: EventDraft) -> AgentEvent:
         """Append through a caller-owned transaction without committing it."""
 
-        self._validate_event_draft(draft)
         if draft.event_type in _DISPOSITION_EVENT_TYPES:
             raise JournalConflictError("disposition event requires its atomic repository method")
         existing = self._existing_event(session, run_id, draft)

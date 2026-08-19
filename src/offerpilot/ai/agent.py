@@ -699,7 +699,12 @@ class LangGraphAgentRunner:
                 raise PendingActionValidationError(
                     record.outcome.compatibility_detail or record.outcome.code
                 )
-            result = record.persisted_visible_result or render_compatibility(spec, record.outcome)
+            if record.terminal_persisted:
+                if record.persisted_visible_result is None:
+                    raise RuntimeError("persisted operation result is missing")
+                result = record.persisted_visible_result
+            else:
+                result = render_compatibility(spec, record.outcome)
         else:
             if self._confirmation_attempt_sink is not None:
                 rejected_claim = self._confirmation_attempt_sink(pending, None)
@@ -782,7 +787,9 @@ class LangGraphAgentRunner:
     ) -> None:
         spec = self._catalog.resolve(tool_name)
         payload: dict[str, Any]
-        if record is not None and record.persisted_transport is not None:
+        if record is not None and record.terminal_persisted:
+            if record.persisted_transport is None:
+                raise RuntimeError("persisted operation transport is missing")
             payload = cast(dict[str, Any], dict(record.persisted_transport))
         elif spec is not None and record is not None:
             try:

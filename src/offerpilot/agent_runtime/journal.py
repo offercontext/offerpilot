@@ -351,13 +351,21 @@ class SafeRunRecorder:
         except Exception:
             self._degrade("journal_event_write_failed")
 
-    def append_event_bound(self, session: Any, event: EventInput) -> bool:
-        """Best-effort Journal append inside an externally owned transaction."""
+    def prepare_event_draft(self, event: EventInput) -> EventDraft | None:
+        """Prepare canonical Journal bytes before an external business transaction."""
 
+        if self.recording_status == "degraded" or self._disposition_attempted:
+            return None
+        try:
+            return self._event_preparer(event, self._segment_deadline)
+        except Exception:
+            self._degrade("journal_tool_projection_failed")
+            return None
+
+    def append_prepared_event_bound(self, session: Any, draft: EventDraft) -> bool:
         if self.recording_status == "degraded" or self._disposition_attempted:
             return False
         try:
-            draft = self._event_preparer(event, self._segment_deadline)
             with session.begin_nested():
                 self.repository.append_event_bound(session, self.run_id, draft)
             return True

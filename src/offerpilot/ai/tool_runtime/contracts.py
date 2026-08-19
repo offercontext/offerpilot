@@ -230,6 +230,7 @@ class PreparedToolCall(TransientToolRuntimeValue, Generic[ArgsT, ResultT]):
     binding: BindingAudit
     pending_identity: object | None = field(default=None, repr=False, compare=False)
     pending_action_revision: int | None = None
+    journal_started_draft: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

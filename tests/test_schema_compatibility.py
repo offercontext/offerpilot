@@ -7,6 +7,7 @@ from offerpilot.db import init_database
 def test_chat_messages_have_conversation_foreign_key(tmp_path):
     db_path = tmp_path / "data.db"
     init_database(db_path)
+    init_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
         foreign_keys = conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
@@ -165,8 +166,7 @@ def test_knowledge_legacy_tables_are_gone_after_reset(tmp_path):
             ).fetchall()
         }
         versions = {
-            row[0]
-            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+            row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
         }
 
     for table in _legacy_knowledge_tables():
@@ -181,8 +181,7 @@ def test_knowledge_reset_is_idempotent(tmp_path):
 
     with sqlite3.connect(db_path) as conn:
         versions = [
-            row[0]
-            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+            row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
         ]
 
     assert versions.count("knowledge_rewrite_reset") == 1
@@ -197,8 +196,7 @@ def test_knowledge_reset_preserves_other_modules(tmp_path):
             "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
         conn.execute(
-            "CREATE TABLE applications ("
-            "id INTEGER PRIMARY KEY, company_name TEXT NOT NULL)"
+            "CREATE TABLE applications (id INTEGER PRIMARY KEY, company_name TEXT NOT NULL)"
         )
         conn.execute("INSERT INTO applications (company_name) VALUES ('OfferPilot')")
         conn.execute("CREATE TABLE knowledge_documents (id INTEGER PRIMARY KEY)")
@@ -271,12 +269,25 @@ def test_init_database_adds_current_chat_context_columns(tmp_path):
     with sqlite3.connect(db_path) as conn:
         conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
         message_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_messages)")}
+        message_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_messages'"
+        ).fetchone()[0]
+        message_foreign_keys = conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
+        operation_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'write_operations'"
+        ).fetchone()[0]
 
     assert {"mode", "context_type", "context_ref", "pinned_at", "archived_at"}.issubset(
         conversation_columns
     )
     assert "offer_id" not in conversation_columns
     assert "provider_blocks" in message_columns
+    assert "ck_chat_messages_delivery_group" in message_sql
+    assert "ck_chat_messages_delivery_shape" in message_sql
+    assert any(
+        row[2] == "write_operations" and row[3] == "operation_id" for row in message_foreign_keys
+    )
+    assert "length(parent_terminal_payload_sha256) = 71" in operation_sql
 
 
 def test_init_database_creates_idempotent_schema_migration_log(tmp_path):
