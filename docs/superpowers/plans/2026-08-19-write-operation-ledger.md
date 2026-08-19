@@ -64,3 +64,8 @@
 - Run an independent sub-agent review and resolve every P0/P1/P2.
 - Run focused ledger suites, all backend/frontend groups, Ruff, Mypy, frontend build, static smoke, local smoke, and local verify. Run controlled real-AI verification only when credentials and authorization are available.
 - Run `git diff --check`, confirm no untracked files, write the release verification report, stage changes, and commit as `feat: AI add write operation ledger`.
+
+**Status: completed on 2026-08-19.** Independent review is Go with no open
+P0/P1/P2. The complete backend/frontend gates, static/local/real-AI verification,
+browser acceptance, exact evidence locations, breaking changes, and residual risks are
+recorded in `docs/reports/2026-08-19-write-operation-ledger-release-verification.md`.
