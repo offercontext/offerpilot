@@ -2,14 +2,15 @@
 
 ## Final readiness decision
 
-**Not ready for release.** No P0 was found, and the previously open P1-03, P1-04, P1-05, and P1-06 findings are closed at the normal valid-data/runtime paths. P2-06 is also closed. The re-review found one new P1 migration-atomicity defect and one new P2 migration-schema regression; P2-07 remains open because the required 12 typed + 3 legacy + 4 compensation acceptance matrix is still not executable coverage.
+**No-Go for release.** No P0 or P1 remains. P1-03, P1-04, P1-05, P1-06, and P1-07 are closed with focused code and test evidence; P2-06 and P2-08 are also closed. P2-07 remains open because the required 12 typed + 3 legacy + 4 compensation acceptance matrix is still not executable coverage.
 
-Open at this HEAD: **P1-07, P2-07, and P2-08; no P0**. The migration integrity failure must be fixed before acceptance. The P2 coverage/index items should also be fixed before calling the Phase 3 gate green.
+Open at this HEAD: **P2-07 only; no P0/P1**. P2-07 is still a completion blocker under the design’s independent-CR acceptance requirement; the code-level migration, delivery, fencing, and Journal blockers are closed.
 
 ## Reviewed scope and method
 
 - Fixed baseline: `5e560580e86da7d1eb272e0df9d3d13304717499`.
-- Implementation HEAD: `4cb9cca` (`fix: AI close ledger delivery review gaps`).
+- Implementation HEAD: `ff43823` (`fix: AI make ledger schema rebuild atomic`).
+- Previous reviewed implementation: `4cb9cca`.
 - Included migration compatibility commit: `5d9b88a` (`fix: AI support legacy chat ledger migration`).
 - Prior review update: `6c55fce`.
 - Compared the current source/tests with `docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md` and `docs/superpowers/plans/2026-08-19-write-operation-ledger.md`.
@@ -48,30 +49,30 @@ Terminal result/transport projections are built and persisted before terminal co
 
 ## Remaining and new findings
 
-### P1-07 — ChatMessage rebuild commits before foreign-key validation
+### P1-07 — ChatMessage rebuild atomicity
 
-The new rebuild is not atomic on malformed legacy data. It commits the renamed table at `src/offerpilot/db.py:1658-1661`, then runs `PRAGMA foreign_key_check` at `:1661-1664`. If the check finds an orphan, the `RuntimeError` is caught at `:1665-1667`, but the subsequent rollback cannot undo the already completed `raw.commit()`.
+**Resolved.** The rebuild now validates the temporary table before dropping or renaming the legacy table (`src/offerpilot/db.py:1658-1664`), creates `idx_chat_messages_conv` before commit (`:1665-1668`), and only then commits. A failed `foreign_key_check` is therefore rolled back by the handler at `:1670-1672` without swapping the old table or recording migration 0026.
 
-This is reproducible: a temporary old-schema database containing a `chat_messages.conversation_id` orphan raised `RuntimeError: chat message foreign key migration failed` on its first initialization, while the rebuilt table and orphan row remained. A second `init_database()` then succeeded and recorded `0026_write_operation_ledger` even though `PRAGMA foreign_key_check(chat_messages)` still reported the orphan. The upgrade must validate before commit (or quarantine/fail without swapping), and a failed migration must not become a recorded successful migration on retry while invalid rows remain.
+`tests/test_schema_compatibility.py:301-355` reproduces an orphan-row upgrade twice and requires both attempts to fail, the old table to remain without the new CHECK constraints, and `0026_write_operation_ledger` to remain absent. This closes the previously observed retry-success/data-corruption window.
 
 ### P2-07 — Required adapter/concurrency acceptance matrix remains incomplete
 
 The latest changes add useful migration, fallback, and deleted-conversation tests, but the Ledger-specific tests still do not execute the required full matrix from spec §23: all 12 typed adapters, all 3 legacy adapters, all 4 compensation adapters, two-connection executor/takeover/commit-unknown crash points, late-Bundle fencing, replay with zero executor/Provider/read-tool/renderer calls, and full message/manifest tamper cases. `tests/test_write_operations.py:51-341` has manifest/golden identity and focused invariant tests, not one golden execution/replay contract per adapter. This remains an acceptance evidence gap even though the currently targeted tests pass.
 
-### P2-08 — Legacy ChatMessage rebuild drops the conversation index
+### P2-08 — Legacy ChatMessage rebuild index retention
 
-The model declares `idx_chat_messages_conv` at `src/offerpilot/models.py:1575`, but the replacement table SQL at `src/offerpilot/db.py:1615-1642` does not create it and the post-rename migration at `:1658-1659` does not recreate it. A read-only valid old-schema upgrade followed by `PRAGMA index_list(chat_messages)` returned only `uq_chat_messages_operation_ordinal`; the conversation index was lost. This can turn normal conversation message loads into table scans on upgraded databases. Recreate the model index as part of the rebuild and assert it in the upgrade test.
+**Resolved.** The replacement table now recreates `idx_chat_messages_conv` before commit at `src/offerpilot/db.py:1665-1668`. The valid upgrade test asserts that index alongside the operation/ordinal index (`tests/test_schema_compatibility.py:273-298`), and the twice-initialized old-schema fixture verified it is retained.
 
 ## Verification performed
 
-- `uv run pytest tests/test_write_operations.py tests/tool_pipeline/test_checkpoint.py tests/test_schema_compatibility.py -q` — **29 passed**, 1 warning.
+- `uv run pytest tests/test_write_operations.py tests/tool_pipeline/test_checkpoint.py tests/test_schema_compatibility.py -q` — **30 passed**, 1 warning.
 - `uv run pytest tests/test_chat_api.py -q -k "confirm_stream_executes_pending_write_and_completes or chat_confirm_stream_recovers_committed_write_when_followup_model_fails or chat_confirm_ledger_delivery_persists_fallback_after_generation_change or chat_confirm_rejection_provider_failure_records_cancellation_once or chat_confirm_result_cas_loss_stays_stale_on_followup_failure or chat_confirm_tool_error_provider_failure_is_durable"` — **12 passed**, 282 deselected, 97 warnings.
 - `uv run ruff check` on the ten changed Ledger/API/schema/Journal modules — passed.
 - `uv run mypy` on those ten modules — passed with no issues.
-- Valid old-schema temporary database, initialized twice — CHECKs and operation FK present; data readable; `0026` initialization idempotent. The same fixture exposed P2-08 because only the operation/ordinal index remained.
-- Malformed orphan-row temporary database — reproduced P1-07: first initialization failed after the rebuild commit, and retry recorded the migration while the FK violation remained.
+- Valid old-schema temporary database, initialized twice — CHECKs, operation FK, and both expected indexes present; data readable; `0026` initialization idempotent.
+- Malformed orphan-row temporary database — two initialization attempts both failed before table swap and without recording `0026`.
 - Full long release gate — not run; owned by the parent task.
 
 ## Final decision
 
-**Not ready.** P1-03, P1-04, P1-05, P1-06, and P2-06 are closed with code/test evidence. P1-07 is a new migration atomicity/integrity blocker; P2-07 leaves the required adapter and concurrency acceptance behavior unproven; P2-08 loses a required production index during valid legacy upgrade. No P0 was found.
+**No-Go.** P1-03, P1-04, P1-05, P1-06, P1-07, P2-06, and P2-08 are closed with code/test evidence. P2-07 remains: the required adapter and concurrency acceptance behavior is not fully represented by executable Ledger-specific goldens. No P0/P1 was found, but the design explicitly requires an independent CR with no P0/P1/P2, so the Phase 3 gate is not green until P2-07 is closed or formally accepted by the release owner.
