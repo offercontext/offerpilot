@@ -1200,6 +1200,8 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
     _ensure_column(engine, "chat_messages", "operation_id", "TEXT")
     _ensure_column(engine, "chat_messages", "delivery_kind", "TEXT")
     _ensure_column(engine, "chat_messages", "delivery_ordinal", "INTEGER")
+    _ensure_column(engine, "chat_messages", "tool_calls", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "chat_messages", "tool_call_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(engine, "write_operations", "parent_terminal_payload_sha256", "TEXT")
     with engine.begin() as conn:
         conn.execute(
