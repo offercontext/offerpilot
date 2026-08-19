@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import Offer
+from offerpilot.repositories.session_binding import finish_repository_write, repository_session
 
 
 @dataclass
@@ -26,8 +27,12 @@ class OfferCreate:
 
 
 class OffersRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "OffersRepository":
+        return OffersRepository(self._session_factory, session)
 
     def create(self, data: OfferCreate) -> Offer:
         offer = Offer(
@@ -44,9 +49,9 @@ class OffersRepository:
             notes=data.notes,
             assessment=data.assessment,
         )
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             session.add(offer)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(offer)
             return offer
 
@@ -55,15 +60,15 @@ class OffersRepository:
         if status:
             statement = statement.where(Offer.status == status)
         statement = statement.order_by(Offer.created_at.desc())
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return list(session.scalars(statement))
 
     def get(self, offer_id: int) -> Optional[Offer]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return session.get(Offer, offer_id)
 
     def update(self, offer_id: int, data: OfferCreate) -> Optional[Offer]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             offer = session.get(Offer, offer_id)
             if offer is None:
                 return None
@@ -78,13 +83,13 @@ class OffersRepository:
             offer.deadline = data.deadline
             offer.notes = data.notes
             offer.assessment = data.assessment
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(offer)
             return offer
 
     def delete(self, offer_id: int) -> None:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             offer = session.get(Offer, offer_id)
             if offer is not None:
                 session.delete(offer)
-                session.commit()
+                finish_repository_write(session, self._session)

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import ApplicationJDVersion, Resume, ResumeMatch
 from offerpilot.repositories.application_jd_versions import JDVersionConflictError
+from offerpilot.repositories.session_binding import finish_repository_write, repository_session
 
 
 @dataclass
@@ -36,8 +37,12 @@ class ResumeMatchCreate:
 
 
 class ResumesRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "ResumesRepository":
+        return ResumesRepository(self._session_factory, session)
 
     def create(self, data: ResumeCreate) -> Resume:
         title = data.title or data.name
@@ -57,7 +62,7 @@ class ResumesRepository:
             source_file_path=source_file_path,
             content_json=content_json,
         )
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             resume.is_master = (
                 data.is_master
                 if data.is_master is not None
@@ -66,7 +71,7 @@ class ResumesRepository:
             if resume.is_master:
                 _clear_other_masters(session)
             session.add(resume)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(resume)
             return resume
 
@@ -80,7 +85,7 @@ class ResumesRepository:
             return list(session.scalars(statement))
 
     def get(self, resume_id: int) -> Optional[Resume]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             resume = session.get(Resume, resume_id)
             if resume is None or resume.deleted_at is not None:
                 return None
@@ -112,7 +117,7 @@ class ResumesRepository:
                 session.commit()
 
     def update(self, resume_id: int, changes: dict[str, Any]) -> Optional[Resume]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             resume = session.get(Resume, resume_id)
             if resume is None or resume.deleted_at is not None:
                 return None
@@ -138,7 +143,7 @@ class ResumesRepository:
                 resume.parsed_data = str(changes["parsed_data"] or "")
             if "parse_status" in changes:
                 resume.parse_status = str(changes["parse_status"] or "pending")
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(resume)
             return resume
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, SupportsIndex, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
@@ -136,6 +137,43 @@ ConfirmationDescription: TypeAlias = Callable[[ArgsT], str]
 SchemaFailureRenderer: TypeAlias = Callable[[Mapping[str, JSONValue], str], str | None]
 
 
+class UndoPolicy(str, Enum):
+    NONE = "none"
+    REQUIRED = "required"
+
+
+@dataclass(frozen=True)
+class WriteContract:
+    adapter_kind: Literal["typed", "legacy_deterministic", "compensation"] = "typed"
+    result_contract: Literal[
+        "typed_json_v1", "legacy_string_v1", "compensation_json_v1"
+    ] = "typed_json_v1"
+    undo_policy: UndoPolicy = UndoPolicy.NONE
+    result_bytes: int = 512 * 1024
+    visible_bytes: int = 256 * 1024
+    transport_bytes: int = 128 * 1024
+    undo_bytes: int = 64 * 1024
+
+    def __post_init__(self) -> None:
+        maxima = (512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024)
+        values = (self.result_bytes, self.visible_bytes, self.transport_bytes, self.undo_bytes)
+        if any(value <= 0 or value > maximum for value, maximum in zip(values, maxima)):
+            raise ValueError("write contract byte budget exceeds ledger limit")
+
+
+TRANSACTIONAL_TYPED_WRITE_NAMES = frozenset(
+    {
+        "create_application", "update_application_status",
+        "create_application_event", "update_application_event", "delete_application_event",
+        "add_note", "update_note", "delete_note", "update_offer", "save_offer_assessment",
+        "resume_update_career_intent", "resume_rewrite_highlight",
+    }
+)
+REQUIRED_UNDO_TOOL_NAMES = frozenset(
+    {"create_application", "update_application_status", "create_application_event", "add_note"}
+)
+
+
 @dataclass(frozen=True)
 class ToolSpec(Generic[ArgsT, ResultT]):
     contract: ProviderToolContract
@@ -166,6 +204,7 @@ class ToolSpec(Generic[ArgsT, ResultT]):
         repr=False,
         compare=False,
     )
+    write_contract: WriteContract | None = None
 
     @property
     def name(self) -> str:
@@ -207,6 +246,7 @@ class ExecutionAuthorization(TransientToolRuntimeValue):
     tool_call_id: str
     tool_name: str
     arguments_digest: str
+    operation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -214,6 +254,9 @@ class ToolExecutionRecord(TransientToolRuntimeValue, Generic[ArgsT, ResultT]):
     prepared: PreparedToolCall[ArgsT, ResultT] = field(repr=False)
     outcome: ToolSuccess[ResultT] | ToolFailure = field(repr=False)
     execution_started: bool
+    operation_id: str = ""
+    replayed: bool = False
+    terminal_persisted: bool = False
 
 
 def heterogeneous_spec(spec: ToolSpec[ArgsT, ResultT]) -> ToolSpec[Any, Any]:

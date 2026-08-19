@@ -84,6 +84,7 @@ export interface ChatMessage {
 }
 
 export interface PendingAction {
+  operation_id?: string;
   tool_name: string;
   human: string;
   confirmation_token: string;
@@ -149,6 +150,7 @@ export interface PendingActionEvidence extends PendingActionTarget {}
 export interface ChatUndo {
   kind: string;
   label: string;
+  parent_operation_id?: string;
   [key: string]: unknown;
 }
 
@@ -161,6 +163,8 @@ export type ChatResponse =
       undo?: ChatUndo | null;
       write_status?: WriteStatus;
       write_error?: string;
+      operation_id?: string;
+      replayed?: boolean;
     }
   | { type: 'confirmation_required'; conversation_id: number; pending_action: PendingAction };
 

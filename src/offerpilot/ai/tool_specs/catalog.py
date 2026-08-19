@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from offerpilot.application_status import APPLICATION_STATUS_IDS
 from offerpilot.ai.tool_runtime.catalog import ToolCatalog
-from offerpilot.ai.tool_runtime.contracts import JSONValue, ToolSpec
+from offerpilot.ai.tool_runtime.contracts import JSONValue, ToolSpec, UndoPolicy, WriteContract
 from offerpilot.ai.tool_specs.application_events import application_event_specs
 from offerpilot.ai.tool_specs.applications import application_specs
 from offerpilot.ai.tool_specs.jd_analyses import jd_analysis_specs
@@ -139,6 +139,18 @@ def _with_runtime_metadata(spec: ToolSpec[Any, Any]) -> ToolSpec[Any, Any]:
         spec,
         editable_fields=tuple(editable_fields_for_tool(spec.name)),
         confirmation_description=describe,
+        write_contract=WriteContract(
+            undo_policy=(
+                UndoPolicy.REQUIRED
+                if spec.name in {
+                    "create_application",
+                    "update_application_status",
+                    "create_application_event",
+                    "add_note",
+                }
+                else UndoPolicy.NONE
+            )
+        ),
     )
 
 

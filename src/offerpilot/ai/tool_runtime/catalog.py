@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
@@ -8,7 +9,11 @@ from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from offerpilot.ai.tool_runtime.contracts import (
     FailureCategory,
     ProviderToolContract,
+    REQUIRED_UNDO_TOOL_NAMES,
+    TRANSACTIONAL_TYPED_WRITE_NAMES,
     ToolSpec,
+    UndoPolicy,
+    WriteContract,
 )
 from offerpilot.ai.tool_runtime.validation import compile_tool_schema
 
@@ -34,7 +39,7 @@ class ToolCatalog:
         *,
         expected_names: Sequence[str],
     ) -> None:
-        ordered = tuple(specs)
+        ordered = tuple(self._with_write_contract(spec) for spec in specs)
         names = tuple(spec.name for spec in ordered)
         if names != tuple(expected_names) or len(set(names)) != len(names):
             raise ValueError("tool catalog names/order mismatch")
@@ -47,11 +52,26 @@ class ToolCatalog:
         }
 
     @staticmethod
+    def _with_write_contract(spec: ToolSpec[Any, Any]) -> ToolSpec[Any, Any]:
+        if spec.kind == "write" and spec.write_contract is None and spec.name in TRANSACTIONAL_TYPED_WRITE_NAMES:
+            return replace(
+                spec,
+                write_contract=WriteContract(
+                    undo_policy=UndoPolicy.REQUIRED if spec.name in REQUIRED_UNDO_TOOL_NAMES else UndoPolicy.NONE
+                ),
+            )
+        return spec
+
+    @staticmethod
     def _validate_spec(spec: ToolSpec[Any, Any]) -> None:
         if spec.kind == "read" and spec.confirmation_policy != "none":
             raise ValueError("read tool cannot require confirmation")
+        if spec.kind == "read" and spec.write_contract is not None:
+            raise ValueError("read tool cannot declare a write contract")
         if spec.kind == "write" and spec.confirmation_policy != "required":
             raise ValueError("write tool must require confirmation")
+        if spec.kind == "write" and spec.write_contract is None:
+            raise ValueError("write tool must declare a write contract")
         if not set(spec.declared_failure_categories).issubset(_FAILURE_CATEGORIES):
             raise ValueError("tool declares unsupported failure category")
         for mapping in spec.exception_map:

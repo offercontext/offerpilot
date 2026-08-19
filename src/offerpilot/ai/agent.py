@@ -3,22 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Iterator, Literal, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, Interrupt, interrupt
+from langgraph.types import interrupt
 
 from offerpilot.ai.tool_runtime.catalog import ToolCatalog
 from offerpilot.ai.tool_runtime.context import ToolExecutionContext
@@ -67,7 +63,7 @@ class ChatRunCancelled(RuntimeError):
 
 
 class StalePendingActionError(ValueError):
-    """Raised when a confirmation does not match the checkpoint interrupt."""
+    """Raised when a confirmation does not match the persisted Pending Action."""
 
 
 class PendingActionValidationError(ValueError):
@@ -98,6 +94,7 @@ class PendingAction:
     tool_name: str
     args: str
     human: str
+    operation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,6 +119,7 @@ ConfirmationAttemptSink = Callable[
     [PendingAction, PreparedToolCall[Any, Any] | None],
     ExecutionAuthorization | ToolFailure | None,
 ]
+DeliveryFence = Callable[[], bool]
 
 
 @contextmanager
@@ -179,26 +177,25 @@ class LangGraphAgentRunner:
         catalog: ToolCatalog,
         tool_context: ToolExecutionContext,
         *,
-        checkpoint_path: Path | None = None,
         thread_id: str = _DEFAULT_THREAD_ID,
         event_sink: AgentEventSink | None = None,
         cancel_check: CancelCheck | None = None,
         confirmation_result_sink: ConfirmationResultSink | None = None,
         confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
         run_recorder: RunRecorder | None = None,
+        delivery_fence: DeliveryFence | None = None,
     ):
         self._model = model
         self._catalog = catalog
         self._tool_context = tool_context
-        self._checkpoint_path = checkpoint_path
         self._thread_id = thread_id
         self._event_sink = event_sink
         self._cancel_check = cancel_check
         self._confirmation_result_sink = confirmation_result_sink
         self._confirmation_attempt_sink = confirmation_attempt_sink
         self._run_recorder = run_recorder or NullRunRecorder()
+        self._delivery_fence = delivery_fence
         self._memory_saver = InMemorySaver()
-        self._has_pending_checkpoint = False
         self._records: list[ToolExecutionRecord[Any, Any]] = []
         self._failures: list[ToolFailure] = []
 
@@ -221,8 +218,6 @@ class LangGraphAgentRunner:
             graph = self._compile_graph(checkpointer)
             result = graph.invoke(state, self._config(max_iter))
         added, reply, pending = self._result_from_state(cast(dict[str, Any], result))
-        if pending is not None:
-            self._has_pending_checkpoint = True
         return AgentTurnResult(added, reply, pending, tuple(self._records), tuple(self._failures))
 
     def resume_after_confirm(
@@ -237,30 +232,8 @@ class LangGraphAgentRunner:
         approved = approved is True
         confirmation_lock_key = self._confirmation_lock_key()
         with _confirmation_lock(confirmation_lock_key):
-            return self._resume_after_confirm_locked(
-                messages,
-                pending,
-                approved,
-                auto_approve,
-                max_iter,
-                rejection_feedback,
-                confirmation_lock_key,
-            )
-
-    def _resume_after_confirm_locked(
-        self,
-        messages: list[Message],
-        pending: PendingAction,
-        approved: bool,
-        auto_approve: bool,
-        max_iter: int,
-        rejection_feedback: str,
-        confirmation_lock_key: ConfirmationLockKey,
-    ) -> AgentTurnResult:
-        self._records = []
-        self._failures = []
-        checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
-        if checkpoint_missing and not self._has_pending_checkpoint:
+            self._records = []
+            self._failures = []
             return self._resume_without_checkpoint(
                 messages,
                 pending,
@@ -271,46 +244,8 @@ class LangGraphAgentRunner:
                 confirmation_lock_key,
             )
 
-        with self._checkpointer() as checkpointer:
-            graph = self._compile_graph(checkpointer)
-            config = self._config(max_iter)
-            interrupt_id = _assert_pending_checkpoint_identity(graph, config, pending)
-            resume_attempt_id = uuid4().hex
-            resume_payload = {
-                "approved": approved,
-                "tool_call_id": pending.tool_call_id,
-                "tool_name": pending.tool_name,
-                "effective_args": pending.args,
-                "rejection_feedback": rejection_feedback,
-                "resume_attempt_id": resume_attempt_id,
-            }
-            result = graph.invoke(
-                Command(
-                    resume={interrupt_id: resume_payload},
-                ),
-                config,
-            )
-        result_state = cast(dict[str, Any], result)
-        if (
-            result_state.get("consumed_resume_id") != interrupt_id
-            or result_state.get("consumed_resume_attempt_id") != resume_attempt_id
-        ):
-            raise StalePendingActionError(
-                "stale pending action: confirmation resume was not consumed"
-            )
-        added, reply, new_pending = self._result_from_state(result_state)
-        if new_pending is not None:
-            self._has_pending_checkpoint = True
-        return AgentTurnResult(added, reply, new_pending, tuple(self._records), tuple(self._failures))
-
     def _confirmation_lock_key(self) -> ConfirmationLockKey:
-        if self._checkpoint_path is None:
-            checkpoint_identity = _IN_MEMORY_CONFIRMATION_NAMESPACE
-        else:
-            checkpoint_identity = os.path.normcase(
-                str(self._checkpoint_path.expanduser().resolve())
-            )
-        return checkpoint_identity, self._thread_id
+        return _IN_MEMORY_CONFIRMATION_NAMESPACE, self._thread_id
 
     def _compile_graph(self, checkpointer: Any) -> Any:
         graph = StateGraph(_GraphState)
@@ -381,23 +316,7 @@ class LangGraphAgentRunner:
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
             spec = self._catalog.resolve(tool_name)
-            has_mapped_resume, mapped_resume, mapped_interrupt_id = _mapped_resume_payload()
-            if has_mapped_resume:
-                mapped_identity_error = _resume_identity_error(
-                    mapped_resume,
-                    tool_call_id,
-                    tool_name,
-                )
-                if mapped_identity_error:
-                    raise StalePendingActionError("stale pending action: " + mapped_identity_error)
-                mapped_attempt_id = mapped_resume.get("resume_attempt_id")
-                if not isinstance(mapped_attempt_id, str) or not mapped_attempt_id:
-                    raise StalePendingActionError(
-                        "stale pending action: confirmation resume identity is missing"
-                    )
-                consumed_resume_id = mapped_interrupt_id
-                consumed_resume_attempt_id = mapped_attempt_id
-                added = []
+            has_mapped_resume = False
 
             if spec is None:
                 unknown_failure = ToolFailure(
@@ -461,6 +380,7 @@ class LangGraphAgentRunner:
                             tool_name=tool_name,
                             args=effective_args,
                             human=_spec_confirmation_description(spec, effective_args, str(pending["human"])),
+                            operation_id=str(resume_value.get("operation_id") or ""),
                         )
                         self._emit_pending_tool_call(
                             effective_pending,
@@ -617,7 +537,9 @@ class LangGraphAgentRunner:
                     record = None
                     result = render_compatibility(spec, prepared_result.failure)
                 elif isinstance(prepared_result, ReadyToExecute):
+                    self._require_delivery_fence()
                     record = execute_prepared(prepared_result.prepared, self._tool_context)
+                    self._require_delivery_fence()
                     self._records.append(record)
                     result = render_compatibility(spec, record.outcome)
                 else:
@@ -648,10 +570,7 @@ class LangGraphAgentRunner:
         }
 
     def _checkpointer(self) -> AbstractContextManager[Any]:
-        if self._checkpoint_path is None:
-            return nullcontext(self._memory_saver)
-        self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        return SqliteSaver.from_conn_string(str(self._checkpoint_path))
+        return nullcontext(self._memory_saver)
 
     def _config(self, max_iter: int) -> dict[str, Any]:
         resolved_max = max_iter or DEFAULT_MAX_ITERATIONS
@@ -676,6 +595,7 @@ class LangGraphAgentRunner:
                     tool_name=str(pending_payload["tool_name"]),
                     args=str(pending_payload["args"]),
                     human=str(pending_payload["human"]),
+                    operation_id=str(uuid4()),
                 ),
             )
         return added, str(state.get("reply") or ""), None
@@ -709,6 +629,7 @@ class LangGraphAgentRunner:
                 tool_name=pending.tool_name,
                 args=effective_args,
                 human=pending.human,
+                operation_id=pending.operation_id,
             )
             self._raise_if_cancelled()
             prepared_result = prepare_call(
@@ -766,7 +687,7 @@ class LangGraphAgentRunner:
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
                 )
-            if not record.execution_started:
+            if not record.execution_started and not record.terminal_persisted:
                 assert isinstance(record.outcome, ToolFailure)
                 raise PendingActionValidationError(
                     record.outcome.compatibility_detail or record.outcome.code
@@ -905,6 +826,7 @@ class LangGraphAgentRunner:
                 )
             )
         try:
+            self._require_delivery_fence()
             if is_stream:
                 assistant = cast(StreamingChatModel, self._model).stream_complete(
                     messages,
@@ -913,6 +835,7 @@ class LangGraphAgentRunner:
                 )
             else:
                 assistant = self._model.complete(messages, tools)
+            self._require_delivery_fence()
         except Exception as exc:
             if snapshot_id is not None:
                 failure_category, provider_outcome = _journal_model_failure(exc)
@@ -945,6 +868,10 @@ class LangGraphAgentRunner:
                 )
             )
         return assistant
+
+    def _require_delivery_fence(self) -> None:
+        if self._delivery_fence is not None and not self._delivery_fence():
+            raise ChatRunCancelled("write operation delivery owner fenced")
 
     def _capture_model_input(
         self,
@@ -1007,22 +934,22 @@ def run_turn(
     auto_approve: bool,
     max_iter: int = DEFAULT_MAX_ITERATIONS,
     *,
-    checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
     run_recorder: RunRecorder | None = None,
+    delivery_fence: DeliveryFence | None = None,
     tool_context: ToolExecutionContext,
 ) -> AgentTurnResult:
     return LangGraphAgentRunner(
         model,
         catalog,
         tool_context,
-        checkpoint_path=checkpoint_path,
         thread_id=thread_id,
         event_sink=event_sink,
         cancel_check=cancel_check,
         run_recorder=run_recorder,
+        delivery_fence=delivery_fence,
     ).run_turn(messages, auto_approve=auto_approve, max_iter=max_iter)
 
 
@@ -1036,26 +963,26 @@ def resume_after_confirm(
     max_iter: int = DEFAULT_MAX_ITERATIONS,
     rejection_feedback: str = "",
     *,
-    checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
     confirmation_result_sink: ConfirmationResultSink | None = None,
     confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
     run_recorder: RunRecorder | None = None,
+    delivery_fence: DeliveryFence | None = None,
     tool_context: ToolExecutionContext,
 ) -> AgentTurnResult:
     return LangGraphAgentRunner(
         model,
         catalog,
         tool_context,
-        checkpoint_path=checkpoint_path,
         thread_id=thread_id,
         event_sink=event_sink,
         cancel_check=cancel_check,
         confirmation_result_sink=confirmation_result_sink,
         confirmation_attempt_sink=confirmation_attempt_sink,
         run_recorder=run_recorder,
+        delivery_fence=delivery_fence,
     ).resume_after_confirm(
         messages,
         pending,
@@ -1104,6 +1031,7 @@ def prepare_pending_action(
         tool_name=pending.tool_name,
         args=encoded_args,
         human=_spec_confirmation_description(spec, encoded_args, pending.human),
+        operation_id=pending.operation_id,
     )
 
 
@@ -1161,55 +1089,6 @@ def _resume_identity_error(
     if resume_value.get("tool_name") != tool_name:
         return "confirmation does not match the pending tool"
     return ""
-
-
-def _assert_pending_checkpoint_identity(
-    graph: Any,
-    config: dict[str, Any],
-    pending: PendingAction,
-) -> str:
-    try:
-        snapshot = graph.get_state(config)
-    except Exception as exc:
-        raise StalePendingActionError(
-            "stale pending action: unable to read the current checkpoint"
-        ) from exc
-    interrupts = getattr(snapshot, "interrupts", ())
-    if not isinstance(interrupts, tuple) or len(interrupts) != 1:
-        raise StalePendingActionError("stale pending action: no current checkpoint interrupt")
-    current_interrupt = interrupts[0]
-    current = getattr(current_interrupt, "value", None)
-    if not isinstance(current, dict):
-        raise StalePendingActionError("stale pending action: invalid checkpoint interrupt")
-    if (
-        current.get("tool_call_id") != pending.tool_call_id
-        or current.get("tool_name") != pending.tool_name
-    ):
-        raise StalePendingActionError(
-            "stale pending action: confirmation does not match the current checkpoint"
-        )
-    interrupt_id = getattr(current_interrupt, "id", None)
-    if not isinstance(interrupt_id, str) or not interrupt_id:
-        raise StalePendingActionError("stale pending action: invalid checkpoint interrupt identity")
-    return interrupt_id
-
-
-def _mapped_resume_payload() -> tuple[bool, dict[str, Any], str]:
-    try:
-        configurable = get_config().get("configurable", {})
-    except RuntimeError:
-        return False, {}, ""
-    if "__pregel_resume_map" not in configurable:
-        return False, {}, ""
-    resume_map = configurable.get("__pregel_resume_map")
-    checkpoint_ns = configurable.get("checkpoint_ns")
-    if not isinstance(resume_map, dict) or not isinstance(checkpoint_ns, str):
-        return True, {}, ""
-    current_interrupt_id = Interrupt.from_ns(value=None, ns=checkpoint_ns).id
-    if current_interrupt_id not in resume_map:
-        return False, {}, ""
-    payload = resume_map[current_interrupt_id]
-    return True, payload if isinstance(payload, dict) else {}, current_interrupt_id
 
 
 def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:

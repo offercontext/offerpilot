@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import Application, ApplicationEvent
+from offerpilot.repositories.session_binding import finish_repository_write, repository_session
 
 
 @dataclass
@@ -34,8 +35,12 @@ class ApplicationEventWithApplication:
 
 
 class ApplicationEventsRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "ApplicationEventsRepository":
+        return ApplicationEventsRepository(self._session_factory, session)
 
     def create(self, data: ApplicationEventCreate) -> ApplicationEvent:
         event = ApplicationEvent(
@@ -51,9 +56,9 @@ class ApplicationEventsRepository:
             status=data.status or "todo",
         )
         event.tags = data.tags or []
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             session.add(event)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(event)
             return event
 
@@ -80,7 +85,7 @@ class ApplicationEventsRepository:
         if event_type:
             statement = statement.where(ApplicationEvent.event_type == event_type)
 
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             rows = session.execute(statement).all()
             return [
                 ApplicationEventWithApplication(
@@ -90,11 +95,11 @@ class ApplicationEventsRepository:
             ]
 
     def get(self, event_id: int) -> Optional[ApplicationEvent]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return _get_visible_event(session, event_id)
 
     def update(self, event_id: int, data: ApplicationEventCreate) -> Optional[ApplicationEvent]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             event = _get_visible_event(session, event_id)
             if event is None:
                 return None
@@ -109,17 +114,17 @@ class ApplicationEventsRepository:
             event.notes = data.notes
             event.remind_at = data.remind_at
             event.status = data.status or event.status
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(event)
             return event
 
     def delete(self, event_id: int) -> bool:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             event = _get_visible_event(session, event_id)
             if event is None:
                 return False
             session.delete(event)
-            session.commit()
+            finish_repository_write(session, self._session)
             return True
 
     def delete_if_matches(self, event_id: int, expected: dict[str, object]) -> bool:
@@ -146,9 +151,9 @@ class ApplicationEventsRepository:
             if remind_at is None
             else statement.where(ApplicationEvent.remind_at == remind_at)
         )
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             result = session.execute(statement)
-            session.commit()
+            finish_repository_write(session, self._session)
             return getattr(result, "rowcount", 0) == 1
 
 

@@ -1346,6 +1346,7 @@ class Conversation(Base):
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pending_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    pending_operation_id: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_confirmation_claim_id: Mapped[str] = mapped_column(
         String,
         default="",
@@ -1364,6 +1365,7 @@ class Conversation(Base):
     clarification_human: Mapped[str] = mapped_column(String, default="", server_default="")
     clarification_question: Mapped[str] = mapped_column(String, default="", server_default="")
     last_write_undo_json: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_write_operation_id: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -1422,7 +1424,30 @@ class Conversation(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
-    __table_args__ = (Index("idx_chat_messages_conv", "conversation_id"),)
+    __table_args__ = (
+        CheckConstraint(
+            "(operation_id IS NULL AND delivery_kind IS NULL AND delivery_ordinal IS NULL) OR "
+            "(operation_id IS NOT NULL AND delivery_kind IS NOT NULL AND delivery_ordinal IS NOT NULL)",
+            name="ck_chat_messages_delivery_group",
+        ),
+        CheckConstraint(
+            "operation_id IS NULL OR "
+            "(delivery_kind = 'origin_tool_result' AND delivery_ordinal = 0 "
+            "AND role = 'tool' AND tool_call_id <> '') OR "
+            "(delivery_kind = 'continuation_message' AND delivery_ordinal >= 1 "
+            "AND ((role = 'tool' AND tool_call_id <> '') OR "
+            "(role = 'assistant' AND tool_call_id = '')))",
+            name="ck_chat_messages_delivery_shape",
+        ),
+        Index("idx_chat_messages_conv", "conversation_id"),
+        Index(
+            "uq_chat_messages_operation_ordinal",
+            "operation_id",
+            "delivery_ordinal",
+            unique=True,
+            sqlite_where=text("operation_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
@@ -1434,6 +1459,11 @@ class ChatMessage(Base):
     tool_calls: Mapped[str] = mapped_column(String, default="", server_default="")
     tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
     provider_blocks: Mapped[str] = mapped_column(String, default="", server_default="")
+    operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True
+    )
+    delivery_kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -1449,6 +1479,230 @@ def _sqlite_uuid_check(column: str) -> str:
         f"AND length(replace({column}, '-', '')) = 32 "
         f"AND {column} NOT GLOB '*[^0-9a-f-]*'"
     )
+
+
+class WriteOperation(Base):
+    __tablename__ = "write_operations"
+    __table_args__ = (
+        CheckConstraint(_sqlite_uuid_check("id"), name="ck_write_operations_id_uuid"),
+        CheckConstraint("operation_role IN ('primary','compensation')", name="ck_write_operations_role"),
+        CheckConstraint("adapter_kind IN ('typed','legacy_deterministic','compensation')", name="ck_write_operations_adapter"),
+        CheckConstraint("status IN ('proposed','rejected','committed','failed')", name="ck_write_operations_status"),
+        CheckConstraint("delivery_status IN ('pending','completed','failed','not_applicable')", name="ck_write_operations_delivery_status"),
+        CheckConstraint(
+            "(operation_role = 'primary' AND parent_operation_id IS NULL AND tool_call_id IS NOT NULL "
+            "AND proposal_fingerprint IS NOT NULL AND confirmation_token_fingerprint IS NOT NULL) OR "
+            "(operation_role = 'compensation' AND parent_operation_id IS NOT NULL AND tool_call_id IS NULL "
+            "AND proposal_fingerprint IS NULL AND confirmation_token_fingerprint IS NULL)",
+            name="ck_write_operations_role_identity",
+        ),
+        CheckConstraint(
+            "(operation_role = 'primary' AND adapter_kind = 'typed' AND tool_name IN "
+            "('create_application','update_application_status','create_application_event',"
+            "'update_application_event','delete_application_event','add_note','update_note',"
+            "'delete_note','update_offer','save_offer_assessment','resume_update_career_intent',"
+            "'resume_rewrite_highlight')) OR "
+            "(operation_role = 'primary' AND adapter_kind = 'legacy_deterministic' AND tool_name IN "
+            "('save_application_jd_version','create_application_submission_snapshot',"
+            "'record_application_outcome')) OR "
+            "(operation_role = 'compensation' AND adapter_kind = 'compensation' AND tool_name IN "
+            "('undo:update_application_status','undo:create_application',"
+            "'undo:create_application_event','undo:add_note'))",
+            name="ck_write_operations_manifest",
+        ),
+        CheckConstraint("result_json IS NULL OR length(CAST(result_json AS BLOB)) <= 524288", name="ck_write_operations_result_bytes"),
+        CheckConstraint("visible_result IS NULL OR length(CAST(visible_result AS BLOB)) <= 262144", name="ck_write_operations_visible_bytes"),
+        CheckConstraint("transport_json IS NULL OR length(CAST(transport_json AS BLOB)) <= 131072", name="ck_write_operations_transport_bytes"),
+        CheckConstraint("undo_json IS NULL OR length(CAST(undo_json AS BLOB)) <= 65536", name="ck_write_operations_undo_bytes"),
+        CheckConstraint(
+            "coalesce(length(CAST(result_json AS BLOB)),0) + coalesce(length(CAST(visible_result AS BLOB)),0) + "
+            "coalesce(length(CAST(transport_json AS BLOB)),0) + coalesce(length(CAST(undo_json AS BLOB)),0) <= 1048576",
+            name="ck_write_operations_terminal_bytes",
+        ),
+        CheckConstraint(
+            "failure_category IS NULL OR failure_category IN ('validation_error','permission_denied',"
+            "'confirmation_rejected','stale_state','conflict','not_found','provider_error','internal_error')",
+            name="ck_write_operations_failure_category",
+        ),
+        CheckConstraint(
+            "failure_code IS NULL OR (length(CAST(failure_code AS BLOB)) BETWEEN 1 AND 128 "
+            "AND failure_code NOT GLOB '*[^ -~]*')",
+            name="ck_write_operations_failure_code",
+        ),
+        CheckConstraint(
+            "length(fingerprint_key_id) = 36 AND lower(fingerprint_key_id) = fingerprint_key_id "
+            "AND substr(fingerprint_key_id,9,1) = '-' AND substr(fingerprint_key_id,14,1) = '-' "
+            "AND substr(fingerprint_key_id,19,1) = '-' AND substr(fingerprint_key_id,24,1) = '-' "
+            "AND fingerprint_key_id NOT GLOB '*[^0-9a-f-]*'",
+            name="ck_write_operations_key_id",
+        ),
+        CheckConstraint(
+            "(proposal_fingerprint IS NULL OR (length(proposal_fingerprint) = 76 "
+            "AND substr(proposal_fingerprint,1,12) = 'hmac-sha256:' "
+            "AND substr(proposal_fingerprint,13) NOT GLOB '*[^0-9a-f]*')) "
+            "AND (input_fingerprint IS NULL OR (length(input_fingerprint) = 76 "
+            "AND substr(input_fingerprint,1,12) = 'hmac-sha256:' "
+            "AND substr(input_fingerprint,13) NOT GLOB '*[^0-9a-f]*')) "
+            "AND (confirmation_token_fingerprint IS NULL OR (length(confirmation_token_fingerprint) = 76 "
+            "AND substr(confirmation_token_fingerprint,1,12) = 'hmac-sha256:' "
+            "AND substr(confirmation_token_fingerprint,13) NOT GLOB '*[^0-9a-f]*')) "
+            "AND (operation_request_fingerprint IS NULL OR (length(operation_request_fingerprint) = 76 "
+            "AND substr(operation_request_fingerprint,1,12) = 'hmac-sha256:' "
+            "AND substr(operation_request_fingerprint,13) NOT GLOB '*[^0-9a-f]*')) "
+            "AND (delivery_owner_token_fingerprint IS NULL OR (length(delivery_owner_token_fingerprint) = 76 "
+            "AND substr(delivery_owner_token_fingerprint,1,12) = 'hmac-sha256:' "
+            "AND substr(delivery_owner_token_fingerprint,13) NOT GLOB '*[^0-9a-f]*'))",
+            name="ck_write_operations_hmac_fingerprints",
+        ),
+        CheckConstraint(
+            "(terminal_payload_sha256 IS NULL OR (length(terminal_payload_sha256) = 71 "
+            "AND substr(terminal_payload_sha256,1,7) = 'sha256:' "
+            "AND substr(terminal_payload_sha256,8) NOT GLOB '*[^0-9a-f]*')) "
+            "AND (delivery_manifest_sha256 IS NULL OR (length(delivery_manifest_sha256) = 71 "
+            "AND substr(delivery_manifest_sha256,1,7) = 'sha256:' "
+            "AND substr(delivery_manifest_sha256,8) NOT GLOB '*[^0-9a-f]*'))",
+            name="ck_write_operations_sha256_digests",
+        ),
+        CheckConstraint(
+            "(status = 'proposed' AND input_fingerprint IS NULL "
+            "AND ((operation_role = 'primary' AND operation_request_fingerprint IS NULL) "
+            "OR (operation_role = 'compensation' AND operation_request_fingerprint IS NOT NULL)) "
+            "AND result_contract IS NULL AND result_json IS NULL AND visible_result IS NULL "
+            "AND transport_json IS NULL AND undo_json IS NULL AND terminal_payload_sha256 IS NULL "
+            "AND failure_category IS NULL AND failure_code IS NULL AND approved_at IS NULL "
+            "AND claimed_at IS NULL AND rejected_at IS NULL AND committed_at IS NULL AND failed_at IS NULL) OR "
+            "(status = 'rejected' AND operation_role = 'primary' AND result_contract = 'rejection_json_v1' "
+            "AND operation_request_fingerprint IS NOT NULL AND input_fingerprint IS NULL "
+            "AND result_json IS NOT NULL AND visible_result IS NOT NULL AND transport_json IS NOT NULL "
+            "AND undo_json IS NULL AND terminal_payload_sha256 IS NOT NULL "
+            "AND failure_category IS NULL AND failure_code IS NULL "
+            "AND approved_at IS NULL AND claimed_at IS NULL AND rejected_at IS NOT NULL "
+            "AND committed_at IS NULL AND failed_at IS NULL) OR "
+            "(status = 'committed' AND operation_request_fingerprint IS NOT NULL "
+            "AND input_fingerprint IS NOT NULL AND result_json IS NOT NULL AND visible_result IS NOT NULL "
+            "AND transport_json IS NOT NULL AND terminal_payload_sha256 IS NOT NULL "
+            "AND failure_category IS NULL AND failure_code IS NULL "
+            "AND approved_at IS NOT NULL AND claimed_at IS NOT NULL AND rejected_at IS NULL "
+            "AND committed_at IS NOT NULL AND failed_at IS NULL) OR "
+            "(status = 'failed' AND operation_request_fingerprint IS NOT NULL "
+            "AND input_fingerprint IS NOT NULL AND result_json IS NOT NULL AND visible_result IS NOT NULL "
+            "AND transport_json IS NOT NULL AND undo_json IS NULL AND terminal_payload_sha256 IS NOT NULL "
+            "AND failure_category IS NOT NULL AND failure_code IS NOT NULL "
+            "AND approved_at IS NOT NULL AND claimed_at IS NOT NULL AND rejected_at IS NULL "
+            "AND committed_at IS NULL AND failed_at IS NOT NULL)",
+            name="ck_write_operations_terminal_shape",
+        ),
+        CheckConstraint(
+            "status NOT IN ('committed','failed') OR "
+            "(adapter_kind = 'typed' AND result_contract = 'typed_json_v1') OR "
+            "(adapter_kind = 'legacy_deterministic' AND result_contract = 'legacy_string_v1') OR "
+            "(adapter_kind = 'compensation' AND result_contract = 'compensation_json_v1')",
+            name="ck_write_operations_result_contract",
+        ),
+        CheckConstraint(
+            "status <> 'committed' OR "
+            "(operation_role = 'primary' AND tool_name IN "
+            "('create_application','update_application_status','create_application_event','add_note') "
+            "AND undo_json IS NOT NULL) OR "
+            "((operation_role = 'compensation' OR tool_name NOT IN "
+            "('create_application','update_application_status','create_application_event','add_note')) "
+            "AND undo_json IS NULL)",
+            name="ck_write_operations_undo_policy",
+        ),
+        CheckConstraint(
+            "(status = 'proposed' AND delivery_status = 'pending' AND delivery_generation = 0 "
+            "AND delivery_owner_token_fingerprint IS NULL AND delivery_lease_expires_at IS NULL "
+            "AND delivery_outcome IS NULL AND delivery_message_count IS NULL "
+            "AND delivery_manifest_sha256 IS NULL AND delivery_next_operation_id IS NULL "
+            "AND delivered_at IS NULL AND delivery_failure_code IS NULL) OR "
+            "(status <> 'proposed' AND operation_role = 'primary' AND delivery_status = 'pending' AND delivery_generation >= 1 "
+            "AND delivery_owner_token_fingerprint IS NOT NULL AND delivery_lease_expires_at IS NOT NULL "
+            "AND delivery_outcome IS NULL AND delivery_message_count IS NULL "
+            "AND delivery_manifest_sha256 IS NULL AND delivery_next_operation_id IS NULL "
+            "AND delivered_at IS NULL AND delivery_failure_code IS NULL) OR "
+            "(status <> 'proposed' AND operation_role = 'primary' AND delivery_status = 'completed' "
+            "AND delivery_generation >= 1 AND delivery_owner_token_fingerprint IS NULL AND delivery_lease_expires_at IS NULL "
+            "AND delivery_outcome IN ('final_response','chained_pending') "
+            "AND delivery_message_count >= 2 AND delivery_manifest_sha256 IS NOT NULL "
+            "AND delivered_at IS NOT NULL AND delivery_failure_code IS NULL "
+            "AND ((delivery_outcome = 'chained_pending' AND delivery_next_operation_id IS NOT NULL) "
+            "OR (delivery_outcome = 'final_response' AND delivery_next_operation_id IS NULL))) OR "
+            "(status <> 'proposed' AND operation_role = 'primary' AND delivery_status = 'failed' "
+            "AND delivery_generation >= 1 AND delivery_owner_token_fingerprint IS NULL "
+            "AND delivery_lease_expires_at IS NULL AND delivery_outcome = 'fallback' "
+            "AND delivery_message_count = 2 AND delivery_manifest_sha256 IS NOT NULL "
+            "AND delivery_next_operation_id IS NULL AND delivered_at IS NOT NULL "
+            "AND delivery_failure_code IS NOT NULL) OR "
+            "(status <> 'proposed' AND operation_role = 'compensation' AND delivery_status = 'not_applicable' "
+            "AND delivery_generation = 0 AND delivery_outcome = 'none' AND delivery_message_count = 0 "
+            "AND delivery_owner_token_fingerprint IS NULL AND delivery_lease_expires_at IS NULL "
+            "AND delivery_manifest_sha256 IS NULL AND delivery_next_operation_id IS NULL "
+            "AND delivery_failure_code IS NULL AND delivered_at IS NOT NULL "
+            "AND ((status = 'committed' AND delivered_at = committed_at) "
+            "OR (status = 'failed' AND delivered_at = failed_at)))",
+            name="ck_write_operations_delivery_shape",
+        ),
+        Index("uq_write_operations_primary_call", "conversation_id", "tool_call_id", unique=True, sqlite_where=text("operation_role = 'primary' AND conversation_id IS NOT NULL")),
+        Index("uq_write_operations_compensation_parent", "parent_operation_id", unique=True, sqlite_where=text("operation_role = 'compensation'")),
+        Index("idx_write_operations_status", "status", "delivery_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    operation_role: Mapped[str] = mapped_column(String, nullable=False)
+    parent_operation_id: Mapped[str | None] = mapped_column(ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool_name: Mapped[str] = mapped_column(String, nullable=False)
+    adapter_kind: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="proposed")
+    fingerprint_key_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    proposal_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    confirmation_token_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    operation_request_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    result_contract: Mapped[str | None] = mapped_column(String, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    visible_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transport_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    undo_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    terminal_payload_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    delivery_failure_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_outcome: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_message_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delivery_manifest_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_next_operation_id: Mapped[str | None] = mapped_column(ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True)
+    delivery_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_owner_token_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivery_lease_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
+
+
+class WriteOperationTransition(Base):
+    __tablename__ = "write_operation_transitions"
+    __table_args__ = (
+        CheckConstraint(_sqlite_uuid_check("id"), name="ck_write_operation_transitions_id_uuid"),
+        CheckConstraint("state IN ('proposed','approved','rejected','claimed','committed','failed')", name="ck_write_operation_transitions_state"),
+        CheckConstraint("seq >= 1", name="ck_write_operation_transitions_seq"),
+        UniqueConstraint("operation_id", "seq", name="uq_write_operation_transitions_seq"),
+        Index("idx_write_operation_transitions_operation", "operation_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(ForeignKey("write_operations.id", ondelete="CASCADE"), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
 
 
 class AgentRun(Base):

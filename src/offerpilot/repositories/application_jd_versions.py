@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session, sessionmaker
+from offerpilot.repositories.session_binding import finish_repository_write, repository_session
 
 from offerpilot.models import Application, ApplicationJDVersion
 
@@ -140,11 +141,15 @@ def _validate_jd_text(jd_text: str) -> None:
 
 
 class ApplicationJDService:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "ApplicationJDService":
+        return ApplicationJDService(self._session_factory, session)
 
     def get_current(self, application_id: int) -> ApplicationJDVersion | None:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return session.scalar(
                 select(ApplicationJDVersion)
                 .where(ApplicationJDVersion.application_id == application_id)
@@ -239,8 +244,9 @@ class ApplicationJDService:
         request_fingerprint = _canonical_request_fingerprint(jd_text, normalized_url, source_kind)
         content_sha256 = _content_sha256(jd_text)
 
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
+        with repository_session(self._session_factory, self._session) as session:
+            if self._session is None:
+                session.execute(text("BEGIN IMMEDIATE"))
             application = session.get(Application, application_id)
             if application is None or application.deleted_at is not None:
                 raise JDVersionNotFoundError("application is not visible")
@@ -257,7 +263,7 @@ class ApplicationJDService:
                         "idempotency key was used with different input",
                         "application_jd_idempotency_conflict",
                     )
-                session.commit()
+                finish_repository_write(session, self._session)
                 return VersionCreateResult(existing, replayed=True)
 
             current = session.scalar(
@@ -284,7 +290,7 @@ class ApplicationJDService:
                 request_fingerprint_sha256=request_fingerprint,
             )
             session.add(version)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(version)
             return VersionCreateResult(version, replayed=False)
 

@@ -1264,7 +1264,11 @@ export default function ChatPanel({
       conversationId: convID,
     };
     try {
-      const resp = await undoLastWrite(convID, { signal: controller.signal });
+      const resp = await undoLastWrite(
+        convID,
+        lastUndo.parent_operation_id,
+        { signal: controller.signal },
+      );
       const applied = await finishMessage(resp, visibleRequestGeneration);
       if (applied) {
         setLastUndo(null);
@@ -1571,6 +1575,7 @@ export default function ChatPanel({
                   onConfirm={(editedArgs) =>
                     handleConfirm({
                       approved: true,
+                      operation_id: activePending.operation_id,
                       confirmation_token: activePending.confirmation_token,
                       ...(editedArgs ? { edited_args: editedArgs } : {}),
                     })
@@ -1578,6 +1583,7 @@ export default function ChatPanel({
                   onCancel={(rejectionFeedback) =>
                     handleConfirm({
                       approved: false,
+                      operation_id: activePending.operation_id,
                       confirmation_token: activePending.confirmation_token,
                       ...(rejectionFeedback ? { rejection_feedback: rejectionFeedback } : {}),
                     })

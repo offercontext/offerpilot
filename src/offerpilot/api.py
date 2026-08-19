@@ -13,13 +13,14 @@ from queue import Empty, Queue
 from secrets import compare_digest
 from threading import Event, Lock
 from time import perf_counter
-from typing import Any, Callable, Generator, Literal, Optional, cast
+from typing import Any, Callable, Generator, Literal, Mapping, Optional, cast
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
+from sqlalchemy.orm import Session
 
 from offerpilot.ai.agent import (
     DEFAULT_MAX_ITERATIONS,
@@ -28,6 +29,7 @@ from offerpilot.ai.agent import (
     PendingAction,
     PendingActionValidationError,
     StalePendingActionError,
+    _rejection_result,
     prepare_pending_action,
     resume_after_confirm,
     run_turn,
@@ -90,6 +92,20 @@ from offerpilot.ai.tool_specs.catalog import (
 )
 from offerpilot.ai.tool_specs.legacy import build_legacy_deterministic_catalog
 from offerpilot.ai.types import Message, ToolCall
+from offerpilot.ai.write_operations import (
+    DeliveryHeartbeat,
+    OperationCommitted,
+    OperationFailed,
+    OperationReplay,
+    OperationUnknown,
+    WriteOperationCoordinator,
+    WriteOperationError,
+    WriteOperationRepository,
+    compensation_kind_for_undo,
+    ledger_fingerprint,
+    operation_request_fingerprint,
+    load_or_create_ledger_key,
+)
 from offerpilot.agent_runtime.events import (
     ContextManifestInput,
     normalize_context_identity,
@@ -317,6 +333,7 @@ def _model_tool_context(
     resumes: Any,
     jd_analyses: Any,
     run_recorder: RunRecorder,
+    operation_executor: Any = None,
 ) -> ToolExecutionContext:
     current_bindings: dict[str, int | str] = {}
     if str(conversation.context_type or "") == "application":
@@ -336,6 +353,7 @@ def _model_tool_context(
         offers=offers,
         resumes=resumes,
         run_recorder=run_recorder,
+        operation_executor=operation_executor,
     )
 
 
@@ -411,6 +429,12 @@ CHAT_ATTACHMENT_CONTEXT_DATA_PREFIX = "Current request attachment reference data
 
 class ChatAgentTimedOut(RuntimeError):
     pass
+
+
+class ChatOperationReplay(RuntimeError):
+    def __init__(self, replay: OperationReplay):
+        super().__init__(replay.operation_id)
+        self.replay = replay
 
 
 class _StaleConfirmationResponse(JSONResponse):
@@ -1263,6 +1287,16 @@ def create_app(
     session_factory = session_factory_for_data_dir(resolved_data_dir)
     app_config = load_config(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
+    try:
+        ledger_key = load_or_create_ledger_key(resolved_data_dir, session_factory)
+        repository = WriteOperationRepository(session_factory, ledger_key)
+        write_operations: WriteOperationRepository | None = repository
+        write_coordinator: WriteOperationCoordinator | None = WriteOperationCoordinator(
+            repository
+        )
+    except WriteOperationError:
+        write_operations = None
+        write_coordinator = None
     journal_engine = None
     if run_recorder_factory is None:
         try:
@@ -1286,7 +1320,7 @@ def create_app(
         resolved_run_recorder_factory = run_recorder_factory
     application_jd_versions = ApplicationJDService(session_factory)
     application_outcomes = ApplicationOutcomesRepository(session_factory)
-    chat = ChatRepository(session_factory)
+    chat = ChatRepository(session_factory, write_operations)
     events = ApplicationEventsRepository(session_factory)
     notes = NotesRepository(session_factory)
     offers = OffersRepository(session_factory)
@@ -1342,6 +1376,7 @@ def create_app(
     app.state.db_engine = session_factory.kw.get("bind")
     app.state.journal_db_engine = journal_engine
     app.state.run_recorder_factory = resolved_run_recorder_factory
+    app.state.write_operation_coordinator = write_coordinator
     app.state.knowledge_runtime = knowledge_runtime
 
     @app.on_event("startup")
@@ -2076,6 +2111,7 @@ def create_app(
         approved: bool,
         edited_args: dict[str, Any] | None,
         rejection_feedback: str,
+        request_fingerprint: str,
         on_confirmation_attempt: Callable[[PendingAction, bool], None] | None = None,
         on_tool_result: Callable[[PendingAction, str, bool], None] | None = None,
     ) -> JSONResponse | dict[str, Any]:
@@ -2086,6 +2122,7 @@ def create_app(
         adapter = legacy_catalog.resolve_server_loaded(pending)
         if adapter is None:
             return error_response(409, "pending action is no longer available")
+        delivery_ownership = None
         try:
             if approved:
                 effective_args, human = prepare_legacy_arguments(
@@ -2110,14 +2147,55 @@ def create_app(
                 return error_response(422, validation_error)
             if on_confirmation_attempt is not None:
                 on_confirmation_attempt(effective_pending, True)
-            try:
-                result = adapter.execute(effective_pending.args)
-                succeeded = True
-                failure_code = ""
-            except Exception as exc:
-                result = f"错误：{exc}"
-                succeeded = False
-                failure_code = str(exc).strip()
+            if write_coordinator is None or write_operations is None:
+                return error_response(503, "写入账本暂不可用。", code="operation_unavailable")
+            input_fingerprint = ledger_fingerprint(
+                write_operations.key,
+                "write-operation-legacy-input-v1",
+                cast(Any, json.loads(effective_pending.args)),
+            )
+            execution = write_coordinator.execute_legacy(
+                operation_id=pending.operation_id,
+                conversation_id=conversation_id,
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                input_fingerprint=input_fingerprint,
+                request_fingerprint=request_fingerprint,
+                executor=lambda session: cast(
+                    Any,
+                    build_legacy_deterministic_catalog(
+                        application_jd_versions.bind(session),
+                        application_outcomes.bind(session),
+                    ).resolve_server_loaded(effective_pending),
+                ).execute(effective_pending.args),
+            )
+            if isinstance(execution, OperationUnknown):
+                return error_response(
+                    503 if execution.retryable else 409,
+                    "写入结果暂时无法确认，请保留确认卡后重试。",
+                    code=execution.code,
+                )
+            if isinstance(execution, OperationReplay):
+                replay_operation = write_operations.get(pending.operation_id)
+                if replay_operation is None:
+                    return error_response(
+                        503,
+                        "写入结果暂时无法确认，请保留确认卡后重试。",
+                        code="operation_result_unknown",
+                    )
+                return _operation_replay_response(
+                    conversation_id,
+                    _converged_operation_replay(
+                        write_operations, replay_operation, request_fingerprint
+                    ),
+                    chat,
+                    applications,
+                )
+            if isinstance(execution, (OperationCommitted, OperationFailed)):
+                delivery_ownership = execution.ownership
+            result = execution.payload.visible_result
+            succeeded = execution.payload.status == "committed"
+            failure_code = execution.payload.failure_code or ""
             if on_tool_result is not None:
                 on_tool_result(effective_pending, result, succeeded)
             tool_message = Message(
@@ -2125,6 +2203,23 @@ def create_app(
                 content=result,
                 tool_call_id=effective_pending.tool_call_id,
             )
+            def persist_legacy_failure(status_code: int, message: str) -> JSONResponse:
+                generation = chat.resolve_pending_confirmation(
+                    conversation_id,
+                    pending,
+                    tool_message,
+                    {},
+                    claim_id=pending.operation_id,
+                    terminal_assistant_content=message,
+                    delivery_ownership=delivery_ownership,
+                )
+                if generation is None:
+                    return _StaleConfirmationResponse(
+                        {"error": "待确认操作已被更新，请刷新对话后重试。"},
+                        status_code=409,
+                    )
+                return error_response(status_code, message, code=failure_code)
+
             if not succeeded:
                 if failure_code in {
                     "application_jd_stale_current_version",
@@ -2134,7 +2229,7 @@ def create_app(
                     application_id = args.get("application_id")
                     jd_text = args.get("jd_text")
                     if type(application_id) is not int or not isinstance(jd_text, str):
-                        return error_response(409, "岗位资料已发生冲突，请刷新后重试。", code=failure_code)
+                        return persist_legacy_failure(409, "岗位资料已发生冲突，请刷新后重试。")
                     current = application_jd_versions.get_current(application_id)
                     source_url = args.get("source_url")
                     try:
@@ -2147,7 +2242,7 @@ def create_app(
                             key_factory=lambda: uuid4().hex,
                         )
                     except ValueError:
-                        return error_response(409, "岗位资料已发生冲突，请刷新后重试。", code=failure_code)
+                        return persist_legacy_failure(409, "岗位资料已发生冲突，请刷新后重试。")
                     replaced = chat.replace_pending_confirmation(
                         conversation_id,
                         pending,
@@ -2155,6 +2250,8 @@ def create_app(
                         tool_message,
                         {},
                         terminal_assistant_content="当前岗位资料已变化，请重新确认保存。",
+                        claim_id=pending.operation_id,
+                        delivery_ownership=delivery_ownership,
                     )
                     if replaced is None:
                         return _StaleConfirmationResponse(
@@ -2172,20 +2269,20 @@ def create_app(
                         },
                     )
                 if failure_code == "application_jd_invalid_request":
-                    return error_response(422, "岗位资料参数无效，请修改后重试。", code=failure_code)
+                    return persist_legacy_failure(422, "岗位资料参数无效，请修改后重试。")
                 if failure_code in {
                     "application_archive_idempotency_conflict",
                     "application_archive_source_conflict",
                     "application_outcome_idempotency_conflict",
                     "application_outcome_source_conflict",
                 }:
-                    return error_response(409, "投递事实已发生变化，请刷新后重新确认。", code=failure_code)
+                    return persist_legacy_failure(409, "投递事实已发生变化，请刷新后重新确认。")
                 if failure_code in {
                     "application_archive_invalid_request",
                     "application_outcome_invalid_request",
                 }:
-                    return error_response(422, "投递事实参数无效，请修改后重试。", code=failure_code)
-                return error_response(502, "岗位资料保存结果未知，请保留当前确认卡后重试。", code=failure_code)
+                    return persist_legacy_failure(422, "投递事实参数无效，请修改后重试。")
+                return persist_legacy_failure(502, "岗位资料保存失败，请检查后重试。")
             undo_update: dict[str, Any] | None = {}
             response_message = "岗位资料已保存。" if succeeded else "岗位资料保存失败，请检查后重试。"
             write_status = "success" if succeeded else "failed"
@@ -2193,6 +2290,44 @@ def create_app(
             if on_confirmation_attempt is not None:
                 on_confirmation_attempt(pending, False)
             result = _CANCELLED_TOOL_RESULT
+            if write_coordinator is None or write_operations is None:
+                return error_response(503, "写入账本暂不可用。", code="operation_unavailable")
+            rejection = write_coordinator.reject_primary(
+                operation_id=pending.operation_id,
+                conversation_id=conversation_id,
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                request_fingerprint=request_fingerprint,
+                visible_result=result,
+            )
+            if isinstance(rejection, OperationUnknown):
+                rejection_error = WriteOperationError(
+                    rejection.code,
+                    retryable=rejection.retryable,
+                )
+                return error_response(
+                    _write_operation_error_status(rejection_error),
+                    "无法确认写入结果，请保留原请求后重试。",
+                    code=rejection.code,
+                )
+            if isinstance(rejection, OperationReplay):
+                replay_operation = write_operations.get(pending.operation_id)
+                if replay_operation is None:
+                    return error_response(
+                        503,
+                        "写入结果暂时无法确认，请保留确认卡后重试。",
+                        code="operation_result_unknown",
+                    )
+                return _operation_replay_response(
+                    conversation_id,
+                    _converged_operation_replay(
+                        write_operations, replay_operation, request_fingerprint
+                    ),
+                    chat,
+                    applications,
+                )
+            if isinstance(rejection, (OperationCommitted, OperationFailed)):
+                delivery_ownership = rejection.ownership
             tool_message = Message(
                 role="tool",
                 content=result,
@@ -2207,7 +2342,9 @@ def create_app(
             pending,
             tool_message,
             undo_update,
+            claim_id=pending.operation_id,
             terminal_assistant_content=response_message,
+            delivery_ownership=delivery_ownership,
         )
         if generation is None:
             return _StaleConfirmationResponse(
@@ -2219,6 +2356,10 @@ def create_app(
             "conversation_id": conversation_id,
             "message": response_message,
             "write_status": write_status,
+            "operation_id": pending.operation_id,
+            "replayed": isinstance(
+                execution if approved else rejection, OperationReplay
+            ),
         }
         return response
 
@@ -5252,6 +5393,14 @@ def create_app(
             if deterministic_response is not None:
                 return JSONResponse(deterministic_response)
 
+        existing_pending = chat.get_pending_action(conversation_id)
+        if existing_pending is not None:
+            return error_response(
+                409,
+                "当前写入仍待确认，请先处理确认卡。",
+                code="pending_confirmation_required",
+                details={"pending_action": _pending_action_json(existing_pending, applications)},
+            )
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -5311,7 +5460,6 @@ def create_app(
                     history,
                     auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                     max_iter=DEFAULT_MAX_ITERATIONS,
-                    checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
                     run_recorder=run_recorder,
                     tool_context=_model_tool_context(
@@ -5333,7 +5481,6 @@ def create_app(
             timeout_message = chat.append_message(
                 conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE
             )
-            chat.clear_pending_action(conversation_id)
             chat.clear_pending_clarification(conversation_id)
             _record_persisted_messages(run_recorder, [timeout_message])
             _finish_journal(run_recorder, "timed_out", "timeout")
@@ -5388,7 +5535,6 @@ def create_app(
             forced_pending = _pending_action_from_added_write_call(added, catalog)
             if forced_pending is not None:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
-        chat.clear_pending_action(conversation_id)
         if not forced_reply and clarification is not None and _looks_like_followup_question(reply):
             pending_clarification, _ = clarification
             chat.set_pending_clarification(conversation_id, pending_clarification, reply)
@@ -5516,6 +5662,14 @@ def create_app(
                     run=deterministic_sse_run,
                 )
 
+        existing_pending = chat.get_pending_action(conversation_id)
+        if existing_pending is not None:
+            return error_response(
+                409,
+                "当前写入仍待确认，请先处理确认卡。",
+                code="pending_confirmation_required",
+                details={"pending_action": _pending_action_json(existing_pending, applications)},
+            )
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -5599,7 +5753,6 @@ def create_app(
                         history,
                         auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                         max_iter=DEFAULT_MAX_ITERATIONS,
-                        checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
                         cancel_check=cancel_check,
@@ -5627,7 +5780,6 @@ def create_app(
                 timeout_message = chat.append_message(
                     conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE
                 )
-                chat.clear_pending_action(conversation_id)
                 chat.clear_pending_clarification(conversation_id)
                 _record_persisted_messages(run_recorder, [timeout_message])
                 _finish_journal(run_recorder, "timed_out", "timeout")
@@ -5708,7 +5860,6 @@ def create_app(
                 forced_pending = _pending_action_from_added_write_call(added, catalog)
                 if forced_pending is not None:
                     chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
-            chat.clear_pending_action(conversation_id)
             if (
                 not forced_reply
                 and clarification is not None
@@ -5747,8 +5898,45 @@ def create_app(
         conversation = chat.get_conversation(conversation_id)
         if conversation is None:
             return error_response(404, "conversation not found")
+        requested_operation_id = payload.get("operation_id")
+        if isinstance(requested_operation_id, str) and write_operations is not None:
+            terminal = write_operations.get(requested_operation_id)
+            if terminal is not None and terminal.status != "proposed":
+                if terminal.conversation_id != conversation_id or confirmation_token is None:
+                    return error_response(409, "operation identity conflict", code="operation_identity_conflict")
+                synthetic = PendingAction(
+                    tool_call_id=terminal.tool_call_id or "",
+                    tool_name=terminal.tool_name,
+                    args="",
+                    human=terminal.tool_name,
+                    operation_id=terminal.id,
+                )
+                try:
+                    fingerprint = _ledger_confirmation_request_fingerprint(
+                        write_operations,
+                        synthetic,
+                        payload,
+                        approved=approved,
+                        edited_args=edited_args,
+                        rejection_feedback=rejection_feedback,
+                        confirmation_token=confirmation_token,
+                    )
+                    return JSONResponse(
+                        _operation_replay_response(
+                            conversation_id,
+                            _converged_operation_replay(write_operations, terminal, fingerprint),
+                            chat,
+                            applications,
+                        )
+                    )
+                except WriteOperationError as exc:
+                    return error_response(
+                        _write_operation_error_status(exc),
+                        "无法确认写入结果，请保留原请求后重试。",
+                        code=exc.code,
+                    )
         stored = chat.list_messages(conversation_id)
-        if conversation is None or not stored:
+        if not stored:
             return error_response(404, "conversation not found")
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
@@ -5757,6 +5945,34 @@ def create_app(
             if edited_args is not None or rejection_feedback:
                 return error_response(422, "confirmation_token is required when changing confirmation details")
             confirmation_token = _confirmation_token(pending)
+        if not compare_digest(confirmation_token, _confirmation_token(pending)):
+            return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+        if write_operations is None or write_coordinator is None:
+            return error_response(503, "写入账本暂不可用，请保留确认卡后重试。", code="operation_unavailable")
+        try:
+            request_fingerprint = _ledger_confirmation_request_fingerprint(
+                write_operations,
+                pending,
+                payload,
+                approved=approved,
+                edited_args=edited_args,
+                rejection_feedback=rejection_feedback,
+                confirmation_token=confirmation_token,
+            )
+            existing_operation = write_operations.get(pending.operation_id)
+            if existing_operation is not None and existing_operation.status != "proposed":
+                return JSONResponse(
+                    _operation_replay_response(
+                        conversation_id,
+                        _converged_operation_replay(
+                            write_operations, existing_operation, request_fingerprint
+                        ),
+                        chat,
+                        applications,
+                    )
+                )
+        except WriteOperationError as exc:
+            return error_response(_write_operation_error_status(exc), "无法确认写入结果。", code=exc.code)
         if pending.tool_name in {
             "save_application_jd_version",
             "create_application_submission_snapshot",
@@ -5781,6 +5997,7 @@ def create_app(
                 approved=approved,
                 edited_args=edited_args,
                 rejection_feedback=rejection_feedback,
+                request_fingerprint=request_fingerprint,
                 on_confirmation_attempt=deterministic_attempt,
                 on_tool_result=deterministic_result,
             )
@@ -5793,11 +6010,39 @@ def create_app(
             if isinstance(deterministic_response, JSONResponse):
                 return deterministic_response
             return JSONResponse(deterministic_response)
+        if not compare_digest(confirmation_token, _confirmation_token(pending)):
+            return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+        if write_operations is None or write_coordinator is None:
+            return error_response(503, "写入账本暂不可用，请保留确认卡后重试。", code="operation_unavailable")
+        try:
+            request_fingerprint = _ledger_confirmation_request_fingerprint(
+                write_operations,
+                pending,
+                payload,
+                approved=approved,
+                edited_args=edited_args,
+                rejection_feedback=rejection_feedback,
+                confirmation_token=confirmation_token,
+            )
+            existing_operation = write_operations.get(pending.operation_id)
+            if existing_operation is not None and existing_operation.status != "proposed":
+                replay = _converged_operation_replay(
+                    write_operations, existing_operation, request_fingerprint
+                )
+                return JSONResponse(
+                    _operation_replay_response(
+                        conversation_id, replay, chat, applications
+                    )
+                )
+        except WriteOperationError as exc:
+            return error_response(
+                _write_operation_error_status(exc),
+                "无法确认写入结果，请保留原请求后重试。",
+                code=exc.code,
+            )
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
-        if not compare_digest(confirmation_token, _confirmation_token(pending)):
-            return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         catalog = MODEL_TOOL_CATALOG
         try:
             effective_pending = (
@@ -5845,6 +6090,52 @@ def create_app(
         confirmation_timed_out = Event()
         confirmation_attempt_lock = Lock()
 
+        def execute_ledger_operation(
+            prepared: PreparedToolCall[Any, Any],
+            tool_context: ToolExecutionContext,
+            authorization: ExecutionAuthorization,
+        ) -> ToolExecutionRecord[Any, Any]:
+            execution, record = write_coordinator.execute_primary(
+                operation_id=pending.operation_id,
+                conversation_id=conversation_id,
+                prepared=prepared,
+                context=tool_context,
+                authorization=authorization,
+                request_fingerprint=request_fingerprint,
+                undo_seed_builder=lambda _prepared, current_context: (
+                    _undo_seed_for_pending(effective_pending, current_context.applications)
+                ),
+                undo_builder=lambda _prepared, current, transactional_seed: (
+                    _build_write_undo(effective_pending, current, dict(transactional_seed)) or None
+                ),
+            )
+            if isinstance(execution, (OperationCommitted, OperationFailed)):
+                if execution.payload.undo_json:
+                    confirmed_outcome["ledger_undo"] = json.loads(
+                        execution.payload.undo_json
+                    )
+                confirmed_outcome["delivery_ownership"] = execution.ownership
+                if execution.ownership is not None:
+                    confirmed_outcome["delivery_heartbeat"] = DeliveryHeartbeat(
+                        write_operations, execution.ownership
+                    ).start()
+            if record is not None:
+                return record
+            if isinstance(execution, OperationReplay):
+                current = write_operations.get(pending.operation_id)
+                if current is None:
+                    raise WriteOperationError("operation_result_unknown", retryable=True)
+                raise ChatOperationReplay(
+                    _converged_operation_replay(
+                        write_operations, current, request_fingerprint
+                    )
+                )
+            assert isinstance(execution, OperationUnknown)
+            raise WriteOperationError(
+                execution.code,
+                retryable=execution.retryable,
+            )
+
         def persist_confirmation_result(
             action: PendingAction,
             result_approved: bool,
@@ -5882,10 +6173,7 @@ def create_app(
                         "stale_state",
                         "confirmation_claim_lost",
                     )
-                claim_id = uuid4().hex
-                if not chat.claim_pending_confirmation(conversation_id, pending, claim_id):
-                    return ToolFailure("stale_state", "confirmation_claim_lost")
-                confirmation_claim["id"] = claim_id
+                confirmation_claim["id"] = pending.operation_id
                 _record_journal_approval(
                     confirmation_recorder,
                     confirmation_attempt_id=confirmation_attempt_id,
@@ -5896,6 +6184,25 @@ def create_app(
                 )
                 confirmation_attempted.set()
                 if prepared is None:
+                    rejection = write_coordinator.reject_primary(
+                        operation_id=pending.operation_id,
+                        conversation_id=conversation_id,
+                        tool_call_id=pending.tool_call_id,
+                        tool_name=pending.tool_name,
+                        request_fingerprint=request_fingerprint,
+                        visible_result=_rejection_result(rejection_feedback),
+                    )
+                    if isinstance(rejection, (OperationCommitted, OperationFailed)):
+                        confirmed_outcome["delivery_ownership"] = rejection.ownership
+                        if rejection.ownership is not None:
+                            confirmed_outcome["delivery_heartbeat"] = DeliveryHeartbeat(
+                                write_operations, rejection.ownership
+                            ).start()
+                    if isinstance(rejection, OperationUnknown):
+                        raise WriteOperationError(
+                            rejection.code,
+                            retryable=rejection.retryable,
+                        )
                     return None
                 return ExecutionAuthorization(
                     pending_identity=prepared.pending_identity,
@@ -5903,6 +6210,7 @@ def create_app(
                     tool_call_id=prepared.tool_call_id,
                     tool_name=prepared.spec.name,
                     arguments_digest=prepared.arguments_digest,
+                    operation_id=pending.operation_id,
                 )
 
         try:
@@ -5920,12 +6228,12 @@ def create_app(
                     auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                     max_iter=DEFAULT_MAX_ITERATIONS,
                     rejection_feedback=rejection_feedback,
-                    checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
                     confirmation_result_sink=persist_confirmation_result,
                     confirmation_attempt_sink=start_confirmation_attempt,
                     cancel_check=confirmation_cancelled.is_set,
                     run_recorder=confirmation_recorder,
+                    delivery_fence=lambda: _confirmation_delivery_fence(confirmed_outcome),
                     tool_context=_model_tool_context(
                         conversation,
                         applications,
@@ -5935,6 +6243,7 @@ def create_app(
                         resumes,
                         jd_analyses,
                         confirmation_recorder,
+                        execute_ledger_operation,
                     ),
                 )
             )
@@ -5942,6 +6251,7 @@ def create_app(
             tool_records = turn_result.records
             tool_failures = turn_result.failures
         except ChatAgentTimedOut:
+            _stop_confirmation_delivery_heartbeat(confirmed_outcome)
             if confirmed_outcome.get("cas_lost"):
                 _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
@@ -5963,13 +6273,32 @@ def create_app(
             cancel_confirmation_result()
             _finish_journal(confirmation_recorder, "timed_out", "timeout")
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
+        except ChatOperationReplay as exc:
+            _stop_confirmation_delivery_heartbeat(confirmed_outcome)
+            _abandon_journal_segment(confirmation_recorder)
+            return JSONResponse(
+                _operation_replay_response(
+                    conversation_id, exc.replay, chat, applications
+                )
+            )
+        except WriteOperationError as exc:
+            _stop_confirmation_delivery_heartbeat(confirmed_outcome)
+            _abandon_journal_segment(confirmation_recorder)
+            return error_response(
+                _write_operation_error_status(exc),
+                "无法确认写入结果，请保留原请求后重试。",
+                code=exc.code,
+            )
         except PendingActionValidationError as exc:
+            _stop_confirmation_delivery_heartbeat(confirmed_outcome)
             _abandon_journal_segment(confirmation_recorder)
             return error_response(422, f"确认参数无效：{exc}")
         except StalePendingActionError:
+            _stop_confirmation_delivery_heartbeat(confirmed_outcome)
             _abandon_journal_segment(confirmation_recorder)
             return error_response(409, "待确认操作已过期或正在处理中，请刷新对话后重试。")
         except Exception as exc:
+            _stop_confirmation_delivery_heartbeat(confirmed_outcome)
             if confirmed_outcome.get("cas_lost"):
                 _abandon_journal_segment(confirmation_recorder)
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
@@ -6101,7 +6430,12 @@ def create_app(
         if write_error:
             response_payload["write_error"] = write_error
         if undo:
+            if confirmed_outcome.get("undo_operation_id"):
+                undo["parent_operation_id"] = confirmed_outcome["undo_operation_id"]
             response_payload["undo"] = undo
+        if confirmed_outcome.get("operation_id"):
+            response_payload["operation_id"] = confirmed_outcome["operation_id"]
+            response_payload["replayed"] = bool(confirmed_outcome.get("replayed"))
         _finish_journal(confirmation_recorder, "completed")
         return JSONResponse(response_payload)
 
@@ -6112,19 +6446,73 @@ def create_app(
             return conversation_id
         if chat.get_conversation(conversation_id) is None:
             return error_response(404, "conversation not found")
-        undo = chat.get_last_write_undo(conversation_id)
-        if not undo:
+        requested_parent = payload.get("parent_operation_id")
+        if requested_parent is not None and not isinstance(requested_parent, str):
+            return error_response(400, "parent_operation_id must be a string")
+        parent_operation_id = requested_parent or chat.get_last_write_operation_id(conversation_id)
+        if not parent_operation_id or write_coordinator is None or write_operations is None:
+            return error_response(400, "没有可撤销的 AI 写入")
+        parent = write_operations.get(parent_operation_id)
+        if (
+            parent is None
+            or parent.conversation_id != conversation_id
+            or parent.status != "committed"
+            or not parent.undo_json
+        ):
             return error_response(400, "没有可撤销的 AI 写入")
         try:
-            message = _execute_chat_undo(undo, applications, events, notes)
-        except UndoConflictError as exc:
-            return error_response(409, str(exc))
-        except Exception as exc:
-            return error_response(400, f"撤销失败：{exc}")
-        chat.clear_last_write_undo_if_matches(conversation_id, undo)
-        chat.append_message(conversation_id, "assistant", content=message)
+            immutable_undo = json.loads(parent.undo_json)
+        except (TypeError, json.JSONDecodeError):
+            return error_response(409, "operation integrity error", code="operation_integrity_error")
+        if not isinstance(immutable_undo, dict):
+            return error_response(409, "operation integrity error", code="operation_integrity_error")
+        try:
+            compensation_kind = compensation_kind_for_undo(
+                str(immutable_undo.get("kind") or "")
+            )
+        except ValueError:
+            return error_response(409, "operation integrity error", code="operation_integrity_error")
+
+        def execute_undo(session: Session, undo: Mapping[str, Any]) -> str:
+            try:
+                return _execute_chat_undo(
+                    dict(undo),
+                    applications.bind(session),
+                    events.bind(session),
+                    notes.bind(session),
+                )
+            except UndoConflictError as exc:
+                raise ValueError("undo_conflict") from exc
+
+        execution = write_coordinator.execute_compensation(
+            parent_operation_id=parent_operation_id,
+            conversation_id=conversation_id,
+            compensation_kind=compensation_kind,
+            executor=execute_undo,
+        )
+        if isinstance(execution, OperationUnknown):
+            return error_response(
+                409 if execution.code.endswith("conflict") else 503,
+                execution.code,
+                code=execution.code,
+            )
+        if isinstance(execution, OperationFailed):
+            return error_response(
+                409,
+                execution.payload.visible_result,
+                code=execution.payload.failure_code or "undo_conflict",
+            )
+        message = execution.payload.visible_result
+        if not isinstance(execution, OperationReplay):
+            chat.append_message(conversation_id, "assistant", content=message)
         return JSONResponse(
-            {"type": "message", "conversation_id": conversation_id, "message": message}
+            {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": message,
+                "operation_id": execution.operation_id,
+                "replayed": isinstance(execution, OperationReplay),
+            }
         )
 
     @app.post("/api/chat/confirm/stream")
@@ -6138,9 +6526,6 @@ def create_app(
             return conversation_id
         conversation = chat.get_conversation(conversation_id)
         if conversation is None:
-            return error_response(404, "conversation not found")
-        stored = chat.list_messages(conversation_id)
-        if not stored:
             return error_response(404, "conversation not found")
         run = SseRun(
             run_id=str(uuid4()),
@@ -6170,6 +6555,51 @@ def create_app(
                 stale_stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers()
             )
 
+        requested_operation_id = payload.get("operation_id")
+        if isinstance(requested_operation_id, str) and write_operations is not None:
+            terminal = write_operations.get(requested_operation_id)
+            if terminal is not None and terminal.status != "proposed":
+                if terminal.conversation_id != conversation_id or confirmation_token is None:
+                    return error_response(409, "operation identity conflict", code="operation_identity_conflict")
+                synthetic = PendingAction(
+                    tool_call_id=terminal.tool_call_id or "",
+                    tool_name=terminal.tool_name,
+                    args="",
+                    human=terminal.tool_name,
+                    operation_id=terminal.id,
+                )
+                try:
+                    fingerprint = _ledger_confirmation_request_fingerprint(
+                        write_operations,
+                        synthetic,
+                        payload,
+                        approved=approved,
+                        edited_args=edited_args,
+                        rejection_feedback=rejection_feedback,
+                        confirmation_token=confirmation_token,
+                    )
+                    replay_response = _operation_replay_response(
+                        conversation_id,
+                        _converged_operation_replay(
+                            write_operations, terminal, fingerprint
+                        ),
+                        chat,
+                        applications,
+                    )
+                    return _deterministic_pilot_confirmation_stream_response(
+                        conversation, replay_response, run=run
+                    )
+                except WriteOperationError as exc:
+                    return error_response(
+                        _write_operation_error_status(exc),
+                        "无法确认写入结果，请保留原请求后重试。",
+                        code=exc.code,
+                    )
+
+        stored = chat.list_messages(conversation_id)
+        if not stored:
+            return error_response(404, "conversation not found")
+
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
             return stale_response()
@@ -6177,6 +6607,35 @@ def create_app(
             if edited_args is not None or rejection_feedback:
                 return error_response(422, "confirmation_token is required when changing confirmation details")
             confirmation_token = _confirmation_token(pending)
+        if not compare_digest(confirmation_token, _confirmation_token(pending)):
+            return stale_response()
+        if write_operations is None or write_coordinator is None:
+            return error_response(503, "写入账本暂不可用，请保留确认卡后重试。", code="operation_unavailable")
+        try:
+            request_fingerprint = _ledger_confirmation_request_fingerprint(
+                write_operations,
+                pending,
+                payload,
+                approved=approved,
+                edited_args=edited_args,
+                rejection_feedback=rejection_feedback,
+                confirmation_token=confirmation_token,
+            )
+            existing_operation = write_operations.get(pending.operation_id)
+            if existing_operation is not None and existing_operation.status != "proposed":
+                replay_response = _operation_replay_response(
+                    conversation_id,
+                    _converged_operation_replay(
+                        write_operations, existing_operation, request_fingerprint
+                    ),
+                    chat,
+                    applications,
+                )
+                return _deterministic_pilot_confirmation_stream_response(
+                    conversation, replay_response, run=run
+                )
+        except WriteOperationError as exc:
+            return error_response(_write_operation_error_status(exc), "无法确认写入结果。", code=exc.code)
         if pending.tool_name in {
             "save_application_jd_version",
             "create_application_submission_snapshot",
@@ -6201,6 +6660,7 @@ def create_app(
                 approved=approved,
                 edited_args=edited_args,
                 rejection_feedback=rejection_feedback,
+                request_fingerprint=request_fingerprint,
                 on_confirmation_attempt=deterministic_attempt,
                 on_tool_result=deterministic_result,
             )
@@ -6308,10 +6768,7 @@ def create_app(
                         "stale_state",
                         "confirmation_claim_lost",
                     )
-                claim_id = uuid4().hex
-                if not chat.claim_pending_confirmation(conversation_id, pending, claim_id):
-                    return ToolFailure("stale_state", "confirmation_claim_lost")
-                confirmation_claim["id"] = claim_id
+                confirmation_claim["id"] = pending.operation_id
                 _record_journal_approval(
                     confirmation_recorder,
                     confirmation_attempt_id=confirmation_attempt_id,
@@ -6322,6 +6779,25 @@ def create_app(
                 )
                 confirmation_attempted.set()
                 if prepared is None:
+                    rejection = write_coordinator.reject_primary(
+                        operation_id=pending.operation_id,
+                        conversation_id=conversation_id,
+                        tool_call_id=pending.tool_call_id,
+                        tool_name=pending.tool_name,
+                        request_fingerprint=request_fingerprint,
+                        visible_result=_rejection_result(rejection_feedback),
+                    )
+                    if isinstance(rejection, (OperationCommitted, OperationFailed)):
+                        confirmed_outcome["delivery_ownership"] = rejection.ownership
+                        if rejection.ownership is not None:
+                            confirmed_outcome["delivery_heartbeat"] = DeliveryHeartbeat(
+                                write_operations, rejection.ownership
+                            ).start()
+                    if isinstance(rejection, OperationUnknown):
+                        raise WriteOperationError(
+                            rejection.code,
+                            retryable=rejection.retryable,
+                        )
                     return None
                 return ExecutionAuthorization(
                     pending_identity=prepared.pending_identity,
@@ -6329,7 +6805,54 @@ def create_app(
                     tool_call_id=prepared.tool_call_id,
                     tool_name=prepared.spec.name,
                     arguments_digest=prepared.arguments_digest,
+                    operation_id=pending.operation_id,
                 )
+
+        def execute_stream_ledger_operation(
+            prepared: PreparedToolCall[Any, Any],
+            tool_context: ToolExecutionContext,
+            authorization: ExecutionAuthorization,
+        ) -> ToolExecutionRecord[Any, Any]:
+            execution, record = write_coordinator.execute_primary(
+                operation_id=pending.operation_id,
+                conversation_id=conversation_id,
+                prepared=prepared,
+                context=tool_context,
+                authorization=authorization,
+                request_fingerprint=request_fingerprint,
+                undo_seed_builder=lambda _prepared, current_context: (
+                    _undo_seed_for_pending(effective_pending, current_context.applications)
+                ),
+                undo_builder=lambda _prepared, current, transactional_seed: (
+                    _build_write_undo(effective_pending, current, dict(transactional_seed)) or None
+                ),
+            )
+            if isinstance(execution, (OperationCommitted, OperationFailed)):
+                if execution.payload.undo_json:
+                    confirmed_outcome["ledger_undo"] = json.loads(
+                        execution.payload.undo_json
+                    )
+                confirmed_outcome["delivery_ownership"] = execution.ownership
+                if execution.ownership is not None:
+                    confirmed_outcome["delivery_heartbeat"] = DeliveryHeartbeat(
+                        write_operations, execution.ownership
+                    ).start()
+            if record is not None:
+                return record
+            if isinstance(execution, OperationReplay):
+                current = write_operations.get(pending.operation_id)
+                if current is None:
+                    raise WriteOperationError("operation_result_unknown", retryable=True)
+                raise ChatOperationReplay(
+                    _converged_operation_replay(
+                        write_operations, current, request_fingerprint
+                    )
+                )
+            assert isinstance(execution, OperationUnknown)
+            raise WriteOperationError(
+                execution.code,
+                retryable=execution.retryable,
+            )
 
         def stream() -> Any:
             yield emit(
@@ -6360,13 +6883,13 @@ def create_app(
                         auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                         max_iter=DEFAULT_MAX_ITERATIONS,
                         rejection_feedback=rejection_feedback,
-                        checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
                         cancel_check=lambda: confirmation_cancelled.is_set() or cancel_check(),
                         confirmation_result_sink=persist_confirmation_result,
                         confirmation_attempt_sink=start_confirmation_attempt,
                         run_recorder=confirmation_recorder,
+                        delivery_fence=lambda: _confirmation_delivery_fence(confirmed_outcome),
                         tool_context=_model_tool_context(
                             conversation,
                             applications,
@@ -6376,6 +6899,7 @@ def create_app(
                             resumes,
                             jd_analyses,
                             confirmation_recorder,
+                            execute_stream_ledger_operation,
                         ),
                     ),
                     emit,
@@ -6384,10 +6908,12 @@ def create_app(
                 tool_records = turn_result.records
                 tool_failures = turn_result.failures
             except ChatRunCancelled:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
                 cancel_confirmation_result()
                 _finish_journal(confirmation_recorder, "cancelled", "cancelled")
                 return
             except ChatAgentTimedOut:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
                 if confirmed_outcome.get("cas_lost"):
                     _abandon_journal_segment(confirmation_recorder)
                     yield emit(
@@ -6445,7 +6971,41 @@ def create_app(
                     },
                 )
                 return
+            except ChatOperationReplay as exc:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
+                _abandon_journal_segment(confirmation_recorder)
+                replay_response = _operation_replay_response(
+                    conversation_id, exc.replay, chat, applications
+                )
+                if replay_response.get("type") == "confirmation_required":
+                    yield emit(
+                        "confirmation_required",
+                        {"pending_action": replay_response["pending_action"]},
+                    )
+                else:
+                    yield emit(
+                        "assistant_message",
+                        {"message": replay_response.get("message", "")},
+                    )
+                yield emit(
+                    "completed", {"response": replay_response, "persisted": True}
+                )
+                return
+            except WriteOperationError as exc:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
+                _abandon_journal_segment(confirmation_recorder)
+                yield emit(
+                    "error",
+                    {
+                        "code": exc.code,
+                        "message": "无法确认写入结果，请保留原请求后重试。",
+                        "retryable": exc.retryable,
+                        "degraded": False,
+                    },
+                )
+                return
             except PendingActionValidationError as exc:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
                 _abandon_journal_segment(confirmation_recorder)
                 yield emit(
                     "error",
@@ -6458,6 +7018,7 @@ def create_app(
                 )
                 return
             except StalePendingActionError:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
                 _abandon_journal_segment(confirmation_recorder)
                 yield emit(
                     "error",
@@ -6470,6 +7031,7 @@ def create_app(
                 )
                 return
             except Exception as exc:
+                _stop_confirmation_delivery_heartbeat(confirmed_outcome)
                 if confirmed_outcome.get("cas_lost"):
                     _abandon_journal_segment(confirmation_recorder)
                     yield emit(
@@ -6676,7 +7238,12 @@ def create_app(
                 reply = _prepend_write_success(reply, effective_pending, tool_records)
             response = {"type": "message", "conversation_id": conversation_id, "message": reply}
             if undo:
+                if confirmed_outcome.get("undo_operation_id"):
+                    undo["parent_operation_id"] = confirmed_outcome["undo_operation_id"]
                 response["undo"] = undo
+            if confirmed_outcome.get("operation_id"):
+                response["operation_id"] = confirmed_outcome["operation_id"]
+                response["replayed"] = bool(confirmed_outcome.get("replayed"))
             write_status, write_error = (
                 _write_outcome(tool_records, attempted=True, failures=tool_failures) if approved else ("cancelled", "")
             )
@@ -9190,6 +9757,120 @@ def _confirmation_conversation_id(payload: dict[str, Any]) -> int | JSONResponse
     return value
 
 
+def _ledger_confirmation_request_fingerprint(
+    repository: WriteOperationRepository,
+    pending: PendingAction,
+    payload: dict[str, Any],
+    *,
+    approved: bool,
+    edited_args: dict[str, Any] | None,
+    rejection_feedback: str,
+    confirmation_token: str,
+) -> str:
+    operation_id = payload.get("operation_id", pending.operation_id)
+    if not isinstance(operation_id, str):
+        raise WriteOperationError("operation_identity_conflict")
+    try:
+        operation_id = str(UUID(operation_id))
+    except ValueError as exc:
+        raise WriteOperationError("operation_identity_conflict") from exc
+    if not pending.operation_id or operation_id != pending.operation_id:
+        raise WriteOperationError("operation_identity_conflict")
+    operation = repository.get(operation_id)
+    if operation is None:
+        raise WriteOperationError("operation_result_unknown", retryable=True)
+    token_fingerprint = ledger_fingerprint(
+        repository.key,
+        "write-operation-confirmation-token-v1",
+        confirmation_token.encode("ascii"),
+    )
+    if not compare_digest(
+        token_fingerprint, operation.confirmation_token_fingerprint or ""
+    ):
+        raise WriteOperationError("operation_input_conflict")
+    return operation_request_fingerprint(
+        repository.key,
+        operation_id=operation_id,
+        tool_call_id=pending.tool_call_id,
+        approved=approved,
+        edited_args_present="edited_args" in payload,
+        edited_args=cast(Any, edited_args),
+        rejection_feedback_present="rejection_feedback" in payload,
+        rejection_feedback=rejection_feedback,
+        confirmation_token_fingerprint=token_fingerprint,
+        proposal_fingerprint=operation.proposal_fingerprint or "",
+    )
+
+
+def _write_operation_error_status(error: WriteOperationError) -> int:
+    if error.code == "operation_delivery_pending":
+        return 409
+    return 503 if error.retryable else 409
+
+
+def _converged_operation_replay(
+    repository: WriteOperationRepository,
+    operation: Any,
+    request_fingerprint: str,
+) -> OperationReplay:
+    replay = repository.replay(operation, request_fingerprint)
+    if replay.delivery_status != "pending":
+        return replay
+    converged = repository.converge_expired_delivery(operation.id)
+    if isinstance(converged, OperationUnknown):
+        raise WriteOperationError(converged.code, retryable=converged.retryable)
+    refreshed = repository.get(operation.id)
+    if refreshed is None:
+        raise WriteOperationError("operation_result_unknown", retryable=True)
+    return repository.replay(refreshed, request_fingerprint)
+
+
+def _operation_replay_response(
+    conversation_id: int,
+    replay: OperationReplay,
+    chat: ChatRepository | None = None,
+    applications: ApplicationsRepository | None = None,
+) -> dict[str, Any]:
+    if replay.delivery_outcome == "chained_pending":
+        operation = None
+        if chat is not None:
+            operation = chat.get_pending_action(conversation_id)
+        if operation is not None and applications is not None:
+            return {
+                "type": "confirmation_required",
+                "conversation_id": conversation_id,
+                "pending_action": _pending_action_json(operation, applications),
+                "operation_id": replay.operation_id,
+                "replayed": True,
+            }
+    status = replay.payload.status
+    if status == "committed":
+        message = replay.final_message or "操作已完成。"
+        write_status = "success"
+    elif status == "rejected":
+        message = replay.final_message or "已取消本次操作。"
+        write_status = "cancelled"
+    else:
+        message = replay.final_message or replay.payload.visible_result
+        write_status = "failed"
+    response: dict[str, Any] = {
+        "type": "message",
+        "conversation_id": conversation_id,
+        "message": message,
+        "write_status": write_status,
+        "operation_id": replay.operation_id,
+        "replayed": True,
+    }
+    if replay.payload.undo_json is not None:
+        response["undo"] = {
+            **json.loads(replay.payload.undo_json),
+            "parent_operation_id": replay.operation_id,
+        }
+    if status == "failed":
+        response["write_error"] = replay.payload.failure_code or "operation_failed"
+    return response
+
+
 def _run_chat_agent_with_timeout(call: Any) -> Any:
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(call)
@@ -9345,10 +10026,6 @@ def _generate_conversation_title(
         )
 
 
-def _agent_checkpoint_path(data_dir: Path) -> Path:
-    return data_dir / "agent_checkpoints.sqlite"
-
-
 def _agent_thread_id(conversation_id: int) -> str:
     return f"conversation:{conversation_id}"
 
@@ -9497,6 +10174,7 @@ def _confirmation_result_recorder(
         tool_message: Message,
         execution_record: ToolExecutionRecord[Any, Any] | None,
     ) -> None:
+        persist_timeout_fallback = False
         with lock:
             if not active:
                 return
@@ -9504,57 +10182,56 @@ def _confirmation_result_recorder(
             undo = (
                 _build_write_undo(effective_pending, execution_record, undo_seed) if succeeded else {}
             )
+            ledger_undo = outcome.get("ledger_undo")
+            if succeeded and isinstance(ledger_undo, dict):
+                undo = dict(ledger_undo)
             # Rejection never attempts a handler, so it preserves the previous undo. Every
             # approved sink call follows a handler attempt; errors are mutation-ambiguous and
             # therefore clear the previous undo fail-closed.
             undo_update = undo if approved else None
-            terminal_message = _confirmation_fallback_message(approved, succeeded) if timed_out else ""
             claim_id = confirmation_claim_id()
             if claim_id is None:
                 outcome["cas_lost"] = True
                 raise StalePendingActionError(
                     "stale pending action: confirmation result has no successful claim"
                 )
-            if terminal_message:
-                continuation_generation = repo.resolve_pending_confirmation(
-                    conversation_id,
-                    expected_pending,
-                    tool_message,
-                    undo_update,
-                    claim_id=claim_id,
-                    terminal_assistant_content=terminal_message,
-                )
-            else:
-                continuation_generation = repo.resolve_pending_confirmation(
-                    conversation_id,
-                    expected_pending,
-                    tool_message,
-                    undo_update,
-                    claim_id=claim_id,
-                )
-            if continuation_generation is None:
+            current = repo.get_conversation(conversation_id)
+            if current is None:
                 outcome["cas_lost"] = True
                 raise StalePendingActionError(
-                    "stale pending action: confirmation result compare-and-set failed"
+                    "stale pending action: confirmation conversation disappeared"
                 )
             response_undo = undo if approved else repo.get_last_write_undo(conversation_id) or {}
+            undo_operation_id = (
+                expected_pending.operation_id
+                if approved and succeeded and undo
+                else repo.get_last_write_operation_id(conversation_id)
+                if not approved and response_undo
+                else ""
+            )
             outcome.update(
                 {
                     "pending": effective_pending,
+                    "expected_pending": expected_pending,
                     "approved": approved,
                     "succeeded": succeeded,
                     "tool_call_id": tool_message.tool_call_id,
+                    "operation_id": expected_pending.operation_id,
+                    "undo_operation_id": undo_operation_id,
+                    "replayed": bool(execution_record and execution_record.replayed),
                     "undo": response_undo,
-                    "continuation_generation": continuation_generation,
+                    "undo_update": undo_update,
+                    "origin_tool_message": tool_message,
+                    "confirmation_claim_id": claim_id,
+                    "continuation_generation": current.updated_at,
                 }
             )
-            if terminal_message:
-                fallback_response = _confirmation_fallback_response(
-                    conversation_id,
-                    terminal_message,
-                    response_undo,
-                )
-                outcome["fallback_persisted"] = True
+            persist_timeout_fallback = timed_out
+        if persist_timeout_fallback:
+            fallback_response = _persist_confirmation_fallback(
+                repo, conversation_id, outcome
+            )
+            if fallback_response is not None:
                 outcome["fallback_response"] = fallback_response
 
     def cancel() -> None:
@@ -9609,9 +10286,16 @@ def _persist_confirmation_continuation(
         _persistable_ai_messages(messages),
         pending=pending,
         clarification=clarification,
+        delivery_ownership=outcome.get("delivery_ownership"),
+        expected_pending=outcome.get("expected_pending"),
+        claim_id=outcome.get("confirmation_claim_id"),
+        origin_message=outcome.get("origin_tool_message"),
+        undo=outcome.get("undo_update"),
     )
     if next_generation is None:
+        _stop_confirmation_delivery_heartbeat(outcome)
         return False
+    _stop_confirmation_delivery_heartbeat(outcome)
     outcome["continuation_generation"] = next_generation
     return True
 
@@ -9634,18 +10318,41 @@ def _persist_confirmation_fallback(
         conversation_id,
         generation,
         _persistable_ai_messages([Message(role="assistant", content=message)]),
+        delivery_ownership=outcome.get("delivery_ownership"),
+        delivery_failure_code="operation_delivery_failed",
+        expected_pending=outcome.get("expected_pending"),
+        claim_id=outcome.get("confirmation_claim_id"),
+        origin_message=outcome.get("origin_tool_message"),
+        undo=outcome.get("undo_update"),
     )
     if next_generation is None:
+        _stop_confirmation_delivery_heartbeat(outcome)
         outcome["cas_lost"] = True
         return None
+    _stop_confirmation_delivery_heartbeat(outcome)
     outcome["continuation_generation"] = next_generation
     outcome["fallback_persisted"] = True
     undo = outcome.get("undo")
+    public_undo = dict(undo) if isinstance(undo, dict) else {}
+    operation_id = outcome.get("undo_operation_id")
+    if public_undo and isinstance(operation_id, str) and operation_id:
+        public_undo["parent_operation_id"] = operation_id
     return _confirmation_fallback_response(
         conversation_id,
         message,
-        undo if isinstance(undo, dict) else {},
+        public_undo,
     )
+
+
+def _confirmation_delivery_fence(outcome: dict[str, Any]) -> bool:
+    heartbeat = outcome.get("delivery_heartbeat")
+    return not isinstance(heartbeat, DeliveryHeartbeat) or heartbeat.fence()
+
+
+def _stop_confirmation_delivery_heartbeat(outcome: dict[str, Any]) -> None:
+    heartbeat = outcome.pop("delivery_heartbeat", None)
+    if isinstance(heartbeat, DeliveryHeartbeat):
+        heartbeat.stop()
 
 
 def _confirmation_fallback_message(approved: bool, succeeded: bool) -> str:
@@ -10057,6 +10764,7 @@ def _conversation_json(
                 tool_name=conversation.pending_tool_name,
                 args=conversation.pending_args,
                 human=conversation.pending_human or conversation.pending_tool_name,
+                operation_id=conversation.pending_operation_id,
             ),
             applications,
             application_jd_versions,
@@ -10075,7 +10783,13 @@ def _conversation_json(
         payload["pending_clarification"]["question"] = conversation.clarification_question
     else:
         payload["pending_clarification"] = None
-    payload["last_write_undo"] = conversation.last_write_undo
+    last_undo = conversation.last_write_undo
+    if last_undo and conversation.last_write_operation_id:
+        last_undo = {
+            **last_undo,
+            "parent_operation_id": conversation.last_write_operation_id,
+        }
+    payload["last_write_undo"] = last_undo
     return payload
 
 
@@ -10108,6 +10822,7 @@ def _pending_action_json(
     args = _safe_tool_args(pending.args)
     payload: dict[str, Any] = {
         "tool_name": pending.tool_name,
+        "operation_id": pending.operation_id,
         "human": pending.human,
         "args": args,
         "confirmation_token": _confirmation_token(pending),

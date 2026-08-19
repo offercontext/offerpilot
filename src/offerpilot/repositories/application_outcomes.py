@@ -10,6 +10,7 @@ from typing import Generic, Literal, TypeVar
 
 from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session, sessionmaker
+from offerpilot.repositories.session_binding import finish_repository_write, repository_session
 
 from offerpilot.models import (
     Application,
@@ -93,8 +94,12 @@ class SubmissionSnapshotView:
 
 
 class ApplicationOutcomesRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "ApplicationOutcomesRepository":
+        return ApplicationOutcomesRepository(self._session_factory, session)
 
     def create_snapshot(
         self, data: SubmissionSnapshotCreate
@@ -111,8 +116,9 @@ class ApplicationOutcomesRepository:
                 "source_kind": data.source_kind,
             }
         )
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
+        with repository_session(self._session_factory, self._session) as session:
+            if self._session is None:
+                session.execute(text("BEGIN IMMEDIATE"))
             existing = session.scalar(
                 select(ApplicationSubmissionSnapshot).where(
                     ApplicationSubmissionSnapshot.application_id == data.application_id,
@@ -167,7 +173,7 @@ class ApplicationOutcomesRepository:
                 submitted_at=_as_naive_utc(data.submitted_at),
             )
             session.add(snapshot)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(snapshot)
             return WriteResult(snapshot, False)
 
@@ -206,8 +212,9 @@ class ApplicationOutcomesRepository:
                 "source_kind": data.source_kind,
             }
         )
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
+        with repository_session(self._session_factory, self._session) as session:
+            if self._session is None:
+                session.execute(text("BEGIN IMMEDIATE"))
             existing = session.scalar(
                 select(ApplicationOutcome).where(
                     ApplicationOutcome.application_id == data.application_id,
@@ -253,7 +260,7 @@ class ApplicationOutcomesRepository:
                 occurred_at=_as_naive_utc(data.occurred_at),
             )
             session.add(outcome)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(outcome)
             return WriteResult(outcome, False)
 

@@ -49,7 +49,7 @@ def init_database(db_path: Path) -> SessionFactory:
     engine = create_engine(
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
-        pool_size=1,
+        pool_size=5,
         max_overflow=0,
     )
 
@@ -64,6 +64,7 @@ def init_database(db_path: Path) -> SessionFactory:
     mock_interview_migration_needed = _prepare_event_bound_mock_interview_migration(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    _ensure_write_operation_ledger_schema(engine)
     _ensure_column(
         engine,
         "conversations",
@@ -1202,6 +1203,263 @@ def _record_migration(engine, version: str, description: str) -> None:  # type: 
             ),
             {"version": version, "description": description},
         )
+
+
+def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Install the additive 0026 control columns and cross-row integrity triggers."""
+
+    _ensure_column(engine, "conversations", "pending_operation_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "conversations", "last_write_operation_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(engine, "chat_messages", "operation_id", "TEXT")
+    _ensure_column(engine, "chat_messages", "delivery_kind", "TEXT")
+    _ensure_column(engine, "chat_messages", "delivery_ordinal", "INTEGER")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_messages_operation_ordinal "
+                "ON chat_messages(operation_id, delivery_ordinal) WHERE operation_id IS NOT NULL"
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_compensation_insert"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_compensation_insert
+                BEFORE INSERT ON write_operations
+                WHEN NEW.operation_role = 'compensation'
+                BEGIN
+                    SELECT CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM write_operations parent
+                        WHERE parent.id = NEW.parent_operation_id
+                          AND parent.operation_role = 'primary'
+                          AND parent.status = 'committed'
+                    ) THEN RAISE(ABORT, 'invalid compensation parent') END;
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_terminal_immutable"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_terminal_immutable
+                BEFORE UPDATE ON write_operations
+                WHEN OLD.status <> 'proposed' AND (
+                    NEW.status <> OLD.status OR
+                    NEW.operation_role IS NOT OLD.operation_role OR
+                    NEW.parent_operation_id IS NOT OLD.parent_operation_id OR
+                    NEW.agent_run_id IS NOT OLD.agent_run_id OR
+                    NEW.tool_call_id IS NOT OLD.tool_call_id OR
+                    NEW.tool_name IS NOT OLD.tool_name OR
+                    NEW.adapter_kind IS NOT OLD.adapter_kind OR
+                    NEW.fingerprint_key_id IS NOT OLD.fingerprint_key_id OR
+                    NEW.proposal_fingerprint IS NOT OLD.proposal_fingerprint OR
+                    NEW.input_fingerprint IS NOT OLD.input_fingerprint OR
+                    NEW.confirmation_token_fingerprint IS NOT OLD.confirmation_token_fingerprint OR
+                    NEW.operation_request_fingerprint IS NOT OLD.operation_request_fingerprint OR
+                    NEW.result_contract IS NOT OLD.result_contract OR
+                    NEW.result_json IS NOT OLD.result_json OR
+                    NEW.visible_result IS NOT OLD.visible_result OR
+                    NEW.transport_json IS NOT OLD.transport_json OR
+                    NEW.undo_json IS NOT OLD.undo_json OR
+                    NEW.terminal_payload_sha256 IS NOT OLD.terminal_payload_sha256 OR
+                    NEW.failure_category IS NOT OLD.failure_category OR
+                    NEW.failure_code IS NOT OLD.failure_code OR
+                    NEW.approved_at IS NOT OLD.approved_at OR
+                    NEW.claimed_at IS NOT OLD.claimed_at OR
+                    NEW.rejected_at IS NOT OLD.rejected_at OR
+                    NEW.committed_at IS NOT OLD.committed_at OR
+                    NEW.failed_at IS NOT OLD.failed_at
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'write operation terminal is immutable');
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_compensation_update"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_compensation_update
+                BEFORE UPDATE OF parent_operation_id, operation_role ON write_operations
+                WHEN NEW.operation_role = 'compensation'
+                BEGIN
+                    SELECT CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM write_operations parent
+                        WHERE parent.id = NEW.parent_operation_id
+                          AND parent.operation_role = 'primary'
+                          AND parent.status = 'committed'
+                    ) THEN RAISE(ABORT, 'invalid compensation parent') END;
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_delivery_generation"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_delivery_generation
+                BEFORE UPDATE ON write_operations
+                WHEN NEW.delivery_generation < OLD.delivery_generation
+                  OR NEW.delivery_generation > OLD.delivery_generation + 1
+                  OR (
+                    NEW.delivery_generation = OLD.delivery_generation + 1
+                    AND OLD.delivery_generation > 0
+                    AND (
+                      OLD.delivery_status <> 'pending'
+                      OR OLD.delivery_lease_expires_at > unixepoch('now')
+                      OR NEW.delivery_status <> 'pending'
+                    )
+                  )
+                  OR (
+                    OLD.status <> 'proposed'
+                    AND NEW.delivery_generation = OLD.delivery_generation
+                    AND NEW.delivery_status = 'pending'
+                    AND NEW.delivery_owner_token_fingerprint IS NOT OLD.delivery_owner_token_fingerprint
+                  )
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid delivery generation');
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_delivery_immutable"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_delivery_immutable
+                BEFORE UPDATE ON write_operations
+                WHEN OLD.delivery_status IN ('completed','failed','not_applicable') AND (
+                    NEW.delivery_status IS NOT OLD.delivery_status OR
+                    NEW.delivery_failure_code IS NOT OLD.delivery_failure_code OR
+                    NEW.delivery_outcome IS NOT OLD.delivery_outcome OR
+                    NEW.delivery_message_count IS NOT OLD.delivery_message_count OR
+                    NEW.delivery_manifest_sha256 IS NOT OLD.delivery_manifest_sha256 OR
+                    NEW.delivery_next_operation_id IS NOT OLD.delivery_next_operation_id OR
+                    NEW.delivery_generation IS NOT OLD.delivery_generation OR
+                    NEW.delivery_owner_token_fingerprint IS NOT OLD.delivery_owner_token_fingerprint OR
+                    NEW.delivery_lease_expires_at IS NOT OLD.delivery_lease_expires_at OR
+                    NEW.delivered_at IS NOT OLD.delivered_at
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'write operation delivery is immutable');
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_chained_delivery"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_chained_delivery
+                BEFORE UPDATE OF delivery_next_operation_id ON write_operations
+                WHEN NEW.delivery_next_operation_id IS NOT NULL
+                BEGIN
+                    SELECT CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM write_operations child
+                        WHERE child.id = NEW.delivery_next_operation_id
+                          AND child.operation_role = 'primary'
+                          AND child.status = 'proposed'
+                          AND child.conversation_id = NEW.conversation_id
+                    ) THEN RAISE(ABORT, 'invalid chained operation') END;
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_chat_message_operation_insert"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_chat_message_operation_insert
+                BEFORE INSERT ON chat_messages
+                BEGIN
+                    SELECT CASE WHEN
+                      (NEW.operation_id IS NULL AND
+                       (NEW.delivery_kind IS NOT NULL OR NEW.delivery_ordinal IS NOT NULL))
+                      OR
+                      (NEW.operation_id IS NOT NULL AND (
+                        NEW.delivery_kind IS NULL OR NEW.delivery_ordinal IS NULL OR
+                        NOT (
+                          (NEW.delivery_kind = 'origin_tool_result'
+                           AND NEW.delivery_ordinal = 0
+                           AND NEW.role = 'tool' AND NEW.tool_call_id <> '')
+                          OR
+                          (NEW.delivery_kind = 'continuation_message'
+                           AND NEW.delivery_ordinal >= 1
+                           AND ((NEW.role = 'tool' AND NEW.tool_call_id <> '')
+                                OR (NEW.role = 'assistant' AND NEW.tool_call_id = '')))
+                        ) OR NOT EXISTS (
+                        SELECT 1 FROM write_operations op
+                        WHERE op.id = NEW.operation_id
+                          AND op.conversation_id = NEW.conversation_id
+                          AND (NEW.delivery_kind <> 'origin_tool_result'
+                               OR op.tool_call_id = NEW.tool_call_id)
+                        )
+                      ))
+                    THEN RAISE(ABORT, 'invalid operation delivery message') END;
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_chat_message_operation_update"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_chat_message_operation_update
+                BEFORE UPDATE OF operation_id, conversation_id, role, content, tool_calls,
+                    tool_call_id, provider_blocks, delivery_kind, delivery_ordinal
+                ON chat_messages
+                WHEN OLD.operation_id IS NOT NULL
+                BEGIN
+                    SELECT RAISE(ABORT, 'operation delivery message is immutable');
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_chat_message_operation_bind"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_chat_message_operation_bind
+                BEFORE UPDATE OF operation_id, conversation_id, role, content, tool_calls,
+                    tool_call_id, provider_blocks, delivery_kind, delivery_ordinal
+                ON chat_messages
+                WHEN OLD.operation_id IS NULL
+                BEGIN
+                    SELECT CASE WHEN
+                      (NEW.operation_id IS NULL AND
+                       (NEW.delivery_kind IS NOT NULL OR NEW.delivery_ordinal IS NOT NULL))
+                      OR
+                      (NEW.operation_id IS NOT NULL AND (
+                        NEW.delivery_kind IS NULL OR NEW.delivery_ordinal IS NULL OR
+                        NOT (
+                          (NEW.delivery_kind = 'origin_tool_result'
+                           AND NEW.delivery_ordinal = 0
+                           AND NEW.role = 'tool' AND NEW.tool_call_id <> '')
+                          OR
+                          (NEW.delivery_kind = 'continuation_message'
+                           AND NEW.delivery_ordinal >= 1
+                           AND ((NEW.role = 'tool' AND NEW.tool_call_id <> '')
+                                OR (NEW.role = 'assistant' AND NEW.tool_call_id = '')))
+                        ) OR NOT EXISTS (
+                          SELECT 1 FROM write_operations op
+                          WHERE op.id = NEW.operation_id
+                            AND op.conversation_id = NEW.conversation_id
+                            AND (NEW.delivery_kind <> 'origin_tool_result'
+                                 OR op.tool_call_id = NEW.tool_call_id)
+                        )
+                      ))
+                    THEN RAISE(ABORT, 'invalid operation delivery message') END;
+                END
+                """
+            )
+        )
+    _record_migration(
+        engine,
+        "0026_write_operation_ledger",
+        "Add durable Agent write operation ledger and fenced delivery identity",
+    )
 
 
 def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped-def]

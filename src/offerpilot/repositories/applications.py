@@ -13,6 +13,7 @@ from offerpilot.application_status import (
     normalize_application_status,
 )
 from offerpilot.models import APPLICATION_FOREIGN_KEY_MODELS, Application
+from offerpilot.repositories.session_binding import finish_repository_write, repository_session
 
 
 @dataclass
@@ -28,8 +29,12 @@ class ApplicationCreate:
 
 
 class ApplicationsRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "ApplicationsRepository":
+        return ApplicationsRepository(self._session_factory, session)
 
     def create(self, data: ApplicationCreate) -> Application:
         now = datetime.now(timezone.utc)
@@ -50,9 +55,9 @@ class ApplicationsRepository:
             updated_at=now,
         )
         mark_first_status_timestamp(app, status, now)
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             session.add(app)
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(app)
             return app
 
@@ -61,18 +66,18 @@ class ApplicationsRepository:
         if status:
             statement = statement.where(Application.status == normalize_application_status(status))
         statement = statement.order_by(Application.applied_at.desc())
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return [_normalize_model_status(item) for item in session.scalars(statement)]
 
     def get(self, app_id: int) -> Optional[Application]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             app = session.get(Application, app_id)
             if app is None or app.deleted_at is not None:
                 return None
             return _normalize_model_status(app)
 
     def update_full(self, app_id: int, data: ApplicationCreate) -> Optional[Application]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             app = session.get(Application, app_id)
             if app is None or app.deleted_at is not None:
                 return None
@@ -98,16 +103,16 @@ class ApplicationsRepository:
             now = datetime.now(timezone.utc)
             mark_first_status_timestamp(app, status, now)
             app.updated_at = now
-            session.commit()
+            finish_repository_write(session, self._session)
             session.refresh(app)
             return app
 
     def delete(self, app_id: int) -> None:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             app = session.get(Application, app_id)
             if app is not None and app.deleted_at is None:
                 app.deleted_at = datetime.now(timezone.utc)
-                session.commit()
+                finish_repository_write(session, self._session)
 
     def delete_if_matches(self, app_id: int, expected: dict[str, Any]) -> bool:
         applied_at = expected.get("applied_at")
@@ -116,7 +121,7 @@ class ApplicationsRepository:
         updated_at = expected.get("updated_at")
         if isinstance(updated_at, str):
             updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             statement = (
                 update(Application)
                 .where(Application.id == app_id)
@@ -136,7 +141,7 @@ class ApplicationsRepository:
                     ~exists().where(dependency_model.application_id == app_id)
                 )
             result = session.execute(statement.values(deleted_at=datetime.now(timezone.utc)))
-            session.commit()
+            finish_repository_write(session, self._session)
             return getattr(result, "rowcount", 0) == 1
 
     def restore_status_if_matches(
@@ -148,7 +153,7 @@ class ApplicationsRepository:
         status: str,
         closed_reason: str,
     ) -> bool:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             result = session.execute(
                 update(Application)
                 .where(Application.id == app_id)
@@ -160,7 +165,7 @@ class ApplicationsRepository:
                     closed_reason=closed_reason,
                 )
             )
-            session.commit()
+            finish_repository_write(session, self._session)
             return getattr(result, "rowcount", 0) == 1
 
     def dashboard(self) -> dict[str, Any]:

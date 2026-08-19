@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TypeVar
 
+from sqlalchemy.orm import Session
+
 from offerpilot.agent_runtime.journal import RunRecorder
 from offerpilot.ai.tool_runtime.contracts import (
     BindingAudit,
@@ -61,6 +63,21 @@ class ToolExecutionContext(TransientToolRuntimeValue):
     resumes: ResumesRepository = field(repr=False)
     jd_analyses: JDAnalysesRepository = field(repr=False)
     run_recorder: RunRecorder = field(repr=False, compare=False)
+    operation_executor: Any = field(default=None, repr=False, compare=False)
+
+    def bind(self, session: Session) -> "ToolExecutionContext":
+        return ToolExecutionContext(
+            capabilities=self.capabilities,
+            current_bindings=self.current_bindings,
+            applications=self.applications.bind(session),
+            events=self.events.bind(session),
+            notes=self.notes.bind(session),
+            offers=self.offers.bind(session),
+            resumes=self.resumes.bind(session),
+            jd_analyses=self.jd_analyses,
+            run_recorder=self.run_recorder,
+            operation_executor=self.operation_executor,
+        )
 
 
 def aggregate_binding(

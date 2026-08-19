@@ -9,6 +9,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql import Select
 
 from offerpilot.models import Application, ApplicationEvent, InterviewNote
+from offerpilot.repositories.session_binding import (
+    finish_repository_write,
+    repository_session,
+    rollback_repository_write,
+)
 
 
 class NoteBindingError(ValueError):
@@ -53,8 +58,12 @@ class NoteUpdate:
 
 
 class NotesRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], session: Session | None = None):
         self._session_factory = session_factory
+        self._session = session
+
+    def bind(self, session: Session) -> "NotesRepository":
+        return NotesRepository(self._session_factory, session)
 
     def create(self, data: NoteCreate) -> InterviewNote:
         note = InterviewNote(
@@ -69,13 +78,13 @@ class NotesRepository:
             difficulty_points=data.difficulty_points,
             mood=data.mood,
         )
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             self._validate_event_binding(session, data.application_id, data.application_event_id)
             session.add(note)
             try:
-                session.commit()
+                finish_repository_write(session, self._session)
             except IntegrityError as exc:
-                session.rollback()
+                rollback_repository_write(session, self._session)
                 if data.application_event_id is not None:
                     raise NoteBindingError(409, "Interview event already has a note") from exc
                 raise
@@ -96,15 +105,15 @@ class NotesRepository:
         if application_id > 0:
             statement = statement.where(InterviewNote.application_id == application_id)
         statement = statement.order_by(InterviewNote.created_at.desc(), InterviewNote.id.desc())
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return list(session.scalars(statement))
 
     def get(self, note_id: int) -> Optional[InterviewNote]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             return cast(Optional[InterviewNote], session.scalar(self._visible_note_statement(note_id)))
 
     def update(self, note_id: int, data: NoteUpdate) -> Optional[InterviewNote]:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             note = session.scalar(self._visible_note_statement(note_id))
             if note is None:
                 return None
@@ -127,9 +136,9 @@ class NotesRepository:
             note.mood = data.mood
             note.application_event_id = event_id
             try:
-                session.commit()
+                finish_repository_write(session, self._session)
             except IntegrityError as exc:
-                session.rollback()
+                rollback_repository_write(session, self._session)
                 if event_id is not None:
                     raise NoteBindingError(409, "Interview event already has a note") from exc
                 raise
@@ -137,11 +146,11 @@ class NotesRepository:
             return note
 
     def delete(self, note_id: int) -> None:
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             note = cast(Optional[InterviewNote], session.scalar(self._visible_note_statement(note_id)))
             if note is not None:
                 session.delete(note)
-                session.commit()
+                finish_repository_write(session, self._session)
 
     def delete_if_matches(self, note_id: int, expected: dict[str, object]) -> bool:
         statement = (
@@ -170,9 +179,9 @@ class NotesRepository:
         statement = statement.where(
             or_(InterviewNote.application_id.is_(None), visible_application)
         )
-        with self._session_factory() as session:
+        with repository_session(self._session_factory, self._session) as session:
             result = session.execute(statement)
-            session.commit()
+            finish_repository_write(session, self._session)
             return getattr(result, "rowcount", 0) == 1
 
     @staticmethod

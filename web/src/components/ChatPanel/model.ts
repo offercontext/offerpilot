@@ -364,12 +364,14 @@ export function confirmationInputForRetry(
   if (input.approved) {
     return {
       approved: true,
+      ...(input.operation_id ? { operation_id: input.operation_id } : {}),
       confirmation_token: input.confirmation_token,
       ...(input.edited_args ? { edited_args: { ...input.edited_args } } : {}),
     };
   }
   return {
     approved: false,
+    ...(input.operation_id ? { operation_id: input.operation_id } : {}),
     confirmation_token: input.confirmation_token,
     ...(input.rejection_feedback !== undefined
       ? { rejection_feedback: input.rejection_feedback }

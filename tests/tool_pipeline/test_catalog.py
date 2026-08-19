@@ -19,6 +19,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolExecutionRecord,
     ToolFailure,
     ToolSpec,
+    WriteContract,
 )
 from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG, MODEL_TOOL_NAMES
 from offerpilot.ai.tool_runtime.legacy import LEGACY_DETERMINISTIC_NAMES
@@ -59,6 +60,7 @@ def _spec(
         decoder=lambda values: dict(values),
         executor=lambda args, context: args,
         kind=cast(Any, kind),
+        write_contract=WriteContract() if kind == "write" else None,
     )
 
 

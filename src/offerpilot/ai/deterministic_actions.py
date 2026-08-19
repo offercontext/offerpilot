@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
 from offerpilot.ai.agent import PendingAction
 
@@ -136,6 +137,7 @@ def build_submission_snapshot_pending_action(
         tool_name="create_application_submission_snapshot",
         args=json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         human="请确认冻结这次实际投递使用的简历、岗位资料和材料。",
+        operation_id=str(uuid4()),
     )
 
 
@@ -161,6 +163,7 @@ def build_outcome_pending_action(
         tool_name="record_application_outcome",
         args=json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         human="请确认记录这次投递进展、原始反馈和下一步行动。",
+        operation_id=str(uuid4()),
     )
 
 
@@ -263,4 +266,5 @@ def build_pilot_pending_action(
         tool_name="save_application_jd_version",
         args=args,
         human="请确认将这份岗位资料保存到当前投递。",
+        operation_id=str(uuid4()),
     )

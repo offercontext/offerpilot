@@ -15,6 +15,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolFailure,
     ToolSpec,
     ToolSuccess,
+    WriteContract,
 )
 from offerpilot.ai.tool_runtime.pipeline import Rejected, execute_prepared, prepare_call
 from offerpilot.ai.types import ToolCall
@@ -87,6 +88,7 @@ def _spec(
         exception_map=exception_map,
         executor=executor or (lambda args, context: args),
         kind=cast(Any, kind),
+        write_contract=WriteContract() if kind == "write" else None,
         mutable_validator=mutable_validator,
         preflight=preflight,
         required_capabilities=required_capabilities

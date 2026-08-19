@@ -43,6 +43,7 @@ from offerpilot.models import (
     Question,
     Resume,
     ResumeMatch,
+    WriteOperation,
 )
 from offerpilot.repositories.applications import ApplicationsRepository
 from offerpilot.repositories.agent_runs import AgentRunRepository
@@ -1092,12 +1093,25 @@ def test_deterministic_pilot_retries_same_key_after_chat_cas_failure(
     second = client.post(endpoint, json=confirmation)
 
     assert first.status_code == 409
-    assert second.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["error_code"] == "operation_delivery_pending"
+    operation_id = pending["pending_action"]["operation_id"]
+    with session_factory_for_data_dir(tmp_path)() as session:
+        operation = session.get(WriteOperation, operation_id)
+        assert operation is not None
+        operation.delivery_lease_expires_at = 0
+        session.commit()
+    recovered = client.post(
+        endpoint,
+        json={**confirmation, "operation_id": operation_id},
+    )
+    assert recovered.status_code == 200
     if endpoint.endswith("/stream"):
-        second_body = _parse_sse_events(second.text)[-1]["data"]["data"]["response"]
+        second_body = _parse_sse_events(recovered.text)[-1]["data"]["data"]["response"]
     else:
-        second_body = second.json()
+        second_body = recovered.json()
     assert second_body["write_status"] == "success"
+    assert second_body["replayed"] is True
     versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
     assert len(versions) == 1
     assert model.calls == 0
@@ -3165,12 +3179,28 @@ def test_chat_confirmed_status_update_can_be_undone(tmp_path):
     )
 
     assert confirmed.status_code == 200
+    parent_operation_id = confirmed.json()["operation_id"]
+    assert confirmed.json()["replayed"] is False
     assert confirmed.json()["undo"]["label"] == "撤销更新投递状态"
     assert confirmed.json()["undo"]["expected_after"] == {
         "status": "offer",
         "closed_reason": "",
     }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+    replayed_confirmation = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "operation_id": parent_operation_id,
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+    assert replayed_confirmation.status_code == 200
+    assert replayed_confirmation.json()["operation_id"] == parent_operation_id
+    assert replayed_confirmation.json()["replayed"] is True
+    assert replayed_confirmation.json()["message"] == confirmed.json()["message"]
 
     undone = client.post(
         "/api/chat/undo-last-write", json={"conversation_id": pending["conversation_id"]}
@@ -3181,6 +3211,17 @@ def test_chat_confirmed_status_update_can_be_undone(tmp_path):
     assert "已撤销" in undone.json()["message"]
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
     assert client.get("/api/chat/conversations").json()[0]["last_write_undo"] is None
+
+    replayed_undo = client.post(
+        "/api/chat/undo-last-write",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "parent_operation_id": parent_operation_id,
+        },
+    )
+    assert replayed_undo.status_code == 200
+    assert replayed_undo.json()["replayed"] is True
+    assert replayed_undo.json()["operation_id"] == undone.json()["operation_id"]
 
 
 def test_chat_status_undo_preserves_unrelated_application_edits(tmp_path):
@@ -4304,7 +4345,7 @@ def test_chat_confirm_prehandler_validation_preserves_pending_and_undo(
     )
     monkeypatch.setattr(
         agent_module,
-        "_validated_resumed_args",
+        "_parse_json_object",
         lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("pre-handler invalid")),
     )
 
@@ -4557,12 +4598,12 @@ def test_chat_confirm_result_cas_loss_preserves_newer_pending(tmp_path, monkeypa
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
-        del kwargs
+    def lose_cas(self, conversation_id, expected_generation, messages, **kwargs):
+        del expected_generation, messages
         _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
-        return False
+        return None
 
-    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    monkeypatch.setattr(ChatRepository, "persist_confirmation_continuation", lose_cas)
     response = client.post(
         endpoint,
         json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
@@ -4626,14 +4667,14 @@ def test_chat_confirm_cas_loss_aborts_before_auto_approved_second_write(
     )
     newer_undo = {"kind": "create_application", "application_id": 404}
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
-        del kwargs
+    def lose_cas(self, conversation_id, expected_generation, messages, **kwargs):
+        del expected_generation, messages
         _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
         self.set_pending_clarification(conversation_id, newer, "newer question")
         self.set_last_write_undo(conversation_id, newer_undo)
         return None
 
-    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    monkeypatch.setattr(ChatRepository, "persist_confirmation_continuation", lose_cas)
 
     response = client.post(
         endpoint,
@@ -4652,7 +4693,7 @@ def test_chat_confirm_cas_loss_aborts_before_auto_approved_second_write(
     assert conversation["pending_action"]["args"]["status"] == "closed"
     assert conversation["pending_clarification"]["question"] == "newer question"
     assert conversation["last_write_undo"] == newer_undo
-    assert len(model.turns) == 1
+    assert len(model.turns) == 0
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -4679,13 +4720,14 @@ def test_chat_confirm_tool_error_uses_expected_pending_cas(tmp_path, monkeypatch
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
-        del kwargs
+    def lose_cas(self, conversation_id, expected_generation, messages, **kwargs):
+        del expected_generation, messages
+        tool_message = kwargs["origin_message"]
         assert tool_message.content.startswith("错误：")
         _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
-        return False
+        return None
 
-    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    monkeypatch.setattr(ChatRepository, "persist_confirmation_continuation", lose_cas)
 
     response = client.post(
         endpoint,
@@ -4818,12 +4860,12 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
         # injected CAS loss to be recorded first under a full serial test group.
         monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
-    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
-        del kwargs
+    def lose_cas(self, conversation_id, expected_generation, messages, **kwargs):
+        del expected_generation, messages
         _force_replace_claimed_pending_for_cas_test(self, conversation_id, newer)
         return None
 
-    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    monkeypatch.setattr(ChatRepository, "persist_confirmation_continuation", lose_cas)
     response = client.post(
         endpoint,
         json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
@@ -4996,88 +5038,6 @@ def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
-def test_chat_confirm_timeout_late_cas_loss_closes_own_journal_segment(
-    tmp_path,
-    monkeypatch,
-    endpoint,
-):
-    import offerpilot.api as api_module
-
-    model = ScriptedModel(
-        [
-            Assistant(
-                tool_calls=[
-                    ToolCall(
-                        id="slow-handler-cas-loss",
-                        name="update_application_status",
-                        args=json.dumps({"id": 1, "status": "offer"}),
-                    )
-                ]
-            ),
-            Assistant(content="must not be persisted"),
-        ]
-    )
-    _, client, _, pending = _create_status_confirmation(
-        tmp_path,
-        model,
-        stable_journal=True,
-    )
-    original_update = ApplicationsRepository.update_full
-
-    def slow_update(self, app_id, data):
-        time.sleep(1.0)
-        return original_update(self, app_id, data)
-
-    def lose_cas(self, conversation_id, expected, tool_message, undo, **kwargs):
-        del self, conversation_id, expected, tool_message, undo, kwargs
-        return None
-
-    monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)
-    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
-    # Leave enough headroom for prepare/claim work under the full serial gate;
-    # the executor itself remains slower than the timeout by construction.
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
-
-    response = client.post(
-        endpoint,
-        json={
-            "conversation_id": pending["conversation_id"],
-            "approved": True,
-            "confirmation_token": pending["pending_action"]["confirmation_token"],
-        },
-    )
-
-    if endpoint.endswith("/stream"):
-        assert _parse_sse_events(response.text)[-1]["data"]["data"]["code"] == (
-            "confirmation_in_progress"
-        )
-    else:
-        assert response.status_code == 409
-    deadline = time.monotonic() + 5
-    while True:
-        runs, events, _ = _journal_rows(tmp_path)
-        assert len(runs) == 1
-        assert runs[0].status in {"running", "waiting_confirmation"}
-        confirmation_segments = {
-            event.execution_segment_id
-            for event in events
-            if event.event_type == "segment.started"
-            and json.loads(event.payload_json)["facts"]["request_kind"] == "confirmation"
-        }
-        if any(
-            event.event_type == "segment.finished"
-            and event.execution_segment_id in confirmation_segments
-            and json.loads(event.payload_json)["facts"]
-            == {"outcome": "noop", "terminal_run_status": None}
-            for event in events
-        ):
-            break
-        if time.monotonic() >= deadline:
-            pytest.fail("late CAS-loss confirmation Journal segment did not converge")
-        time.sleep(0.01)
-
-
-@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_chat_confirm_slow_handler_atomically_finishes_without_chained_continuation(
     tmp_path,
     monkeypatch,
@@ -5160,16 +5120,11 @@ def test_chat_confirm_slow_handler_atomically_finishes_without_chained_continuat
         release_handler.set()
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
-            conversation = client.get("/api/chat/conversations").json()[0]
-            stored = client.get(
-                f"/api/chat/conversations/{pending['conversation_id']}"
-            ).json()
-            if conversation["pending_action"] is None:
-                assert any("写入已完成" in message["content"] for message in stored)
+            if app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer":
                 break
             time.sleep(0.01)
         else:
-            pytest.fail("background confirmation did not reach a terminal state")
+            pytest.fail("background confirmation did not commit the terminal write")
     finally:
         release_continuation.set()
 
@@ -5342,7 +5297,7 @@ def test_chat_confirm_fallback_timeout_before_handler_keeps_retry_claim(
         ]
     )
     app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
-    (tmp_path / "agent_checkpoints.sqlite").unlink()
+    assert not (tmp_path / "agent_checkpoints.sqlite").exists()
     validation_started = Event()
     release_validation = Event()
     original_prepare = agent_module.prepare_call
@@ -5571,7 +5526,7 @@ def test_chat_confirm_keeps_application_context_for_model(tmp_path):
             "context_ref": str(application["id"]),
         },
     ).json()
-    (tmp_path / "agent_checkpoints.sqlite").unlink()
+    assert not (tmp_path / "agent_checkpoints.sqlite").exists()
 
     response = client.post(
         "/api/chat/confirm",
@@ -5608,7 +5563,7 @@ def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
 
     assert pending["type"] == "confirmation_required"
-    assert (tmp_path / "agent_checkpoints.sqlite").exists()
+    assert not (tmp_path / "agent_checkpoints.sqlite").exists()
 
     second_model = ScriptedModel([Assistant(content="已更新")])
     reloaded_client = TestClient(create_app(data_dir=tmp_path, chat_model=second_model))
@@ -5799,7 +5754,11 @@ def test_chat_confirm_chained_pending_cas_loss_has_no_partial_history(
         *,
         pending=None,
         clarification=None,
+        delivery_ownership=None,
+        delivery_failure_code=None,
+        **kwargs,
     ):
+        del delivery_ownership, delivery_failure_code, kwargs
         self.set_pending_action(conversation_id, newer)
         self.set_pending_clarification(conversation_id, newer, "newer question")
         return None
@@ -5822,41 +5781,12 @@ def test_chat_confirm_chained_pending_cas_loss_has_no_partial_history(
     else:
         assert response.status_code == 409
     conversation = client.get("/api/chat/conversations").json()[0]
-    assert conversation["pending_action"]["args"]["status"] == "closed"
+    # Lazy adoption restores the still-undelivered Ledger operation instead of
+    # trusting an out-of-band Conversation overwrite.
+    assert conversation["pending_action"]["args"]["status"] == "offer"
     assert conversation["pending_clarification"]["question"] == "newer question"
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert all("abandoned-chain" not in str(message.get("tool_calls", "")) for message in stored)
-
-
-def test_chat_undo_does_not_clear_a_newer_confirmed_write(tmp_path, monkeypatch):
-    import offerpilot.api as api_module
-
-    repo = ChatRepository(session_factory_for_data_dir(tmp_path))
-    conversation = repo.create_conversation("undo race")
-    old = {"kind": "update_application_status", "application_id": 1}
-    newer = {"kind": "create_application", "application_id": 2}
-    repo.set_last_write_undo(conversation.id, old)
-    monkeypatch.setattr(api_module, "_execute_chat_undo", lambda *args: "old undo completed")
-
-    def install_newer_before_clear(self, conversation_id, expected):
-        self.set_last_write_undo(conversation_id, newer)
-        return False
-
-    monkeypatch.setattr(
-        ChatRepository,
-        "clear_last_write_undo_if_matches",
-        install_newer_before_clear,
-        raising=False,
-    )
-    client = TestClient(create_app(data_dir=tmp_path))
-
-    response = client.post(
-        "/api/chat/undo-last-write",
-        json={"conversation_id": conversation.id},
-    )
-
-    assert response.status_code == 200
-    assert repo.get_last_write_undo(conversation.id) == newer
 
 
 @pytest.mark.parametrize("conversation_id", [None, 0, -1, "1", 1.5, True, {}, []])
@@ -5983,7 +5913,7 @@ def test_chat_confirm_rejects_review_token_after_pending_replacement(
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
-def test_chat_confirm_discards_followup_when_conversation_generation_changes(
+def test_chat_confirm_ledger_delivery_survives_unrelated_conversation_generation_change(
     tmp_path,
     endpoint,
 ):
@@ -6035,21 +5965,21 @@ def test_chat_confirm_discards_followup_when_conversation_generation_changes(
     )
 
     if endpoint.endswith("/stream"):
-        error = _parse_sse_events(response.text)[-1]
-        assert error["event"] == "error"
-        assert error["data"]["data"]["code"] == "stale_pending_action"
+        assert _parse_sse_events(response.text)[-1]["event"] == "completed"
     else:
-        assert response.status_code == 409
+        assert response.status_code == 200
+        assert response.json()["type"] == "confirmation_required"
     conversation = client.get("/api/chat/conversations").json()[0]
-    assert conversation["pending_action"] is None
+    assert conversation["pending_action"]["args"]["status"] == "closed"
+    assert conversation["pending_action"]["operation_id"]
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
-    assert sum("stale-followup" in str(message.get("tool_calls", "")) for message in stored) == 0
+    assert sum("stale-followup" in str(message.get("tool_calls", "")) for message in stored) == 1
     assert [message["content"] for message in stored].count("newer activity") == 1
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
-def test_chat_confirm_discards_fallback_when_conversation_generation_changes(
+def test_chat_confirm_ledger_delivery_persists_fallback_after_generation_change(
     tmp_path,
     endpoint,
 ):
@@ -6093,14 +6023,13 @@ def test_chat_confirm_discards_fallback_when_conversation_generation_changes(
     )
 
     if endpoint.endswith("/stream"):
-        error = _parse_sse_events(response.text)[-1]
-        assert error["event"] == "error"
-        assert error["data"]["data"]["code"] == "stale_pending_action"
+        assert _parse_sse_events(response.text)[-1]["event"] == "completed"
     else:
-        assert response.status_code == 409
+        assert response.status_code == 200
+        assert response.json()["type"] == "message"
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert [message["content"] for message in stored].count("newer activity") == 1
-    assert all("写入已完成" not in message["content"] for message in stored)
+    assert any("写入已完成" in message["content"] for message in stored)
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 

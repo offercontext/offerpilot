@@ -45,12 +45,14 @@ export class ChatStreamError extends Error {
 export type ConfirmationInput =
   | {
       approved: true;
+      operation_id?: string;
       confirmation_token: string;
       edited_args?: Record<string, unknown>;
       rejection_feedback?: never;
     }
   | {
       approved: false;
+      operation_id?: string;
       confirmation_token: string;
       rejection_feedback?: string;
       edited_args?: never;
@@ -103,11 +105,15 @@ export async function confirmAction(
 
 export async function undoLastWrite(
   conversationId: number,
+  parentOperationId?: string,
   options?: ChatRequestOptions,
 ): Promise<Extract<ChatResponse, { type: 'message' }>> {
   const { data } = await http.post<Extract<ChatResponse, { type: 'message' }>>(
     '/chat/undo-last-write',
-    { conversation_id: conversationId },
+    {
+      conversation_id: conversationId,
+      ...(parentOperationId ? { parent_operation_id: parentOperationId } : {}),
+    },
     { signal: options?.signal },
   );
   return data;

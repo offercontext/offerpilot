@@ -28,6 +28,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     ToolExceptionMapping,
     ToolFailure,
     ToolSpec,
+    WriteContract,
 )
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.agent_runtime.events import ContextManifestInput
@@ -169,6 +170,7 @@ def _test_runtime(tools: _ToolSet) -> tuple[ToolCatalog, ToolExecutionContext]:
                 exception_map=(ToolExceptionMapping(Exception, "internal_error", "test_handler_error", str),),
                 success_renderer=lambda result: str(result),
                 confirmation_description=confirmation_description,
+                write_contract=WriteContract() if is_write else None,
             )
         )
     catalog = ToolCatalog(specs, expected_names=names)
@@ -664,6 +666,7 @@ def test_in_memory_checkpoint_executes_effective_args():
     ("stale_tool_call_id", "stale_tool_name"),
     [("other-call", "update_application_status"), ("w1", "other_write_tool")],
 )
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event(
     stale_tool_call_id, stale_tool_name
 ):
@@ -734,6 +737,7 @@ def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event
     )
 
 
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
     calls = []
     events = []
@@ -894,6 +898,7 @@ def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
     assert new_pending is None
 
 
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_missing_resume_identity_preserves_checkpoint(monkeypatch):
     calls = []
     registry = _editable_tools(calls)
@@ -1135,6 +1140,7 @@ def test_missing_checkpoint_fallback_executes_effective_args():
     assert new_pending is None
 
 
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_concurrent_sqlite_confirmations_execute_handler_at_most_once(tmp_path):
     calls = []
     calls_lock = Lock()
@@ -1397,6 +1403,7 @@ def test_fallback_duplicate_argument_key_remains_retryable_without_consuming_cla
     assert outcomes == []
 
 
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_checkpoint_prehandler_validation_failure_keeps_interrupt_retryable(
     tmp_path,
     monkeypatch,
@@ -1740,6 +1747,7 @@ def test_empty_rejection_feedback_keeps_generic_rejection_message():
     assert added[0].content == "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
 
 
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path):
     calls = []
     outcomes = []
@@ -1820,11 +1828,7 @@ def test_confirmation_result_sink_records_approved_tool_error():
     assert record is not None
 
 
-@pytest.mark.parametrize("use_checkpoint", [False, True])
-def test_confirmation_attempt_sink_runs_immediately_before_handler(
-    tmp_path,
-    use_checkpoint,
-):
+def test_confirmation_attempt_sink_runs_immediately_before_handler():
     attempts = []
     calls = []
     pending = _pending()
@@ -1836,27 +1840,7 @@ def test_confirmation_attempt_sink_runs_immediately_before_handler(
 
     registry = _editable_tools()
     registry = registry.replace(pending.tool_name, executor=handler)
-    checkpoint_path = tmp_path / "attempt.sqlite" if use_checkpoint else None
     model = ScriptedModel([Assistant(content="done")])
-    if use_checkpoint:
-        model = ScriptedModel(
-            [
-                Assistant(
-                    tool_calls=[
-                        ToolCall(id=pending.tool_call_id, name=pending.tool_name, args=pending.args)
-                    ]
-                ),
-                Assistant(content="done"),
-            ]
-        )
-        _, _, pending = run_turn(
-            model,
-            registry,
-            [],
-            auto_approve=False,
-            checkpoint_path=checkpoint_path,
-            thread_id="conversation:attempt",
-        )
 
     def claim(action, prepared):
         attempts.append(action.tool_call_id)
@@ -1876,8 +1860,6 @@ def test_confirmation_attempt_sink_runs_immediately_before_handler(
         pending,
         approved=True,
         auto_approve=False,
-        checkpoint_path=checkpoint_path,
-        thread_id="conversation:attempt",
         confirmation_attempt_sink=claim,
     )
 
@@ -2596,6 +2578,7 @@ def test_event_sink_emits_tool_events_when_confirm_resumes_without_checkpoint():
     assert events[1]["data"]["status"] == "success"
 
 
+@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
 def test_langgraph_runner_resumes_pending_write_from_sqlite_checkpoint(tmp_path):
     calls = []
     registry = _tools(

@@ -169,6 +169,22 @@ def execute_prepared(
                 prepared,
                 ToolFailure("stale_state", "authorization_mismatch"),
             )
+        if context.operation_executor is not None:
+            record = cast(
+                ToolExecutionRecord[Any, Any],
+                context.operation_executor(prepared, context, authorization),
+            )
+            if record.replayed or not record.execution_started:
+                return record
+            started_recorded = project_tool_started(context.run_recorder, prepared)
+            _stage(stage_sink, "tool.started")
+            project_tool_terminal(
+                context.run_recorder,
+                record,
+                started_recorded=started_recorded,
+                visible_result=render_compatibility(prepared.spec, record.outcome),
+            )
+            return record
 
     started_recorded = project_tool_started(context.run_recorder, prepared)
     _stage(stage_sink, "tool.started")
