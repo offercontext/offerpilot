@@ -1,104 +1,77 @@
 # OfferPilot Write Operation Ledger Phase 3 Code Review
 
-## Re-review decision
+## Final readiness decision
 
-**Not ready for release.** No P0 finding was identified. The latest implementation closes P1-01 and P1-02 and all original P2-01..05 findings, but P1-03, P1-04, and P1-05 remain only partially fixed. This review also found a new P1-06 delivery-recovery failure and two P2 gaps. The open P1 items affect upgrade integrity, authoritative response delivery, transaction atomicity, and takeover after conversation deletion.
+**Not ready for release.** No P0 was found, and the previously open P1-03, P1-04, P1-05, and P1-06 findings are closed at the normal valid-data/runtime paths. P2-06 is also closed. The re-review found one new P1 migration-atomicity defect and one new P2 migration-schema regression; P2-07 remains open because the required 12 typed + 3 legacy + 4 compensation acceptance matrix is still not executable coverage.
 
-There are therefore four open P1 findings (P1-03, P1-04, P1-05, P1-06), two new P2 findings, and no P0 findings. Phase 3 should not be accepted until the open P1 behavior is corrected and covered by focused regression tests.
+Open at this HEAD: **P1-07, P2-07, and P2-08; no P0**. The migration integrity failure must be fixed before acceptance. The P2 coverage/index items should also be fixed before calling the Phase 3 gate green.
 
 ## Reviewed scope and method
 
 - Fixed baseline: `5e560580e86da7d1eb272e0df9d3d13304717499`.
-- Original implementation under review: `3b9e964ddf917cf79859fb31161744b84985b3db`.
-- Re-review implementation HEAD: `11ec862` (`fix: AI harden write operation ledger acceptance`).
-- Previous review report: `53b78c4` (`docs: AI add phase3 ledger code review`).
-- Compared the current diff and behavior with `docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md` and `docs/superpowers/plans/2026-08-19-write-operation-ledger.md`.
-- Inspected the Ledger coordinator/repository, Chat repository, domain bindings, migration/schema, API and SSE confirmation paths, Agent runner, tool pipeline, Journal, models, and focused tests. A read-only 0025-shaped migration fixture was also exercised. The full long release gate was not run.
-- The worktree was clean before this report-only update. No product source was modified by this review.
+- Implementation HEAD: `4cb9cca` (`fix: AI close ledger delivery review gaps`).
+- Included migration compatibility commit: `5d9b88a` (`fix: AI support legacy chat ledger migration`).
+- Prior review update: `6c55fce`.
+- Compared the current source/tests with `docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md` and `docs/superpowers/plans/2026-08-19-write-operation-ledger.md`.
+- Inspected the Ledger coordinator/repository, API/SSE confirmation paths, Journal boundary, models, SQLite migration, and focused tests. Reproduced both a valid old-schema upgrade and a malformed orphan-row upgrade with temporary databases. No product source was changed by this review; only this report is updated.
+- The full long gate was intentionally not run because the parent task owns it.
 
-Severity: P1 blocks release because behavior can violate a required Phase 3 guarantee. P2 is a material integrity, security, contract, or acceptance gap. P3 is lower-risk hardening or cleanup.
+Severity: P1 blocks release because behavior can violate a required Phase 3 guarantee. P2 is a material integrity, performance, contract, or acceptance gap.
 
-## Original findings: resolution evidence
-
-### P1-01 — Delivery heartbeat hard stop
-
-**Resolved.** `src/offerpilot/ai/write_operations.py:95-154` now loops until the stop event, fencing, or an exception; it no longer uses a fixed monotonic deadline. `tests/test_write_operations.py:124-150` verifies repeated renewals (`[1, 2, 3]`) while the owner remains active. This closes the prior 120-second cutoff and satisfies the scoped-heartbeat lifecycle requirement.
-
-### P1-02 — Concurrent first-use Ledger-key creation
-
-**Resolved for the identified race.** `src/offerpilot/ai/write_operations.py:207-258` rechecks both the key file and operation count after acquiring the O_EXCL lock (`:229-234`) before generating a key. `tests/test_write_operations.py:102-121` simulates another writer creating the key immediately after lock acquisition and verifies the existing seed key is retained. The original post-lock overwrite race is closed.
+## Previous open findings: resolution evidence
 
 ### P1-03 — 0025 upgrade ChatMessage constraints/FK
 
-**Partially resolved; P1 remains open.** The migration now adds columns, backfills compensation digests, rejects invalid legacy delivery rows, installs the operation/ordinal unique index, and installs cross-row insert/update triggers (`src/offerpilot/db.py:1195-1253` and `:1255-1462`). This improves operational validation.
+**Resolved for a valid 0025-shaped database.** The migration now adds legacy columns and calls the real table rebuild at `src/offerpilot/db.py:1198-1208`. `_rebuild_chat_messages_for_write_operation_integrity()` creates both delivery CHECK constraints and the conversation/operation foreign keys at `src/offerpilot/db.py:1586-1642`, copies legacy rows, and restores the table at `:1645-1659`. `tests/test_schema_compatibility.py:246-280` now initializes twice and checks the table SQL and operation FK.
 
-However, `_ensure_write_operation_ledger_schema()` still only calls `_ensure_column()` for an existing `chat_messages` table (`src/offerpilot/db.py:1198-1203`). It does not rebuild or otherwise add the model-defined ChatMessage CHECK constraints and `write_operations` foreign key. A read-only fixture with an old 0025-shaped `chat_messages` table was initialized at HEAD; `PRAGMA foreign_key_list(chat_messages)` returned `[]`, and the table had no delivery CHECK constraints, while the new triggers were present. Fresh `create_all()` and upgrade behavior therefore remain different. The design requires fresh and 0025-upgrade integrity parity (spec lines 1008-1019 and 1061-1074); add the safe SQLite rebuild/equivalent constraints and an upgrade-shape test.
+A read-only old-schema fixture initialized twice at this HEAD reported both CHECK names and the operation FK. The original deployment-dependent integrity gap is closed. The malformed-data failure mode found below is tracked separately as P1-07.
 
-### P1-04 — Authoritative tool-result event ordering and operation identity
+### P1-04 — Authoritative fallback event ordering and operation identity
 
-**Partially resolved; P1 remains open.** The normal confirmation flow now defers the origin `tool_result` in `src/offerpilot/api.py:7027-7047`, releases it after the continuation/final delivery persistence at `:7332`, `:7379`, and `:7447`, and attaches the confirmed operation id. `tests/test_chat_api.py:5915-5986` covers sync/stream delivery under an unrelated conversation-generation change and verifies one origin event, the operation id, and ordering before completion.
+**Resolved.** The SSE path buffers the pending origin `tool_result` at `src/offerpilot/api.py:7027-7047`. Normal continuation/final delivery releases it only after persistence at `:7334`, `:7381`, and `:7449`; timeout and ordinary-exception fallback now release it at `:7126-7131` and `:7239-7244`. `_confirmation_fallback_response()` includes `operation_id` and `replayed` at `src/offerpilot/api.py:10840-10857`, and `_persist_confirmation_fallback()` supplies the pending operation id at `:10810-10815`.
 
-The fallback/error paths still bypass that release and do not return the operation id. In the SSE timeout fallback, `src/offerpilot/api.py:7108-7131` emits `assistant_message` and `completed` and returns; the generic SSE fallback does the same at `:7224-7243`. The sync timeout and generic fallback return the bare fallback at `:6424-6436` and `:6469-6477`. `_confirmation_fallback_response()` at `src/offerpilot/api.py:10836-10848` contains no `operation_id` or replay marker. The authoritative deferred origin event can therefore be withheld on a successful fallback, and clients cannot correlate the fallback response to the Ledger operation as required by spec §19.2. Add fallback sync/SSE tests and release the buffered origin event (or provide the same durable replay identity) on every successful delivery outcome.
+The sync and SSE provider-error/fallback tests now assert the response operation id and exactly one origin event with the same id (`tests/test_chat_api.py:4768-4777` and `:6031-6051`). Cancellation/stale/error paths intentionally do not claim a successful authoritative delivery. The prior successful-fallback ordering/identity defect is closed.
 
-### P1-05 — Journal/render/projector transaction boundary
+### P1-05 — Journal draft transaction boundary and terminal renderer fallback
 
-**Partially resolved; P1 remains open.** The coordinator now records the started projection through the caller Session/SAVEPOINT before executor work (`src/offerpilot/ai/write_operations.py:896-1058`, especially `:964-967`), persists visible/transport representations, and carries `journal_started_recorded` into the pipeline. The agent also prefers persisted visible/transport values (`src/offerpilot/ai/agent.py:697-703` and `:776-797`). This closes the prior fully post-commit started-projection path for the normal non-empty result.
+**Resolved for the Ledger write path.** `prepare_call()` prepares the `tool.started` draft before coordinator entry (`src/offerpilot/ai/tool_runtime/pipeline.py:119-135`). The coordinator inserts that prebuilt draft through a SAVEPOINT at `src/offerpilot/ai/write_operations.py:967-971`; `SafeRunRecorder.append_prepared_event_bound()` only inserts the supplied draft at `src/offerpilot/agent_runtime/journal.py:354-371`, and `AgentRunRepository.append_event_bound()` no longer canonicalizes/recomputes it (`src/offerpilot/repositories/agent_runs.py:346-357`). Thus canonical JSON, digest, dedupe, and key-domain preparation occur outside the business transaction.
 
-The required prepared-draft boundary is still violated. `src/offerpilot/agent_runtime/journal.py:354-366` calls `_event_preparer()` inside the coordinator-owned transaction, and `src/offerpilot/repositories/agent_runs.py:346-358` revalidates the draft. `validate_event_draft()` rebuilds the event through `prepare_event()` (`src/offerpilot/agent_runtime/events.py:799-830`), which performs canonicalization, digest, dedupe, and fingerprint work. The design requires the EventDraft/key/dedupe identity to be prepared before entering the business transaction and only the prebuilt draft to be inserted inside it (spec lines 613-655). In addition, `src/offerpilot/ai/tool_runtime/pipeline.py:180-187` and `src/offerpilot/ai/agent.py:697-703` retain `or render_compatibility(...)` fallbacks, so an empty/missing persisted value can still cause a post-commit renderer path. Move all preparation outside the transaction and make replay/terminal delivery consume an explicitly persisted representation without fallback recomputation; add a SAVEPOINT-failure and replay-no-render test.
+Terminal result/transport projections are built and persisted before terminal commit (`src/offerpilot/ai/write_operations.py:993-1018`). The Ledger executor path now requires the persisted visible result and passes it to the post-commit Journal projector without `render_compatibility()` fallback (`src/offerpilot/ai/tool_runtime/pipeline.py:178-193`). Agent response/event emission likewise requires persisted terminal fields (`src/offerpilot/ai/agent.py:697-706` and `:790-804`). The remaining renderer calls in the generic non-Ledger read/failure pipeline are outside this Ledger terminal path. The prior post-commit recompute and in-transaction draft-preparation defects are closed.
 
-### P2-01 — `ChatRepository.bind()` contract
+### P1-06 — Conversation deletion during expired delivery takeover
 
-**Resolved.** `src/offerpilot/repositories/chat.py:34-55` adds `_operation_session()`, and operation proposal, resolution, replacement, and continuation helpers use the caller Session without committing or rolling back when bound (`:271-324`, `:382-480`, `:482-743`). `tests/test_write_operations.py:166-187` persists through a bound repository, rolls back the caller transaction, and verifies no public state remains. The original bypass is closed.
+**Resolved as a controlled unknown outcome.** `converge_expired_delivery()` now checks for a deleted conversation before constructing ChatMessage rows (`src/offerpilot/ai/write_operations.py:753-766`) and returns non-retryable `operation_delivery_unknown` rather than allowing a NULL `conversation_id` integrity exception. The regression test at `tests/test_write_operations.py:331-341` deletes the conversation, expires the lease, and verifies the controlled result. Operation truth remains in the Ledger; no fake delivery is written.
 
-### P2-02 — Compensation parent revalidation
+### P2-06 — Compensation parent terminal digest format
 
-**Resolved.** Proposal records `parent_terminal_payload_sha256` after validating the parent (`src/offerpilot/ai/write_operations.py:1234-1287`). Execution reloads and rechecks parent role, committed status, conversation, undo data, the stored terminal digest, and compensation kind (`:1307-1322`). This closes the originally missing second-phase parent identity checks. A dedicated two-transaction mutation test would still improve evidence, but the identified code defect is fixed.
+**Resolved.** `ck_write_operations_sha256_digests` now validates `parent_terminal_payload_sha256` as a 71-character `sha256:` hex digest (`src/offerpilot/models.py:1713-1723`). Existing-database insert/update backstop triggers apply the same check and require equality with the parent terminal digest (`src/offerpilot/db.py:1264-1277` and `:1326-1339`). The migration compatibility test also checks the resulting operation table SQL at `tests/test_schema_compatibility.py:277-280`.
 
-### P2-03 — Database-enforced transition lifecycle
+## Remaining and new findings
 
-**Resolved.** `src/offerpilot/db.py:1403-1462` installs an insert trigger enforcing proposal → approval/rejection → claim → terminal sequence/state and matching operation status, plus immutable update/delete triggers. `tests/test_write_operations.py:190-215` rejects an out-of-order direct sequence-3 insert. The prior coordinator-only lifecycle guarantee is now backed by the database.
+### P1-07 — ChatMessage rebuild commits before foreign-key validation
 
-### P2-04 — Empty primary `tool_call_id`
+The new rebuild is not atomic on malformed legacy data. It commits the renamed table at `src/offerpilot/db.py:1658-1661`, then runs `PRAGMA foreign_key_check` at `:1661-1664`. If the check finds an orphan, the `RuntimeError` is caught at `:1665-1667`, but the subsequent rollback cannot undo the already completed `raw.commit()`.
 
-**Resolved.** `src/offerpilot/models.py:1636-1641` now requires a non-null, non-empty primary `tool_call_id`, and `tests/test_write_operations.py:218-236` verifies an empty id is rejected. The original operation/message identity mismatch is closed.
+This is reproducible: a temporary old-schema database containing a `chat_messages.conversation_id` orphan raised `RuntimeError: chat message foreign key migration failed` on its first initialization, while the rebuilt table and orphan row remained. A second `init_database()` then succeeded and recorded `0026_write_operation_ledger` even though `PRAGMA foreign_key_check(chat_messages)` still reported the orphan. The upgrade must validate before commit (or quarantine/fail without swapping), and a failed migration must not become a recorded successful migration on retry while invalid rows remain.
 
-### P2-05 — Retired persistent-checkpoint test bodies
+### P2-07 — Required adapter/concurrency acceptance matrix remains incomplete
 
-**Resolved.** The latest diff removes the old skipped/renamed bodies rather than retaining `_retired_*` dead tests. `rg` finds no `_retired` tests or production `SqliteSaver`/checkpoint-path dependency. Remaining checkpoint strings are intentional negative assertions in `tests/test_chat_api.py:5300`, `:5529`, `:5566` and `tests/tool_pipeline/test_checkpoint.py:9-25`. The parent’s concern about retaining dead retired bodies is therefore addressed; no deletion is still requested for this finding.
+The latest changes add useful migration, fallback, and deleted-conversation tests, but the Ledger-specific tests still do not execute the required full matrix from spec §23: all 12 typed adapters, all 3 legacy adapters, all 4 compensation adapters, two-connection executor/takeover/commit-unknown crash points, late-Bundle fencing, replay with zero executor/Provider/read-tool/renderer calls, and full message/manifest tamper cases. `tests/test_write_operations.py:51-341` has manifest/golden identity and focused invariant tests, not one golden execution/replay contract per adapter. This remains an acceptance evidence gap even though the currently targeted tests pass.
 
-### P3-01 — Raw delivery-owner token serialization
+### P2-08 — Legacy ChatMessage rebuild drops the conversation index
 
-**Resolved.** `DeliveryOwnership` at `src/offerpilot/ai/write_operations.py:95-124` now keeps the raw token private and exposes only a fingerprint-based public identity. `tests/test_write_operations.py:153-164` verifies safe public identity, redacted repr, and that `dataclasses.asdict()` is not available. The prior generic serialization leak is closed.
-
-## New findings
-
-### P1-06 — Takeover after conversation deletion can crash delivery recovery
-
-`WriteOperation.conversation_id` is nullable with `ON DELETE SET NULL` (`src/offerpilot/models.py:1823-1825`), and `ChatRepository.delete_conversation()` deletes the conversation (`src/offerpilot/repositories/chat.py:907-915`). That is compatible with the design requirement to retain operation truth after conversation deletion.
-
-During expired-delivery convergence, however, `src/offerpilot/ai/write_operations.py:753-857` unconditionally creates the origin and continuation `ChatMessage` rows with `cast(int, operation.conversation_id)` at `:797-820`, then flushes at `:841`. If the conversation was deleted, this is `None` for a non-null ChatMessage foreign key and raises an integrity error. The handler catches only `OperationalError` at `:858-859`, not the resulting integrity error, so replay/takeover can surface a 500 instead of the specified deterministic delivery-unknown/replay outcome. Add a deleted-conversation takeover test and either preserve a valid delivery context or return a controlled terminal result without attempting ChatMessage insertion.
-
-### P2-06 — Compensation parent digest is required by role identity but not format-validated
-
-The compensation branch requires `parent_terminal_payload_sha256 IS NOT NULL` (`src/offerpilot/models.py:1636-1641`), but `ck_write_operations_sha256_digests` validates only `terminal_payload_sha256` and `delivery_manifest_sha256` (`:1713-1720`). A direct compensation insert can therefore carry a malformed non-null parent digest and survive model-level integrity checks until execution-time comparison. Add the same `sha256:` length/hex constraint to the parent digest and a malformed direct-insert test.
-
-### P2-07 — Required acceptance matrix is still incomplete
-
-The current Ledger-specific unit file has ten test functions (`tests/test_write_operations.py:50-244`), and the checkpoint replacement file has three static tests (`tests/tool_pipeline/test_checkpoint.py:9-25`). The focused suite still lacks executable coverage for the 0025-upgrade FK/CHECK shape, all 12 typed + 3 legacy + 4 compensation behavior contracts, two-connection executor/takeover/commit-unknown crash points, long-owner fencing and late Bundle rejection, replay with zero executor/Provider/read-tool/renderer calls, fallback sync/SSE operation-id ordering, deleted-conversation takeover, and the Journal prebuilt-draft boundary. The retired bodies being deleted is correct cleanup, but it does not replace this required Phase 3 acceptance matrix.
+The model declares `idx_chat_messages_conv` at `src/offerpilot/models.py:1575`, but the replacement table SQL at `src/offerpilot/db.py:1615-1642` does not create it and the post-rename migration at `:1658-1659` does not recreate it. A read-only valid old-schema upgrade followed by `PRAGMA index_list(chat_messages)` returned only `uq_chat_messages_operation_ordinal`; the conversation index was lost. This can turn normal conversation message loads into table scans on upgraded databases. Recreate the model index as part of the rebuild and assert it in the upgrade test.
 
 ## Verification performed
 
-The following focused, read-only checks were run against HEAD `11ec862`:
-
 - `uv run pytest tests/test_write_operations.py tests/tool_pipeline/test_checkpoint.py tests/test_schema_compatibility.py -q` — **29 passed**, 1 warning.
-- `uv run pytest tests/test_chat_api.py -q -k "confirm_stream_executes_pending_write_and_completes or chat_confirm_stream_recovers_committed_write_when_followup_model_fails or chat_confirm_ledger_delivery_persists_fallback_after_generation_change or chat_confirm_rejection_provider_failure_records_cancellation_once or chat_confirm_result_cas_loss_stays_stale_on_followup_failure"` — **10 passed**, 284 deselected, 81 warnings.
-- `uv run ruff check` on the eight changed Ledger/API/schema/Journaling product modules — passed.
-- `uv run mypy` on the same eight modules — passed with no issues.
-- Read-only 0025-shaped migration fixture — triggers installed, but `PRAGMA foreign_key_list(chat_messages)` was empty and the existing table had no delivery CHECK constraints, supporting P1-03.
-- `rg -n "_retired|checkpoint_path|agent_checkpoints.sqlite|SqliteSaver|Command\\(resume" tests src/offerpilot` — no retired bodies or runtime checkpoint dependency; only intentional negative assertions remained.
+- `uv run pytest tests/test_chat_api.py -q -k "confirm_stream_executes_pending_write_and_completes or chat_confirm_stream_recovers_committed_write_when_followup_model_fails or chat_confirm_ledger_delivery_persists_fallback_after_generation_change or chat_confirm_rejection_provider_failure_records_cancellation_once or chat_confirm_result_cas_loss_stays_stale_on_followup_failure or chat_confirm_tool_error_provider_failure_is_durable"` — **12 passed**, 282 deselected, 97 warnings.
+- `uv run ruff check` on the ten changed Ledger/API/schema/Journal modules — passed.
+- `uv run mypy` on those ten modules — passed with no issues.
+- Valid old-schema temporary database, initialized twice — CHECKs and operation FK present; data readable; `0026` initialization idempotent. The same fixture exposed P2-08 because only the operation/ordinal index remained.
+- Malformed orphan-row temporary database — reproduced P1-07: first initialization failed after the rebuild commit, and retry recorded the migration while the FK violation remained.
+- Full long release gate — not run; owned by the parent task.
 
-The full long release gate was intentionally not run.
+## Final decision
 
-## Final readiness
-
-**Not ready.** The latest fixes are meaningful and close P1-01/P1-02, P2-01..P2-05, and P3-01. They do not yet close the upgrade-schema parity gap, all authoritative fallback delivery paths, the prebuilt Journal transaction boundary, or deleted-conversation takeover. No P0 was found, but the four open P1 findings must be resolved before Phase 3 acceptance; P2-06 and P2-07 should be resolved or explicitly accepted with owner and follow-up tests.
+**Not ready.** P1-03, P1-04, P1-05, P1-06, and P2-06 are closed with code/test evidence. P1-07 is a new migration atomicity/integrity blocker; P2-07 leaves the required adapter and concurrency acceptance behavior unproven; P2-08 loses a required production index during valid legacy upgrade. No P0 was found.
