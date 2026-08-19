@@ -172,7 +172,7 @@ prepare / mutable recheck
 - committed/failed/rejected 终态不可变；
 - committed 重试返回首次 `result_json`、可见工具结果、transport projection 和 undo；
 - failed 重试返回首次固定失败分类和可见错误；
-- rejected 重试保持 rejected，executor 永远为零次；
+- rejected 首次 owning request 保持基线的一次 follow-up Provider，executor 为零；rejected 重试保持 terminal，executor/Provider 均为零；
 - 单次请求不会因为 Journal、renderer、transport、undo 或后续 Provider 失败而第二次调用 executor；pre-commit internal failure 会回滚整个事务，后续请求只有看到仍为 proposed 才可重试；
 - 不会在 commit 状态未知时自动进行第二次 executor 调用。
 
@@ -203,9 +203,9 @@ prepare / mutable recheck
 | `proposal_fingerprint` | 原始 proposal 参数的 HMAC-SHA256 |
 | `input_fingerprint` | 批准后 effective arguments 的 HMAC-SHA256；未批准时为空 |
 | `confirmation_token_fingerprint` | confirmation token 的 HMAC-SHA256；不保存 token 原文 |
-| `confirmation_request_fingerprint` | 首次确认请求身份的 HMAC-SHA256；proposed 时为空，首次 decision 时绑定且不可变 |
+| `operation_request_fingerprint` | 当前 Operation role 的首次请求身份 HMAC-SHA256；按封闭 envelope 计算并不可变 |
 | `result_contract` | terminal 结果 codec：`typed_json_v1` / `legacy_string_v1` / `compensation_json_v1` / `rejection_json_v1` |
-| `result_json` | terminal 的 canonical typed/legacy/rejection result envelope |
+| `result_json` | terminal 的 canonical typed/legacy/compensation/rejection result envelope |
 | `visible_result` | 首次 terminal 兼容 ToolMessage/拒绝文本，用于精确回读 |
 | `transport_json` | 首次 terminal transport projection，用于 HTTP/SSE 回读 |
 | `undo_json` | 可选、已验证的现有 undo payload |
@@ -241,7 +241,7 @@ prepare / mutable recheck
 
 `parent_operation_id` 对同表使用 FK；primary 的 `parent_operation_id` 必须为空。SQLite 普通 CHECK 不能跨行证明 parent 状态，因此 compensation 创建时由 Coordinator 在 `BEGIN IMMEDIATE` 锁内权威查询 parent，并由 `BEFORE INSERT` 及相关字段 `BEFORE UPDATE` trigger 再验证 parent 存在、`operation_role=primary` 且 `status=committed`。`agent_run_id` 只作为有界关联引用，不建立跨 fail-open Journal 的外键，否则 Journal 缺失或清理会反向阻塞业务写入。
 
-terminal 字段组合使用数据库 CHECK 固定：rejected 不得有 input/claim/commit/failure 字段，但必须有 confirmation request fingerprint、rejection envelope、摘要和 rejected 时间；committed 必须有 confirmation request fingerprint、input fingerprint、result envelope、摘要和 committed 时间；failed 必须有 confirmation request fingerprint、input fingerprint、固定 failure category/code、result envelope、摘要和 failed 时间。`approved_at/claimed_at` 只允许 committed/failed；首次 terminal envelope 一经写入不可变。所有文本 byte 约束使用 `length(CAST(value AS BLOB))`，不使用字符数近似 UTF-8 大小。
+字段组合使用 role-aware 数据库 CHECK 固定：primary proposed 在 decision 前允许 request fingerprint 为空，必须有 proposal/token fingerprint；compensation proposed 创建时必须已有 request fingerprint，proposal/token fingerprint 为空。rejected 只允许 primary，且不得有 input/claim/commit/failure 字段，但必须有 operation request fingerprint、rejection envelope、摘要和 rejected 时间；committed/failed 都必须有 operation request fingerprint、input fingerprint、result envelope、摘要和对应时间，failed 还必须有固定 failure category/code。`approved_at/claimed_at` 只允许 committed/failed；首次 request fingerprint 与 terminal envelope 一经写入不可变。所有文本 byte 约束使用 `length(CAST(value AS BLOB))`，不使用字符数近似 UTF-8 大小。
 
 全部字段预算和 1 MiB 聚合边界必须在任何 terminal CAS 前验证；执行型 Operation 还必须在领域 SAVEPOINT 释放前完成验证。任一超界都回滚整个 Operation 事务、保持 `proposed`，返回固定 `operation_result_too_large`；不会出现领域已写入但结果无法回读。该错误不自动重试，修复数据或 Contract 后可由后续请求使用原 operation id 重试。
 
@@ -284,7 +284,19 @@ operation_id TEXT NULL
 delivery_kind TEXT NULL  -- tool_result | assistant_result
 ```
 
-两列必须同时为空或同时非空；已有普通消息保持为空。对 `(operation_id, delivery_kind)` 建立非空部分唯一索引，并以 FK 关联 Ledger。一次 Operation 最多持久化一个兼容 ToolMessage 和一个最终 assistant message；Provider answer 与 deterministic fallback 共用 `assistant_result` 身份，不能各插入一条。消息插入、匹配 Pending 清理、last undo 更新以及 `delivery_status` CAS 必须在同一个短事务中完成。
+两列必须同时为空或同时非空；已有普通消息保持为空。数据库 CHECK 固定本地 shape：
+
+```text
+delivery_kind=tool_result
+  → role=tool AND tool_call_id 非空
+
+delivery_kind=assistant_result
+  → role=assistant AND tool_call_id 为空
+```
+
+对 `(operation_id, delivery_kind)` 建立非空部分唯一索引，并以 FK 关联 Ledger。Coordinator 在锁内验证 message conversation 与 Operation conversation 相同；`tool_result.tool_call_id` 必须等于 Operation 的 `tool_call_id`。`BEFORE INSERT` 及相关字段 `BEFORE UPDATE` trigger 对这两个跨行条件提供数据库 backstop。读取/对账时再次验证 role、tool call 和 conversation；错误消息即使占用了唯一槽位也只能返回 `operation_delivery_unknown`，不得覆盖或伪装成成功恢复。
+
+一次 Operation 最多持久化一个兼容 ToolMessage 和一个最终 assistant message；Provider answer 与 deterministic fallback 共用 `assistant_result` 身份，不能各插入一条。消息插入、匹配 Pending 清理、last undo 更新以及 `delivery_status` CAS 必须在同一个短事务中完成。
 
 ## 8. Ledger HMAC Key Domain
 
@@ -322,9 +334,9 @@ assistant ToolCall message
 
 确定性 Legacy Pending Action 同样在服务端创建时获得 operation id。澄清态尚不是可执行 proposal，不提前创建 Operation；澄清完成并真正写入 Pending 时才创建。
 
-### 9.2 绑定字段
+### 9.2 Primary 绑定字段
 
-Operation 同时绑定：
+Primary Operation 同时绑定：
 
 ```text
 conversation_id
@@ -335,7 +347,7 @@ confirmation_token_fingerprint
 agent_run_id（若可用）
 ```
 
-首次确认 decision 再绑定 `confirmation_request_fingerprint`；首次批准/编辑后还绑定 `input_fingerprint`。任一不匹配返回稳定 conflict/stale，executor 为零次。`operation_id` 永远由服务端生成；客户端只能回显，不能选择新的 id 来进入 executor。
+首次确认 decision 再绑定 primary 的 `operation_request_fingerprint`；首次批准/编辑后还绑定 `input_fingerprint`。任一不匹配返回稳定 conflict/stale，executor 为零次。`operation_id` 永远由服务端生成；客户端只能回显，不能选择新的 id 来进入 executor。
 
 ### 9.3 外部传输
 
@@ -356,23 +368,28 @@ Pending Action JSON 增加 `operation_id`。新版前端在同步和 SSE confirm
 请求继续使用现有 `edited_args` 语义，不新增 Provider 参数。首次 decision 在内存中 canonical 编码以下对象并计算 Ledger HMAC：
 
 ```text
+request_kind               -- confirmation_v1
 operation_id
 tool_call_id
 decision                   -- approved | rejected
 edited_args_present        -- 区分字段缺失与字段存在
 edited_args                -- 字段存在时的 canonical JSON，包括 null/空 object；仅作为 HMAC 输入
+rejection_feedback_present -- 区分字段缺失与字段存在
+rejection_feedback         -- 经过现有 API strip/500 字符校验后的字符串；仅作为 HMAC 输入
 confirmation_token_fingerprint
 proposal_fingerprint
 ```
 
-所得 `confirmation_request_fingerprint` 与 decision 在首次确认事务中持久化，绝不保存 `edited_args` 原文。规则固定为：
+该 primary envelope 使用 `request_kind=confirmation_v1` 域分离。所得 `operation_request_fingerprint` 与 decision 在首次确认事务中持久化，绝不单独保存 `edited_args` 或 feedback 原文字段。反馈规范化必须复用现有 API 语义：字段只允许 rejected 请求使用、必须为字符串、执行 `strip()`、上限 500 字符，不做额外 Unicode 规范化；字段缺失与字段存在但规范化为空仍是两个不同请求身份。
+
+规则固定为：
 
 - live Pending 存在时，服务端从可信 proposal args 加 `edited_args` 重建 effective arguments，`input_fingerprint` 只绑定这次执行授权；
 - terminal replay 不再尝试重建 effective arguments，也不使用 `input_fingerprint` 验证请求；
-- terminal replay 只按当前请求重算 confirmation request fingerprint，并与首次值恒定时间比较；
-- decision、编辑字段存在性、编辑内容、token 或 proposal identity 任一不同均返回 `operation_input_conflict`，executor/Provider 为零次。
+- terminal replay 只按当前请求重算 operation request fingerprint，并与首次值恒定时间比较；
+- decision、编辑字段存在性/内容、feedback 字段存在性/规范化内容、token 或 proposal identity 任一不同均返回 `operation_input_conflict`，executor/Provider 为零次。
 
-因此 Pending 清除后无需原始 proposal args 即可验证编辑确认重放。新版客户端必须保留并重发 `operation_id + confirmation_token + decision + 原始 edited_args 字段形态`。旧客户端只在 live Pending 仍存在时兼容；终态响应丢失恢复不承诺支持缺少 operation id 的旧客户端。客户端不得提交完整 Tool args 来替代服务端 proposal，也不能借 replay 改变 effective input。
+因此 Pending 清除后无需原始 proposal args 即可验证批准或拒绝重放。新版客户端必须保留并重发 `operation_id + confirmation_token + decision + 原始 edited_args/rejection_feedback 字段形态`。旧客户端只在 live Pending 仍存在时兼容；终态响应丢失恢复不承诺支持缺少 operation id 的旧客户端。客户端不得提交完整 Tool args 来替代服务端 proposal，也不能借 replay 改变 effective input。
 
 ## 10. Repository 与 Unit of Work 边界
 
@@ -464,41 +481,63 @@ prepare_call()
 → executor 0 次
 ```
 
-### 11.2 拒绝
+### 11.2 Confirmation terminal-first 入口
 
-拒绝仍不重新 `prepare_call()`：
+批准、编辑和拒绝共用同一个入口顺序：
 
 ```text
-load trusted Pending + operation_id
-→ verify existing token / Pending identity
-→ compute confirmation_request_fingerprint(decision=rejected)
+parse safe control fields
+→ resolve operation_id
+→ read Ledger by operation_id
+→ terminal: verify identity + operation_request_fingerprint + terminal payload digest
+            → replay/delivery convergence
+→ proposed: load trusted Pending
+            → prepare/reject/claim/execute
+```
+
+`parse safe control fields` 只处理 conversation id、operation id、token、decision 和 edited/feedback 的字段存在性及有界值，不初始化模型、不解析原始 Tool args、不查询领域 Repository。缺少 operation id 的旧客户端仅在 live Pending 存在时，允许读取 Conversation 的安全 Pending identity 来取得服务端 `pending_operation_id`，随后立刻回到 Ledger-first 路由；Pending 已清除时不提供该兼容。
+
+terminal 分支必须在任何 Pending stale 判断之前执行，且不得读取 `pending_args`、调用 `prepare_call()`、运行 binding/mutable preflight、初始化 Provider/模型或取得领域 Repository。它只验证当前请求 envelope、Operation identity、完整 terminal payload 和 delivery identity。只有 Ledger 返回 proposed 后，才允许读取可信 Pending 和原始参数。
+
+### 11.3 拒绝
+
+拒绝仍不重新 `prepare_call()`，但保持当前基线的 follow-up Provider 语义：
+
+```text
+terminal-first router returns proposed
+→ load trusted Pending + verify token / Pending identity
+→ normalize rejection_feedback with existing API rules
+→ compute operation_request_fingerprint(decision=rejected)
 → BEGIN IMMEDIATE
-→ operation proposed CAS
-→ bind confirmation request fingerprint
+→ reload Operation; terminal caused by a race → rollback and replay with Provider 0
+→ operation proposed CAS + rejection claim CAS
+→ bind operation request fingerprint
 → transition rejected + persist rejection terminal envelope
-→ insert operation-bound assistant_result
-→ clear matching Pending / claim state
-→ delivery_status=completed
+→ delivery_status=pending
 → COMMIT
+→ owning request builds persisted rejection ToolMessage
+→ owning request calls follow-up Provider at most once
+→ atomic delivery transaction: ToolMessage + Provider reply/fallback + Pending clear + delivery CAS
 → return rejection delivery
 → executor 0 次
 ```
 
-原始 rejection feedback 不进入 Ledger。
+rejection terminal 的 `result_json/visible_result/transport_json` 必须保存现有 `_rejection_result()` 兼容结果；当规范化 feedback 非空时，该结果允许包含最多 500 字符的用户反馈，以便向 Provider 传递并精确回放现有 ToolMessage。feedback 不建立独立明文字段，不进入 Journal、普通日志或 transition。正常首次 commit 的 owning request 保持基线的一次 follow-up Provider 调用；terminal replay、commit-unknown 对账或 delivery recovery 的 Provider 调用均为零。
 
-### 11.3 批准或编辑后批准
+### 11.4 批准或编辑后批准
 
 ```text
-load trusted Pending + operation_id
+terminal-first router returns proposed
+→ load trusted Pending + operation_id
 → prepare_call(effective args)
 → mutable recheck
-→ compute confirmation_request_fingerprint(decision=approved)
+→ compute operation_request_fingerprint(decision=approved)
 → prepare tool.started EventDraft and Journal key outside transaction
 → BEGIN IMMEDIATE
-→ load operation and verify identity
-→ if terminal: replay, executor 0 次
+→ reload Operation; terminal caused by a race → rollback and replay with Provider 0
+→ verify proposed identity
 → Pending claim CAS in the same Session
-→ bind confirmation request fingerprint
+→ bind operation request fingerprint
 → create ExecutionAuthorization bound to operation_id + effective args digest
 → authorization match
 → append approved / claimed transitions
@@ -514,11 +553,11 @@ load trusted Pending + operation_id
 → return HTTP/SSE response
 ```
 
-claim、authorization、confirmation request 或 Operation identity 失败时，不写 `tool.started`，executor 为零次。若 outer transaction 因 infrastructure/internal failure 回滚，`tool.started` 也一并消失，Operation 保持 proposed。
+claim、authorization、operation request 或 Operation identity 失败时，不写 `tool.started`，executor 为零次。若 outer transaction 因 infrastructure/internal failure 回滚，`tool.started` 也一并消失，Operation 保持 proposed。
 
-只有首次成功提交 terminal 的 owning request 可以调用 follow-up Provider。进程在 terminal commit 后退出、commit 对账得到 terminal、Provider 返回后进程退出，或 delivery commit 结果未知时，后续请求均不得再次调用 Provider；它们直接使用 Ledger 的可见结果和 deterministic assistant fallback 收敛交付。已经生成但尚未提交的 Provider answer 可以在同一请求内重试 delivery transaction，但不能再次请求 Provider。
+只有 `commit()` 明确成功并返回 `FirstTerminalCommit` 的 owning request 可以调用 follow-up Provider。进程在 terminal commit 后退出、commit 对账得到 terminal、Provider 返回后进程退出，或 delivery commit 结果未知时，后续请求均不得再次调用 Provider；它们直接使用 Ledger 的可见结果和 deterministic assistant fallback 收敛交付。已经生成但尚未提交的 Provider answer 可以在同一请求内重试 delivery transaction，但不能再次请求 Provider。
 
-### 11.4 Read Tool
+### 11.5 Read Tool
 
 Read Tool 不创建 Operation，不经过 Ledger，不获取业务写锁，Pipeline 行为保持第二期原样。
 
@@ -554,6 +593,7 @@ update/delete 后领域行可能继续变化或消失，仅保存 ID 无法回�
 - 已冻结的兼容 ToolMessage 文本；
 - transport projector 的既有 payload；
 - 4 类现有、结构化且有界的 undo payload；
+- rejection compatibility result 中按现有协议出现的、规范化后最多 500 字符的用户反馈；
 - 固定 failure category/code、时间和引用 ID。
 
 禁止：
@@ -607,29 +647,29 @@ add_note
 
 ### 14.1 回读规则
 
-确认入口在返回 stale 前先检查请求携带的 operation id：
+primary confirmation 和 compensation 入口都必须先按 operation id 查询 Ledger，再考虑 Pending/last-write stale：
 
-- committed + operation identity / confirmation request fingerprint 一致：返回首次结果，executor 0，Provider 0；
-- failed + operation identity / confirmation request fingerprint 一致：返回首次固定失败，executor 0，Provider 0；
-- rejected + operation identity / confirmation request fingerprint 一致：返回首次拒绝结果，executor 0，Provider 0；
-- terminal 但 identity、decision 或 fingerprint 不一致：409 conflict；
+- committed + operation identity / operation request fingerprint 一致：返回首次结果，executor 0，Provider 0；
+- failed + operation identity / operation request fingerprint 一致：返回首次固定失败，executor 0，Provider 0；
+- rejected + operation identity / operation request fingerprint 一致：返回首次拒绝结果，executor 0，Provider 0；
+- terminal 但 identity、role-specific request envelope 或 fingerprint 不一致：409 conflict；
 - proposed：继续正常 claim/execute；
 - integrity 校验失败：500 `operation_integrity_error`，executor 0；
 - Ledger 暂时不可读：503 `operation_result_unknown` 且 `retryable=true`，executor 0，客户端保留原请求重试。
 
 ### 14.2 Pending 已清除
 
-response 丢失后 Pending 可能已经清除。新版客户端仍持有 `operation_id + confirmation_token + decision + 原始 edited_args 字段形态`，后端用 confirmation request fingerprint 直接从 Ledger 回读，不要求重新存在 Pending，也不重新进入 LangGraph/Provider。缺少 operation id 的旧客户端不支持该终态恢复。
+response 丢失后 Pending 可能已经清除。新版客户端仍持有 `operation_id + confirmation_token + decision + 原始 edited_args/rejection_feedback 字段形态`，后端用 operation request fingerprint 直接从 Ledger 回读，不要求重新存在 Pending，也不重新进入 LangGraph/Provider。缺少 operation id 的旧客户端不支持该终态恢复。
 
 ### 14.3 Pending 尚未清除
 
-若领域 transaction 已 committed 但进程在 confirmation result sink 前退出，Pending 仍携带同一 operation id。重试先验证完整 terminal payload，再在一个短事务中：
+若 primary 已进入 committed/failed/rejected terminal，但进程在 confirmation result sink 前退出，Pending 仍携带同一 operation id。重试先验证完整 terminal payload，再在一个短事务中：
 
 ```text
 INSERT ToolMessage(operation_id, delivery_kind=tool_result)
 INSERT deterministic fallback(operation_id, delivery_kind=assistant_result)
 clear matching Pending / claim
-apply validated last undo state
+apply validated last undo state when committed + REQUIRED
 CAS delivery_status
 COMMIT
 ```
@@ -645,7 +685,7 @@ active confirmation claim 尚未过期时，不抢占可能仍在交付的 owner
 - operation-bound ToolMessage、Provider assistant message、Pending clear、undo state 和 delivery CAS 原子持久化：`delivery_status=completed`；
 - Provider follow-up 明确失败，或 replay 因原 owner 消失而使用 deterministic assistant fallback；同一 delivery transaction 持久 fallback 并写 `delivery_status=failed` + 固定 code；
 - 进程退出或结果未知：保持 `pending`；
-- deterministic rejection 在拒绝事务内持久 assistant_result 并使用 completed；不产生 Chat message 的 compensation 使用 `not_applicable`。
+- rejection 与批准路径共用 ToolMessage + assistant_result delivery；正常 Provider reply 为 completed，Provider 失败或 recovery fallback 为 failed；不产生 Chat message 的 compensation 使用 `not_applicable`。
 
 Delivery 更新是 terminal 之后的独立 CAS，不能改变 committed/failed/rejected，也不能触发 executor。`delivery_status=completed/failed` 后不可回到 pending，operation-bound message 内容不可覆盖。`agent_run_id` 允许将 committed Operation 与随后失败的 Run 对照，从而回答“领域写入成功，但说明生成失败”。HTTP/SSE socket 写入发生在 delivery commit 之后；网络断开不修改已提交 delivery 状态。
 
@@ -668,7 +708,9 @@ SQLite 使用 `BEGIN IMMEDIATE` 获取单 writer。并发相同 operation id：
 2. 用新 Session 只读查询 operation id；
 3. 若 terminal 和完整性校验成立，返回 replay；
 4. 若仍是 proposed，返回 503 `operation_not_committed` 且 `retryable=true`，不在同一请求再次调用 executor；
-5. 若数据库不可读，返回 `operation_result_unknown`，不进行任何自动 retry/fallback executor。
+5. primary execution 对账若 Operation absent，违反“确认前 proposal 已独立提交”的不变量，返回 `operation_result_unknown` 并禁止自动重建；
+6. compensation 的 absent/proposed/terminal/unreadable 分支按 §18 的两阶段状态机处理；
+7. 若数据库不可读，返回 `operation_result_unknown`，不进行任何自动 retry/fallback executor。
 
 因此一次 HTTP 请求内 executor 仍最多调用一次；只有后续请求在能够证明前一事务整体未提交时才允许重新尝试本地事务。
 
@@ -685,7 +727,7 @@ Delivery transaction 的 commit 异常使用相同对账原则，但查询对象
 - 不进入 Typed Catalog；
 - 不进入 Provider Schema；
 - 只能由服务端 deterministic action 创建；
-- 确认恢复先读取 server Pending，再按封闭名称路由；
+- 确认入口先按 operation id 查询 Ledger；terminal 使用 Ledger 中可信的 `adapter_kind/tool_name` 回放，proposed 才读取 server Pending 并按封闭名称路由；
 - 保留已有参数校验、业务 CAS、idempotency key、错误文案和返回字符串。
 
 需要重构 `ApplicationJDService` 和 `ApplicationOutcomesRepository` 的三个写方法，使其核心逻辑能在外部 Session 中执行。原有领域 idempotency key/unique constraint 继续存在，作为 Ledger 之外的领域级第二道保护。Ledger replay 时不再次调用这些领域方法。
@@ -694,13 +736,62 @@ Delivery transaction 的 commit 异常使用相同对账原则，但查询对象
 
 `undo-last-write` 从 Conversation 读取 `last_write_operation_id` 和 Ledger 中的 immutable `undo_json`，不信任客户端 undo payload。新版前端请求携带 `parent_operation_id`；live last-write 仍存在时后端可为旧客户端使用服务端字段，last-write 已清除后的 replay 必须携带 parent id。补偿 operation id 使用服务端 UUIDv5，由原 operation id 和固定 compensation kind 确定；同一原始 Operation 重试得到同一补偿 id。
 
-补偿与主写相同地在一个事务内完成：
+Compensation 不使用 Pending confirmation token。它使用 `request_kind=compensation_v1` 的独立封闭 envelope 计算同一字段 `operation_request_fingerprint`：
 
 ```text
-proposed → approved → claimed → committed | failed
+request_kind               -- compensation_v1
+operation_id
+parent_operation_id
+compensation_kind
+conversation_id
 ```
 
-它调用现有 conditional delete/restore CAS 的 Session-bound 版本。第一次补偿成功后：
+所有值都来自服务端确定的 operation identity 或已验证的请求控制字段。Compensation 的 `proposal_fingerprint` 和 `confirmation_token_fingerprint` 必须为 null。执行授权的 `input_fingerprint` 另以 Ledger HMAC 绑定 `operation_request_fingerprint + parent terminal_payload_sha256 + validated undo_json`，不会复用 primary confirmation 算法。
+
+补偿明确使用两阶段持久化，而不是在首次出现 operation id 的事务中直接执行领域 undo：
+
+```text
+derive deterministic operation_id
+→ read Ledger first
+→ terminal: verify compensation request fingerprint + integrity, replay
+→ absent:
+     BEGIN IMMEDIATE
+     validate committed primary parent + conversation + required undo
+     insert compensation proposed + transition(proposed) + request fingerprint
+     COMMIT
+→ proposed:
+     BEGIN IMMEDIATE
+     revalidate parent terminal digest + undo + mutable CAS preconditions
+     bind input fingerprint
+     append approved / claimed
+     SAVEPOINT execute conditional compensation once in this attempt
+     append committed | deterministic failed
+     COMMIT
+```
+
+旧客户端缺少 `parent_operation_id` 时，只允许从仍存在的 `last_write_operation_id` 安全控制字段取得 parent，再立即进入 Ledger-first 路由；last-write 已清除后不支持旧客户端重放。`approved` 表示用户发起 undo API 的显式意图，不表示存在 confirmation token。
+
+Compensation commit 异常后的 fresh Session 对账固定区分四种状态：
+
+```text
+absent
+  → proposal-create commit 对账：证明 executor 从未开始，返回 operation_not_committed；
+    同一请求不继续，后续请求可用同一确定性 id 重新创建
+  → execution commit 对账：违反“执行前 proposed 已独立提交”的不变量，
+    返回 operation_result_unknown；禁止自动创建或执行，等待完整性修复
+
+proposed
+  → proposal 已存在但领域补偿未提交
+  → 同一请求不重跑；后续请求可继续 execution transaction
+
+terminal
+  → 校验 request fingerprint 与 terminal payload 后精确回放
+
+unreadable
+  → operation_result_unknown；不执行、不创建、不覆盖
+```
+
+它调用现有 conditional delete/restore CAS 的 Session-bound 版本。Compensation 不调用 Provider、不创建 operation-bound ChatMessage，terminal 时原子写 `delivery_status=not_applicable`。第一次补偿成功后：
 
 - Ledger 记录 committed result；
 - Conversation 仅在匹配原 operation id 时清除 last undo；
@@ -736,7 +827,7 @@ sync/stream 共用同一个 Operation coordinator 和 replay service。SSE 的 t
 
 - PendingAction 类型保存 operation id；
 - approve/edit/reject 的同步和流式请求原样回显；
-- 网络失败时保留同一 operation id、token、decision，以及 edited_args 的原始“字段缺失/字段存在 + 值”形态；
+- 网络失败时保留同一 operation id、token、decision，以及 edited_args/rejection_feedback 的原始“字段缺失/字段存在 + 值”形态；
 - terminal replay 按普通成功/失败渲染；
 - undo 请求只回显 `parent_operation_id`，使用服务端关联的 immutable undo，不接受前端生成的领域 payload。
 
@@ -785,8 +876,8 @@ operation_projection_failed
 - 已有空 Pending；
 - 已有非空 Pending 的 lazy proposal adoption；
 - conversation 删除后 Operation 保留；
-- ChatMessage operation/delivery 私有列、部分唯一索引和已有消息 null backfill；
-- compensation parent trigger 与所有 UTF-8 BLOB byte CHECK；
+- ChatMessage operation/delivery 私有列、kind/role/tool-call CHECK、跨表 trigger、部分唯一索引和已有消息 null backfill；
+- compensation parent trigger、role-aware Operation CHECK 与所有 UTF-8 BLOB byte CHECK；
 - 现有 0024 Journal 和 0025 confirmation claim 数据不变。
 
 本分支尚未发布，因此可以直接调整 0025 之后的模型/迁移顺序，但 migration version 仍固定记录为独立 `0026_write_operation_ledger`，不重写 0024/0025 的语义。
@@ -814,7 +905,9 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - Agent/API 不直接调用 15 个领域写核心；
 - bound Repository 路径不存在 commit/rollback/新 Session；
 - proposal、rejection、operation-bound message、Pending clear、undo state 和 delivery CAS 不得绕过 Session-bound ChatRepository；
-- operation-bound message 只能使用 `tool_result/assistant_result`，且不能绕过唯一索引；
+- operation-bound message 只能使用 `tool_result/assistant_result`，role/tool_call_id/conversation 必须匹配且不能绕过 CHECK、trigger 或唯一索引；
+- primary confirmation dispatcher 必须 Ledger-first；terminal 分支不得引用 Pending args、prepare/preflight、模型或领域 Repository；
+- primary 与 compensation 必须使用不同 request-kind envelope，compensation 不得依赖 confirmation token；
 - executor 事务内不存在 Provider、HTTP、浏览器、文件写入；
 - result/renderer/transport/required undo 不存在 fallback、空值降级或 terminal commit 后二次生成路径；
 - 不存在 `ledger_enabled` feature flag、shadow write、dual write、memory fallback 或旧路径 fallback；
@@ -831,11 +924,11 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - old live Pending lazy adoption；
 - terminal immutability；
 - transition seq 与固定生命周期；
-- confirmation request fingerprint、terminal payload digest 格式和不可变性；
+- primary/compensation operation request fingerprint、terminal payload digest 格式和不可变性；
 - 分别篡改 status、contract、result、visible、transport、undo、failure category/code 时完整性校验都失败；
 - ASCII/多字节 UTF-8 字段预算与 1 MiB canonical envelope 聚合边界；
 - compensation parent 不存在、非 primary 或非 committed 时 trigger 拒绝；
-- operation-bound message 两列成对 CHECK 与 `(operation_id, delivery_kind)` 唯一；
+- operation-bound message 两列成对、kind/role/tool_call shape CHECK、跨表 tool_call/conversation trigger 与 `(operation_id, delivery_kind)` 唯一；
 - HMAC key create/race/permission/missing-existing-key failure。
 
 ### 23.2 Repository / UoW
@@ -860,8 +953,9 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - committed loser 回读；
 - failed/rejected loser 回读；
 - 不同 input/tool/conversation/decision 冲突且 executor 0；
-- SQLite busy 返回 result unknown，不自动 retry executor；
-- commit exception 后用新连接判定 committed/proposed/unavailable 三种结果；
+- 尚未取得 writer lock 的 SQLite busy 返回 `operation_busy`，executor 为零；只有 fresh read 失败才返回 `operation_result_unknown`；
+- primary execution commit exception 覆盖 terminal/proposed/absent/unreadable，对 absent 使用 result unknown；
+- compensation proposal/execution commit exception 分别覆盖 absent/proposed/terminal/unreadable 四种结果；
 - 进程在领域 commit 后、Pending clear 前退出，下一请求只收敛 delivery；
 - 在 ToolMessage、assistant message、Pending clear、delivery CAS 的每个边界注入 commit/response loss，最终每种 message 最多一条；
 - delivery commit unknown 的 fresh Session 对账覆盖完整、未提交、部分损坏三种状态；
@@ -885,10 +979,12 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 ### 23.5 HITL
 
 - approve / edit / reject；
-- edit 后 input HMAC 只用于首次授权，terminal replay 只验证 confirmation request fingerprint；
+- edit 后 input HMAC 只用于首次授权，terminal replay 只验证 operation request fingerprint；
 - edited_args 缺失、null、空 object 和非空 object 的存在性/canonical 值分别绑定；
+- rejection_feedback 缺失、空、纯空白和非空值按现有 strip/500 字符规则绑定；
 - Pending 清除后的 edited approve/reject 精确重放不读取原始 args；
-- 拒绝不 prepare、不 executor；
+- terminal-first spy 证明 terminal approve/reject 不读 Pending、不 prepare/preflight、不初始化模型/Provider、不查询领域 Repository；
+- 首次拒绝不 prepare、不 executor、follow-up Provider 恰好 1 次，兼容 ToolMessage 保留规范化 feedback；replay Provider 0 次；
 - missing/foreign/malformed operation id；
 - old client live-Pending compatibility；
 - Pending 已清除的 terminal replay；
@@ -908,6 +1004,9 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 ### 23.7 补偿
 
 - 四种 undo first commit + replay；
+- compensation request fingerprint 精确绑定 operation/parent/kind/conversation，token/proposal fingerprint 为空；
+- proposed 独立 commit 后才允许领域 compensation executor；
+- absent/proposed/terminal/unreadable 对账及各分支 executor 次数；
 - 原领域状态变化后的 stable conflict；
 - parent/child 唯一；
 - undo response loss 不产生第二次领域写；
@@ -955,7 +1054,7 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 2. 3 个 deterministic Legacy 写动作全部通过 Ledger，且仍模型不可见；
 3. 4 类现有补偿写入全部通过子 Operation；
 4. 相同 operation id 的领域事务最多 committed 一次；
-5. 编辑确认在 Pending 清除后通过 confirmation request fingerprint 精确重放，不需要原始 args；
+5. 编辑确认与拒绝反馈在 Pending 清除后通过 operation request fingerprint 精确重放，不需要原始 args；
 6. commit 后 HTTP/SSE/进程丢失能回读首次结果，executor 和 Provider 均不重跑，消息不重复；
 7. domain/Ledger 原子性、terminal payload 完整性和 crash matrix 通过；
 8. 四类 REQUIRED undo 与所有 replay 投影在领域提交前完整生成并通过聚合预算；
