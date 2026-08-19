@@ -1,6 +1,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from offerpilot.db import init_database
 
 
@@ -17,6 +19,7 @@ def test_chat_messages_have_conversation_foreign_key(tmp_path):
 
 def test_application_events_have_application_foreign_key_and_event_columns(tmp_path):
     db_path = tmp_path / "data.db"
+    init_database(db_path)
     init_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
@@ -265,6 +268,7 @@ def test_init_database_adds_current_chat_context_columns(tmp_path):
         )
 
     init_database(db_path)
+    init_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
         conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
@@ -273,6 +277,9 @@ def test_init_database_adds_current_chat_context_columns(tmp_path):
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_messages'"
         ).fetchone()[0]
         message_foreign_keys = conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
+        message_indexes = {
+            row[1] for row in conn.execute("PRAGMA index_list(chat_messages)").fetchall()
+        }
         operation_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'write_operations'"
         ).fetchone()[0]
@@ -284,10 +291,53 @@ def test_init_database_adds_current_chat_context_columns(tmp_path):
     assert "provider_blocks" in message_columns
     assert "ck_chat_messages_delivery_group" in message_sql
     assert "ck_chat_messages_delivery_shape" in message_sql
+    assert "idx_chat_messages_conv" in message_indexes
     assert any(
         row[2] == "write_operations" and row[3] == "operation_id" for row in message_foreign_keys
     )
     assert "length(parent_terminal_payload_sha256) = 71" in operation_sql
+
+
+def test_write_operation_chat_rebuild_is_atomic_on_orphan_rows(tmp_path):
+    db_path = tmp_path / "orphan.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE conversations ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "title TEXT NOT NULL DEFAULT 'legacy',"
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE chat_messages ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "conversation_id INTEGER NOT NULL,"
+            "role TEXT NOT NULL,"
+            "content TEXT DEFAULT '',"
+            "tool_calls TEXT DEFAULT '',"
+            "tool_call_id TEXT DEFAULT '',"
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO chat_messages(conversation_id, role, content) "
+            "VALUES (999, 'user', 'orphan')"
+        )
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError, match="foreign key migration failed"):
+            init_database(db_path)
+        with sqlite3.connect(db_path) as conn:
+            table_sql = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'chat_messages'"
+            ).fetchone()[0]
+            versions = {
+                row[0] for row in conn.execute("SELECT version FROM schema_migrations")
+            }
+        assert "ck_chat_messages_delivery_group" not in table_sql
+        assert "0026_write_operation_ledger" not in versions
 
 
 def test_init_database_creates_idempotent_schema_migration_log(tmp_path):

@@ -1655,13 +1655,18 @@ def _rebuild_chat_messages_for_write_operation_integrity(engine) -> None:  # typ
             FROM chat_messages
             """
         )
-        cursor.execute("DROP TABLE chat_messages")
-        cursor.execute("ALTER TABLE chat_messages_0026 RENAME TO chat_messages")
-        raw.commit()
-        cursor.execute("PRAGMA foreign_keys = ON")
-        violations = cursor.execute("PRAGMA foreign_key_check(chat_messages)").fetchall()
+        violations = cursor.execute(
+            "PRAGMA foreign_key_check(chat_messages_0026)"
+        ).fetchall()
         if violations:
             raise RuntimeError("chat message foreign key migration failed")
+        cursor.execute("DROP TABLE chat_messages")
+        cursor.execute("ALTER TABLE chat_messages_0026 RENAME TO chat_messages")
+        cursor.execute(
+            "CREATE INDEX idx_chat_messages_conv ON chat_messages(conversation_id)"
+        )
+        raw.commit()
+        cursor.execute("PRAGMA foreign_keys = ON")
     except Exception:
         raw.rollback()
         raise
