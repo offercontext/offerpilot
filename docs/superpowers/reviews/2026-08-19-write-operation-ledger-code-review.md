@@ -9,8 +9,9 @@ Open at this HEAD: **P2-07 only; no P0/P1**. P2-07 is still a completion blocker
 ## Reviewed scope and method
 
 - Fixed baseline: `5e560580e86da7d1eb272e0df9d3d13304717499`.
-- Implementation HEAD: `ff43823` (`fix: AI make ledger schema rebuild atomic`).
+- Implementation HEAD: `b358c66` (`test: AI add ledger acceptance matrix`).
 - Previous reviewed implementation: `4cb9cca`.
+- Schema atomicity/index fix reviewed: `ff43823`.
 - Included migration compatibility commit: `5d9b88a` (`fix: AI support legacy chat ledger migration`).
 - Prior review update: `6c55fce`.
 - Compared the current source/tests with `docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md` and `docs/superpowers/plans/2026-08-19-write-operation-ledger.md`.
@@ -57,7 +58,17 @@ Terminal result/transport projections are built and persisted before terminal co
 
 ### P2-07 — Required adapter/concurrency acceptance matrix remains incomplete
 
-The latest changes add useful migration, fallback, and deleted-conversation tests, but the Ledger-specific tests still do not execute the required full matrix from spec §23: all 12 typed adapters, all 3 legacy adapters, all 4 compensation adapters, two-connection executor/takeover/commit-unknown crash points, late-Bundle fencing, replay with zero executor/Provider/read-tool/renderer calls, and full message/manifest tamper cases. `tests/test_write_operations.py:51-341` has manifest/golden identity and focused invariant tests, not one golden execution/replay contract per adapter. This remains an acceptance evidence gap even though the currently targeted tests pass.
+**Partially resolved; P2 remains open.** `tests/test_write_operation_acceptance_matrix.py:158-271` now provides 19 parameterized Ledger coordinator cases (12 typed + 3 legacy + 4 compensation), with one executor call and same-operation replay. `:274-330` adds a sequential expired-owner takeover, late-owner fence, message immutability, and manifest immutability case. The new file passes 20 tests, so the prior absence of adapter enumeration and basic replay evidence is closed.
+
+It is not yet the full acceptance matrix required by spec §23. The new adapter tests replace each executor with a trivial function, use `NullRunRecorder`, call the coordinator directly, and do not prove the actual domain projection, sync/SSE replay, declared-failure replay, exact transition/domain-row assertions, or Provider/read-tool call counts. The remaining minimum executable scenarios are:
+
+- two connections racing one proposed operation, proving one executor/domain commit and one loser replay/conflict;
+- a primary and compensation commit-unknown injection, proving fresh-session reconciliation never runs the executor twice;
+- two expired delivery owners racing takeover, proving one generation-2 CAS winner and one loser with no duplicate messages;
+- an actual continuation/replay spy proving Provider/read-tool/renderer calls are zero after terminal commit, delivery recovery, and SSE replay;
+- one compensation parent mutation/conflict between proposal and execution, plus one chained-Pending delivery-manifest/transition reconciliation case.
+
+Until these minimum concurrency, commit-unknown, runtime-call, and compensation/chained-delivery cases are executable, P2-07 remains a completion blocker even though the 19 adapter cases pass.
 
 ### P2-08 — Legacy ChatMessage rebuild index retention
 
@@ -66,13 +77,15 @@ The latest changes add useful migration, fallback, and deleted-conversation test
 ## Verification performed
 
 - `uv run pytest tests/test_write_operations.py tests/tool_pipeline/test_checkpoint.py tests/test_schema_compatibility.py -q` — **30 passed**, 1 warning.
+- `uv run pytest tests/test_write_operation_acceptance_matrix.py -q` — **20 passed**, 1 warning.
 - `uv run pytest tests/test_chat_api.py -q -k "confirm_stream_executes_pending_write_and_completes or chat_confirm_stream_recovers_committed_write_when_followup_model_fails or chat_confirm_ledger_delivery_persists_fallback_after_generation_change or chat_confirm_rejection_provider_failure_records_cancellation_once or chat_confirm_result_cas_loss_stays_stale_on_followup_failure or chat_confirm_tool_error_provider_failure_is_durable"` — **12 passed**, 282 deselected, 97 warnings.
 - `uv run ruff check` on the ten changed Ledger/API/schema/Journal modules — passed.
 - `uv run mypy` on those ten modules — passed with no issues.
+- `uv run ruff check tests/test_write_operation_acceptance_matrix.py` — passed. The new test file is not mypy-clean under the repository’s strict settings (17 `no-untyped-def`/related errors); production-source mypy remains clean. This is additional test-quality debt, not a product-runtime failure.
 - Valid old-schema temporary database, initialized twice — CHECKs, operation FK, and both expected indexes present; data readable; `0026` initialization idempotent.
 - Malformed orphan-row temporary database — two initialization attempts both failed before table swap and without recording `0026`.
 - Full long release gate — not run; owned by the parent task.
 
 ## Final decision
 
-**No-Go.** P1-03, P1-04, P1-05, P1-06, P1-07, P2-06, and P2-08 are closed with code/test evidence. P2-07 remains: the required adapter and concurrency acceptance behavior is not fully represented by executable Ledger-specific goldens. No P0/P1 was found, but the design explicitly requires an independent CR with no P0/P1/P2, so the Phase 3 gate is not green until P2-07 is closed or formally accepted by the release owner.
+**No-Go.** P1-03, P1-04, P1-05, P1-06, P1-07, P2-06, and P2-08 are closed with code/test evidence. P2-07 is improved but remains: the required concurrency, commit-unknown, runtime-call, compensation-conflict, and chained-delivery acceptance behavior is not fully represented by executable Ledger-specific goldens. No P0/P1 was found, but the design explicitly requires an independent CR with no P0/P1/P2, so the Phase 3 gate is not green until P2-07 is closed or formally accepted by the release owner.
