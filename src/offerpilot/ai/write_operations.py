@@ -1057,12 +1057,31 @@ class WriteOperationCoordinator:
                         record=record,
                     )
                     return committed_failure
-                session.commit()
+                try:
+                    session.commit()
+                except OperationalError:
+                    return (
+                        self._reconcile_commit_unknown(
+                            operation_id,
+                            request_fingerprint,
+                            absent_code="operation_result_unknown",
+                            proposed_code="operation_not_committed",
+                        ),
+                        None,
+                    )
                 return OperationCommitted(operation_id, payload, owner), record
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable), None
         except OperationalError:
-            return self._reconcile_commit_unknown(operation_id, request_fingerprint), None
+            return (
+                self._reconcile_commit_unknown(
+                    operation_id,
+                    request_fingerprint,
+                    absent_code="operation_result_unknown",
+                    proposed_code="operation_busy",
+                ),
+                None,
+            )
         except BaseException:
             raise
 
@@ -1124,12 +1143,25 @@ class WriteOperationCoordinator:
                 operation.rejected_at = datetime.now(timezone.utc)
                 self._set_terminal(operation, payload, owner)
                 self.repository.append_transition(session, operation_id, 2, "rejected")
-                session.commit()
+                try:
+                    session.commit()
+                except OperationalError:
+                    return self._reconcile_commit_unknown(
+                        operation_id,
+                        request_fingerprint,
+                        absent_code="operation_result_unknown",
+                        proposed_code="operation_not_committed",
+                    )
                 return OperationFailed(operation_id, payload, owner)
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return self._reconcile_commit_unknown(operation_id, request_fingerprint)
+            return self._reconcile_commit_unknown(
+                operation_id,
+                request_fingerprint,
+                absent_code="operation_result_unknown",
+                proposed_code="operation_busy",
+            )
 
     def execute_legacy(
         self,
@@ -1223,14 +1255,27 @@ class WriteOperationCoordinator:
                     operation.input_fingerprint = input_fingerprint
                     self._set_terminal(operation, payload, owner)
                     self.repository.append_transition(session, operation_id, 4, "failed")
-                session.commit()
+                try:
+                    session.commit()
+                except OperationalError:
+                    return self._reconcile_commit_unknown(
+                        operation_id,
+                        request_fingerprint,
+                        absent_code="operation_result_unknown",
+                        proposed_code="operation_not_committed",
+                    )
                 if payload.status == "committed":
                     return OperationCommitted(operation_id, payload, owner)
                 return OperationFailed(operation_id, payload, owner)
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return self._reconcile_commit_unknown(operation_id, request_fingerprint)
+            return self._reconcile_commit_unknown(
+                operation_id,
+                request_fingerprint,
+                absent_code="operation_result_unknown",
+                proposed_code="operation_busy",
+            )
         except Exception:
             return OperationUnknown(operation_id, "operation_not_committed", True)
 
@@ -1288,14 +1333,30 @@ class WriteOperationCoordinator:
                     )
                     session.add(operation)
                     self.repository.append_transition(session, operation_id, 1, "proposed")
-                    session.commit()
+                    try:
+                        session.commit()
+                    except OperationalError:
+                        return self._reconcile_commit_unknown(
+                            operation_id,
+                            request_fingerprint,
+                            absent_code="operation_not_committed",
+                            proposed_code="operation_not_committed",
+                        )
                 else:
                     self._verify_compensation(operation, request_fingerprint)
                     if operation.status in _TERMINAL_STATUSES:
                         replay = self.repository.replay(operation, request_fingerprint)
                         session.rollback()
                         return replay
-                    session.commit()
+                    try:
+                        session.commit()
+                    except OperationalError:
+                        return self._reconcile_commit_unknown(
+                            operation_id,
+                            request_fingerprint,
+                            absent_code="operation_not_committed",
+                            proposed_code="operation_not_committed",
+                        )
 
             with self.repository.session_factory() as session:
                 session.execute(text("BEGIN IMMEDIATE"))
@@ -1374,31 +1435,51 @@ class WriteOperationCoordinator:
                         .where(Conversation.last_write_operation_id == parent_operation_id)
                         .values(last_write_operation_id="", last_write_undo_json="")
                     )
-                session.commit()
+                try:
+                    session.commit()
+                except OperationalError:
+                    return self._reconcile_commit_unknown(
+                        operation_id,
+                        request_fingerprint,
+                        absent_code="operation_result_unknown",
+                        proposed_code="operation_not_committed",
+                    )
                 if payload.status == "committed":
                     return OperationCommitted(operation_id, payload, None)
                 return OperationFailed(operation_id, payload, None)
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return self._reconcile_commit_unknown(operation_id, request_fingerprint)
+            return self._reconcile_commit_unknown(
+                operation_id,
+                request_fingerprint,
+                absent_code="operation_busy",
+                proposed_code="operation_busy",
+            )
         except Exception:
             return OperationUnknown(operation_id, "operation_not_committed", True)
 
     def _reconcile_commit_unknown(
-        self, operation_id: str, request_fingerprint: str
+        self,
+        operation_id: str,
+        request_fingerprint: str,
+        *,
+        absent_code: str,
+        proposed_code: str,
     ) -> OperationExecution:
         """Resolve a lost COMMIT response from authoritative Ledger state."""
         try:
             with self.repository.session_factory() as session:
                 operation = session.get(WriteOperation, operation_id)
-                if operation is None or operation.status not in _TERMINAL_STATUSES:
-                    return OperationUnknown(operation_id, "operation_busy", True)
+                if operation is None:
+                    return OperationUnknown(operation_id, absent_code, True)
+                if operation.status not in _TERMINAL_STATUSES:
+                    return OperationUnknown(operation_id, proposed_code, True)
                 return self.repository.replay(operation, request_fingerprint)
         except WriteOperationError as exc:
             return OperationUnknown(operation_id, exc.code, exc.retryable)
         except OperationalError:
-            return OperationUnknown(operation_id, "operation_busy", True)
+            return OperationUnknown(operation_id, "operation_result_unknown", True)
 
     def _verify_compensation(self, operation: WriteOperation, request_fingerprint: str) -> None:
         if (

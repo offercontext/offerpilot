@@ -27,6 +27,7 @@ from offerpilot.ai.write_operations import (
     OperationCommitted,
     OperationFailed,
     OperationReplay,
+    OperationUnknown,
     WriteOperationCoordinator,
     WriteOperationRepository,
     load_or_create_ledger_key,
@@ -406,6 +407,61 @@ def test_primary_commit_unknown_reconciles_without_second_executor_call(
     assert isinstance(reconciled, OperationReplay)
     assert isinstance(replay, OperationReplay)
     assert calls == ["delete_note"]
+
+
+def test_commit_unknown_reconciliation_distinguishes_primary_and_compensation_states(
+    tmp_path, monkeypatch
+) -> None:
+    _sessions, repository, chat, _context, coordinator = _harness(tmp_path)
+    _conversation, proposed_id, _tool_call_id = _propose(chat, "delete_note")
+    fingerprint = "hmac-sha256:" + "8" * 64
+
+    primary_proposed = coordinator._reconcile_commit_unknown(
+        proposed_id,
+        fingerprint,
+        absent_code="operation_result_unknown",
+        proposed_code="operation_not_committed",
+    )
+    primary_absent = coordinator._reconcile_commit_unknown(
+        str(uuid4()),
+        fingerprint,
+        absent_code="operation_result_unknown",
+        proposed_code="operation_not_committed",
+    )
+    compensation_proposal_absent = coordinator._reconcile_commit_unknown(
+        str(uuid4()),
+        fingerprint,
+        absent_code="operation_not_committed",
+        proposed_code="operation_not_committed",
+    )
+    compensation_execution_absent = coordinator._reconcile_commit_unknown(
+        str(uuid4()),
+        fingerprint,
+        absent_code="operation_result_unknown",
+        proposed_code="operation_not_committed",
+    )
+
+    assert isinstance(primary_proposed, OperationUnknown)
+    assert primary_proposed.code == "operation_not_committed"
+    assert isinstance(primary_absent, OperationUnknown)
+    assert primary_absent.code == "operation_result_unknown"
+    assert isinstance(compensation_proposal_absent, OperationUnknown)
+    assert compensation_proposal_absent.code == "operation_not_committed"
+    assert isinstance(compensation_execution_absent, OperationUnknown)
+    assert compensation_execution_absent.code == "operation_result_unknown"
+
+    def unreadable_session():
+        raise OperationalError("SELECT", {}, RuntimeError("unreadable"))
+
+    monkeypatch.setattr(repository, "session_factory", unreadable_session)
+    unreadable = coordinator._reconcile_commit_unknown(
+        proposed_id,
+        fingerprint,
+        absent_code="operation_busy",
+        proposed_code="operation_busy",
+    )
+    assert isinstance(unreadable, OperationUnknown)
+    assert unreadable.code == "operation_result_unknown"
 
 
 def test_compensation_commit_unknown_and_parent_conflict_are_stable(
