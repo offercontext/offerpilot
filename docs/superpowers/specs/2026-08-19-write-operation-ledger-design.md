@@ -174,6 +174,8 @@ prepare / read-only preflight
 - committed 重试返回首次 `result_json`、可见工具结果、transport projection 和 undo；
 - failed 重试返回首次固定失败分类和可见错误；
 - rejected 首次 owning request 只启动一次基线 continuation，executor 为零；continuation 内 Provider/read-tool 循环次数不变；rejected 重试保持 terminal，executor/Provider 均为零；
+- Pending/Ledger 是确认恢复唯一持久真值；旧、坏或缺失的 LangGraph checkpoint 不参与身份或 stale 判定；
+- terminal continuation 由持久 generation/token/lease fence 保护；active owner 不被 fallback 抢占，expired owner 的晚到 Bundle 不能提交；
 - 单次请求不会因为 Journal、renderer、transport、undo 或后续 Provider 失败而第二次调用 executor；pre-commit internal failure 会回滚整个事务，后续请求只有看到仍为 proposed 才可重试；
 - 不会在 commit 状态未知时自动进行第二次 executor 调用。
 
@@ -219,6 +221,9 @@ prepare / read-only preflight
 | `delivery_message_count` | operation-bound 消息总数；pending 时为空 |
 | `delivery_manifest_sha256` | 对完整 delivery manifest 的 SHA-256；不复制消息正文 |
 | `delivery_next_operation_id` | chained Pending 对应的新 Operation；其余为空 |
+| `delivery_generation` | fencing generation；proposal 初始为 0，每次 terminal owner/takeover 只加 1 |
+| `delivery_owner_token_fingerprint` | 当前 owner 随机 token 的 Ledger HMAC；只在 terminal + delivery pending 时存在 |
+| `delivery_lease_expires_at` | SQLite UTC epoch seconds；只在 terminal + delivery pending 时存在 |
 | `created_at` | proposal 创建时间 |
 | `approved_at` | effective input 被批准时间 |
 | `claimed_at` | 本次原子提交中的 claim 时间 |
@@ -248,7 +253,7 @@ prepare / read-only preflight
 
 字段组合使用 role-aware 数据库 CHECK 固定：primary proposed 在 decision 前允许 request fingerprint 为空，必须有 proposal/token fingerprint；compensation proposed 创建时必须已有 request fingerprint，proposal/token fingerprint 为空。rejected 只允许 primary，且不得有 input/claim/commit/failure 字段，但必须有 operation request fingerprint、rejection envelope、摘要和 rejected 时间；committed/failed 都必须有 operation request fingerprint、input fingerprint、result envelope、摘要和对应时间，failed 还必须有固定 failure category/code。`approved_at/claimed_at` 只允许 committed/failed；首次 request fingerprint 与 terminal envelope 一经写入不可变。所有文本 byte 约束使用 `length(CAST(value AS BLOB))`，不使用字符数近似 UTF-8 大小。
 
-delivery CHECK 固定：pending 时 outcome/count/manifest/next id/delivered time/failure code 为空；completed 必须是 `final_response` 或 `chained_pending`、message count 至少为 2、manifest 和 delivered time 非空、failure code 为空；failed 必须是 `fallback`、message count 恰为 2、manifest/delivered time/failure code 非空；只有 `chained_pending` 允许且必须有 `delivery_next_operation_id`；compensation 的 not_applicable 固定为 `outcome=none/message_count=0`，manifest/next id/failure code 为空且 delivered time 与 terminal time 相同。delivery terminal 字段只能由 pending CAS 一次写入。
+delivery CHECK 固定：Operation proposed 时 `delivery_status=pending`、generation=0，owner/lease/outcome/count/manifest/next id/delivered time/failure code 均为空；primary terminal + delivery pending 必须 generation>=1、owner/lease 非空，其余 delivery result 字段为空；completed 必须 generation>=1、owner/lease 清空、outcome 为 `final_response` 或 `chained_pending`、message count 至少为 2、manifest 和 delivered time 非空、failure code 为空；failed 必须 generation>=1、owner/lease 清空、outcome=`fallback`、message count 恰为 2、manifest/delivered time/failure code 非空；只有 `chained_pending` 允许且必须有 `delivery_next_operation_id`；compensation 的 not_applicable 固定 generation=0、`outcome=none/message_count=0`，owner/lease/manifest/next id/failure code 为空且 delivered time 与 terminal time 相同。delivery terminal 字段只能由带 generation/owner fencing 的 pending CAS 一次写入；trigger 禁止 generation 回退、跳号以及 active owner 被无条件覆盖。
 
 全部字段预算和 1 MiB 聚合边界必须在任何 terminal CAS 前验证；执行型 Operation 还必须在领域 SAVEPOINT 释放前完成验证。任一超界都回滚整个 Operation 事务、保持 `proposed`，返回固定 `operation_result_too_large`；不会出现领域已写入但结果无法回读。该错误不自动重试，修复数据或 Contract 后可由后续请求使用原 operation id 重试。
 
@@ -310,7 +315,33 @@ delivery_kind=continuation_message
 
 一次 Operation 恰有一个 ordinal 0 的原始兼容 ToolMessage，之后可以有基线 continuation 产生的多个 assistant/read-tool 消息。deterministic fallback 是唯一的 ordinal 1 assistant continuation；不能与成功 continuation 并存。全部消息、匹配 Pending 清理或新 Pending 替换、新 Operation proposal、last undo 更新以及旧 Operation delivery CAS 必须在同一个短事务中完成。
 
-`delivery_manifest_sha256` 的 canonical 输入固定为：旧 Operation id/status/terminal digest、按 ordinal 排序的全部 ChatMessage 持久字段、delivery outcome/failure code、旧 Pending disposition、validated undo digest，以及 chained Pending 的新 operation id/tool call/tool name/proposal fingerprint（若有）。Ledger 只保存摘要、消息数、outcome 和 next operation id，不复制模型回答。delivery completed/failed 后这些字段不可变；回放先从 ChatMessage 与新 Operation 重建 manifest 并校验，再返回 final text 或 chained Pending。
+`delivery_manifest_sha256` 的 canonical 输入固定为：旧 Operation id/status/terminal digest、最终 delivery generation、按 ordinal 排序的全部 ChatMessage 持久字段、delivery outcome/failure code、旧 Pending disposition、validated undo digest，以及 chained Pending 的新 operation id/tool call/tool name/proposal fingerprint（若有）。Ledger 只保存摘要、消息数、outcome 和 next operation id，不复制模型回答。delivery completed/failed 后这些字段不可变；回放先从 ChatMessage 与新 Operation 重建 manifest 并校验，再返回 final text 或 chained Pending。
+
+### 7.4 Delivery owner fencing
+
+primary terminal commit 前生成 32-byte CSPRNG owner token，只把 `hmac-sha256:<64 lowercase hex>` fingerprint 写入 Ledger；算法固定为 `HMAC-SHA256(ledger_key, b"write-operation-delivery-owner-v1\0" + raw_32_bytes)`。原 token 只存在于 owning request 的瞬态对象，不进入 State、checkpoint、日志、Journal、HTTP 或 SSE。复用 Ledger HMAC key domain；随机 token 与 fingerprint 必须在进入领域事务前准备，事务内不做 keyring 或文件 I/O。初始 lease 由事务内纯 SQLite 时间表达式设置，不需要外部 I/O。
+
+瞬态 `DeliveryOwnership` handle 保存 operation id、generation、raw token 和 fingerprint；字段 `repr=False`，禁止通用 serialization/copy，delivery terminal 或 fencing 后立即释放引用。Repository 只接收该 handle 并用 fingerprint 参与 CAS，不提供按 operation id 无条件完成 delivery 的 API。
+
+常量固定为：
+
+```text
+DELIVERY_OWNER_LEASE_SECONDS = 120
+DELIVERY_OWNER_HEARTBEAT_SECONDS = 30
+```
+
+lease 的 now 与续租值均由 SQLite `unixepoch('now')` 计算，避免不同进程的应用时钟漂移。首次 primary terminal commit 原子把 generation 从 0 置为 1，并写 owner fingerprint 与 `now + 120`。`FirstTerminalCommit` 返回后启动 scoped heartbeat task，覆盖整个 continuation、Bundle 投影与 delivery transaction 重试窗口；只有 delivery completed/failed、明确被 fence 或请求放弃后才停止。Heartbeat 每 30 秒使用独立短 Session 执行 CAS：
+
+```text
+delivery_status = pending
+AND delivery_generation = expected_generation
+AND delivery_owner_token_fingerprint = expected_fingerprint
+AND delivery_lease_expires_at > unixepoch('now')
+```
+
+命中才续租到 `now + 120`。在每个 Provider/read-tool step 前后还执行同一 fence check。pre-step 在现有短 SQLite budget 内仍无法确认有效 fence 时不得启动该 step；post-step 无法确认时不得继续下一次 Provider/read tool，也不得形成 authoritative Bundle。Heartbeat/post-step 可以在剩余 lease 内重试短 CAS，但不得重跑已经调用的 Provider/read tool；若在到期前仍无法续租或确认，停止 heartbeat、丢弃未交付 Bundle，等待 fenced recovery。
+
+owner 的正常 Bundle、明确 continuation failure fallback、以及 commit-unknown 后的 deterministic fallback 都必须在一个 `BEGIN IMMEDIATE` delivery transaction 中重新验证 status + generation + fingerprint + 未过期 lease。成功插入全部消息并完成 delivery CAS 后清空 owner/lease，保留最终 generation 进入 manifest。任一 fence 不匹配时 transaction 不得写消息、Pending、undo 或 next Operation。
 
 ## 8. Ledger HMAC Key Domain
 
@@ -430,9 +461,24 @@ delivery outcome = final_response | chained_pending | fallback
 optional chained Pending + prebuilt Operation proposal
 ```
 
-Bundle 由现有 `run_turn()` continuation 启动一次并完整运行基线循环；它可以包含 Provider → read tool → Provider，也可以以新的 write Pending 结束。Runner 以瞬态 control overlay 把旧 Pending 视为已解决，使循环可以继续，但数据库中的旧 Pending 在 delivery transaction 成功前仍保留用于恢复；新的写调用只更新 overlay 并形成 chained Pending intent。Runner 同时注入瞬态 collecting sink：sync 路径只累积消息；SSE 路径可把基线已有的非权威 progress/token delta tee 给当前 socket，同时累积最终消息，但新的 Pending 卡、operation id 和 authoritative terminal event 必须缓冲到 delivery transaction commit 之后再发送。两条路径都不得提前调用 ChatRepository。Bundle 不进入 checkpoint；连接中断或进程退出也不能让后续请求重跑 continuation。Continuation 中的 read tool 保持现有调用次数；write tool 绝不在 continuation 中越过确认执行。新 proposal 的 UUID、fingerprint 和有界 payload 在 delivery transaction 前准备，真正的消息/Pending/Operation 写入由一次 delivery transaction 完成。
+Bundle 由现有 `run_turn()` continuation 启动一次并完整运行基线循环；它可以包含 Provider → read tool → Provider，也可以以新的 write Pending 结束。Runner 以瞬态 control overlay 把旧 Pending 视为已解决，使循环可以继续，但数据库中的旧 Pending 在 delivery transaction 成功前仍保留用于恢复；新的写调用只更新 overlay 并形成 chained Pending intent。Runner 同时注入瞬态 collecting sink：sync 路径只累积消息；SSE 路径可把基线已有的非权威 progress/token delta tee 给当前 socket，同时累积最终消息，但新的 Pending 卡、operation id 和 authoritative terminal event 必须缓冲到 delivery transaction commit 之后再发送。两条路径都不得提前调用 ChatRepository。Bundle 不进入 Graph State 或 checkpoint；连接中断、进程退出或 owner fencing 失败也不能让后续请求重跑 continuation。Continuation 中的 read tool 保持现有调用次数；write tool 绝不在 continuation 中越过确认执行。新 proposal 的 UUID、fingerprint 和有界 payload 在 delivery transaction 前准备，真正的消息/Pending/Operation 写入由一次 delivery transaction 完成。
 
-### 10.2 Session-bound Repository
+### 10.2 确认恢复真值与 LangGraph checkpoint 退役
+
+第三期对 Chat/LangGraph 主路径做内部破坏性切换：写工具 proposal、确认恢复、chained Pending 和后续普通 turn 的持久真值只来自业务数据库中的 Conversation/ChatMessage/Pending Action 与 Write Operation Ledger。`agent_checkpoints.sqlite` 完全退出该路径，不再作为 interrupt identity、resume cursor 或 stale 判定依据。
+
+固定协议：
+
+- 每次 Chat `run_turn()` 固定使用 request-scoped `InMemorySaver` 和新的瞬态 graph namespace，只服务于本次 invoke；不同 HTTP/SSE 请求绝不复用 saver 或 namespace；
+- 模型产生写 ToolCall 时，Graph 返回 Pending intent，由 Session-bound ChatRepository 原子持久化 assistant ToolCall、Pending 与 Ledger proposal；不要求把 interrupt 持久化到 LangGraph；
+- approve/edit/reject dispatcher 先按 operation id 查询 Ledger，proposed 才读取可信 Pending；它从二者重建 prepared/claim/authorization，不调用 `Command(resume=...)`，也不验证旧 checkpoint interrupt id；
+- terminal commit 后从 canonical Conversation messages + persisted/typed origin ToolMessage 启动一次新的 continuation，而不是恢复旧 graph frame；
+- continuation 产生 chained Pending 时，新的 assistant ToolCall、Pending 和 Operation proposal 在 delivery transaction 中成为下一次确认的唯一身份；下一次确认重复相同 Ledger-first 协议；
+- 普通下一 turn 同样从业务 Conversation messages 建立新瞬态 graph，不合并或恢复历史 checkpoint state。
+
+升级不读取、不迁移、不修复也不依赖旧 `agent_checkpoints.sqlite`。本期保留旧文件在磁盘上但永不打开；清理属于后续独立 maintenance，不进入请求或 migration。文件缺失、损坏、只读、包含旧 interrupt 或来自上一版本都不得改变 Chat/HITL 行为，也不能触发 legacy resume fallback。Chat Agent/API 直接删除 `checkpoint_path` 参数及所有传参、`SqliteSaver`、`_assert_pending_checkpoint_identity`、persistent `_has_pending_checkpoint` 分支和 write-confirmation `Command(resume)` 路径；`resume_after_confirm` 由 Ledger-first confirmation Coordinator + fresh `run_turn()` 取代，不保留 facade、feature flag 或双轨选择。
+
+### 10.3 Session-bound Repository
 
 以下领域边界增加显式 `bind(session)` 或等价的 `*_in_session` 核心方法：
 
@@ -473,7 +519,7 @@ delivery manifest + status CAS
 
 不为全仓库强行引入统一 UoW。只改造本期 15 个 executor 实际需要的领域方法，并保留各 Repository 当前公共接口。
 
-### 10.3 SAVEPOINT
+### 10.4 SAVEPOINT
 
 Coordinator 的外层事务持有 Pending claim、Ledger transitions 和最终 terminal。领域 executor 位于 SAVEPOINT 内。每个 WriteContract 必须为 executor 可能产生的失败声明封闭 disposition：
 
@@ -511,6 +557,8 @@ prepare_call()
 → executor 0 次
 ```
 
+该暂停点以业务 Pending + Ledger proposal 完成持久化，不写也不要求 LangGraph interrupt checkpoint。request-scoped Graph 在返回 Pending intent 后即可销毁。
+
 ### 11.2 Confirmation terminal-first 入口
 
 批准、编辑和拒绝共用同一个入口顺序：
@@ -525,7 +573,7 @@ parse safe control fields
             → prepare/reject/claim/execute
 ```
 
-`parse safe control fields` 只处理 conversation id、operation id、token、decision 和 edited/feedback 的字段存在性及有界值，不初始化模型、不解析原始 Tool args、不查询领域 Repository。缺少 operation id 的旧客户端仅在 live Pending 存在时，允许读取 Conversation 的安全 Pending identity 来取得服务端 `pending_operation_id`，随后立刻回到 Ledger-first 路由；Pending 已清除时不提供该兼容。
+`parse safe control fields` 只处理 conversation id、operation id、token、decision 和 edited/feedback 的字段存在性及有界值，不初始化模型、不解析原始 Tool args、不查询领域 Repository，也不打开或检查 LangGraph checkpoint。缺少 operation id 的旧客户端仅在 live Pending 存在时，允许读取 Conversation 的安全 Pending identity 来取得服务端 `pending_operation_id`，随后立刻回到 Ledger-first 路由；Pending 已清除时不提供该兼容。
 
 terminal 分支必须在任何 Pending stale 判断之前执行，且不得读取 `pending_args`、调用 `prepare_call()`、运行 binding/mutable preflight、初始化 Provider/模型或取得领域 Repository。它只验证当前请求 envelope、Operation identity、完整 terminal payload 和 delivery identity。只有 Ledger 返回 proposed 后，才允许读取可信 Pending 和原始参数。
 
@@ -538,12 +586,13 @@ terminal-first router returns proposed
 → load trusted Pending + verify token / Pending identity
 → normalize rejection_feedback with existing API rules
 → compute operation_request_fingerprint(decision=rejected)
+→ prepare delivery owner token/fingerprint outside transaction
 → BEGIN IMMEDIATE
 → reload Operation; terminal caused by a race → rollback and replay with Provider 0
 → operation proposed CAS + rejection claim CAS
 → bind operation request fingerprint
 → transition rejected + persist rejection terminal envelope
-→ delivery_status=pending
+→ delivery_status=pending + generation=1 + owner fingerprint + lease
 → COMMIT
 → owning request builds original ToolMessage from persisted rejection result
 → owning request starts run_turn continuation exactly once
@@ -552,7 +601,7 @@ terminal-first router returns proposed
 → executor 0 次
 ```
 
-rejection terminal 的 `result_json/visible_result/transport_json` 必须保存现有 `_rejection_result()` 兼容结果；当规范化 feedback 非空时，该结果允许包含最多 500 字符的用户反馈，以便向 continuation 传递并精确回放现有 ToolMessage。feedback 不建立独立明文字段，不进入 Journal、普通日志或 transition。正常首次 commit 的 owning request 只启动一次 continuation，但 continuation 内 Provider → read tool → Provider 或生成 chained Pending 的行为与调用次数保持基线；terminal replay、commit-unknown 对账或 delivery recovery 的 continuation/Provider/read-tool 调用均为零。
+rejection terminal 的 `result_json/visible_result/transport_json` 必须保存现有 `_rejection_result()` 兼容结果；当规范化 feedback 非空时，该结果允许包含最多 500 字符的用户反馈，以便向 continuation 传递并精确回放现有 ToolMessage。feedback 不建立独立明文字段，不进入 Journal、普通日志或 transition。只有明确返回 `FirstTerminalCommit` 且持有有效 delivery fence 的 rejection owner 启动一次 continuation；continuation 内 Provider → read tool → Provider 或生成 chained Pending 的行为与调用次数保持基线；terminal replay、commit-unknown 对账或 delivery recovery 的 continuation/Provider/read-tool 调用均为零。
 
 ### 11.4 批准或编辑后批准
 
@@ -561,7 +610,7 @@ terminal-first router returns proposed
 → load trusted Pending + operation_id
 → prepare_call(effective args)
 → compute operation_request_fingerprint(decision=approved)
-→ prepare tool.started EventDraft and Journal key outside transaction
+→ prepare tool.started EventDraft, Journal key, delivery owner token/fingerprint outside transaction
 → BEGIN IMMEDIATE
 → reload Operation; terminal caused by a race → rollback and replay with Provider 0
 → verify proposed identity
@@ -575,7 +624,7 @@ terminal-first router returns proposed
 → SAVEPOINT
 → executor(bound ToolExecutionContext) exactly once in this attempt
 → generate and validate result / visible result / transport / required undo
-→ append committed | failed
+→ append committed | failed + delivery generation=1/owner/lease
 → COMMIT domain + Ledger + tool.started
 → project tool.completed | tool.failed through normal fail-open Journal path
 → owning request starts run_turn continuation exactly once
@@ -585,7 +634,7 @@ terminal-first router returns proposed
 
 锁内 mutable recheck、claim、authorization、operation request 或 Operation identity 失败时，不写 `tool.started`，executor 为零次。若 outer transaction 因 infrastructure/internal failure 回滚，`tool.started` 也一并消失，Operation 保持 proposed。
 
-只有 `commit()` 明确成功并返回 `FirstTerminalCommit` 的 owning request 可以启动一次 `run_turn()` continuation。Continuation 内 Provider 调用、只读工具循环、多 ToolCall 语义以及“产生下一张写确认卡即暂停”全部保持第二期基线，不设置“一次 Provider”上限。进程在 terminal commit 后退出、commit 对账得到 terminal、continuation 返回后进程退出，或 delivery commit 结果未知时，后续请求均不得再次启动 continuation、Provider 或 read tool；它们直接使用 Ledger 的可见结果和 deterministic assistant fallback 收敛交付。已经生成但尚未提交的 ContinuationBundle 可以在同一请求内重试 delivery transaction，但不能再次运行 `run_turn()`。
+只有 `commit()` 明确成功并返回 `FirstTerminalCommit`、且仍持有 generation=1 有效 delivery owner fence 的 owning request 可以启动一次 `run_turn()` continuation。Continuation 内 Provider 调用、只读工具循环、多 ToolCall 语义以及“产生下一张写确认卡即暂停”全部保持第二期基线，不设置“一次 Provider”上限。进程在 terminal commit 后退出、commit 对账得到 terminal、continuation 返回后进程退出，或 delivery commit 结果未知时，后续请求均不得再次启动 continuation、Provider 或 read tool；它们按 owner lease/fencing 协议等待或用 deterministic assistant fallback 收敛交付。已经生成但尚未提交的 ContinuationBundle 可以在同一请求内重试 delivery transaction，但每次都必须重新验证 generation/token/lease，且不能再次运行 `run_turn()`。
 
 ### 11.5 Read Tool
 
@@ -693,27 +742,50 @@ response 丢失后 Pending 可能已经清除。新版客户端仍持有 `operat
 
 ### 14.3 Pending 尚未清除
 
-若 primary 已进入 committed/failed/rejected terminal，但进程在 confirmation result sink 前退出，Pending 仍携带同一 operation id。重试先验证完整 terminal payload，再在一个短事务中：
+若 primary 已进入 committed/failed/rejected terminal，但进程在 confirmation result sink 前退出，Pending 仍携带同一 operation id。重试先验证完整 terminal payload 和 delivery owner 状态；不能仅凭 Pending confirmation claim 的年龄抢占交付。active owner 存在时按 §14.4 返回 pending，owner lease 过期后才允许 fenced takeover 在一个短事务中：
 
 ```text
+BEGIN IMMEDIATE
+reload terminal Operation + delivery fence
 INSERT origin ToolMessage(ordinal=0)
 INSERT deterministic assistant fallback(ordinal=1)
 clear matching old Pending / claim
 apply validated last undo state when committed + REQUIRED
-CAS delivery_status=failed + delivery_outcome=fallback + manifest
+CAS pending + expired generation G
+  → delivery_status=failed + delivery_outcome=fallback + generation G+1 manifest
 COMMIT
 ```
 
-两个 INSERT 依赖 ordinal 唯一索引；若 delivery 已由一次结果未知的 transaction 提交，重放只能读取并验证已有 manifest，不能重复插入。整个收敛过程不调用 executor、continuation、Provider 或 read tool。
+`BEGIN IMMEDIATE` 的单 writer lock 保护 fallback 构造，最后一条 expired-generation terminal CAS 决定 winner；两个 INSERT、Pending/undo 收敛和 CAS 必须处于同一事务，CAS rowcount 不是 1 时全部回滚，不留下“已抢占但未交付”的窗口。若 delivery 已由一次结果未知的 transaction 提交，重放只能读取并验证已有 manifest，不能重复插入。整个收敛过程不调用 executor、continuation、Provider 或 read tool。
 
-active confirmation claim 尚未过期时，不抢占可能仍在交付的 owner；返回 retryable conflict。claim 过期或已知 owner 放弃后可收敛。由于 Ledger 已 terminal，收敛只处理消息交付，不再涉及业务写入。
+### 14.4 Delivery owner lease 与 takeover
 
-### 14.4 Delivery 状态
+terminal replay 读取 `delivery_status=pending` 时固定分支：
+
+```text
+owner lease 未过期
+  → 409 operation_delivery_pending, retryable=true
+  → Retry-After = clamp(ceil(lease remaining seconds), 1, 120)
+  → messages/Pending/delivery 均不写，executor/continuation/Provider/read tool=0
+
+owner lease 已过期
+  → BEGIN IMMEDIATE
+  → reload status/generation/lease
+  → 已完成：验证 manifest 后 replay
+  → 已被其他请求续租：返回 operation_delivery_pending
+  → 仍过期：在锁内构造 deterministic fallback，最终以 expired generation G→terminal generation G+1 CAS 完成交付
+```
+
+只有锁内 expired-generation terminal CAS winner 能提交 fallback；loser 的整个 transaction（包括暂存消息）回滚，再读取 completed/failed 或 active lease。原 owner 续租、正常 Bundle delivery 或明确 continuation failure fallback 都必须持有相同 generation + token fingerprint + 未过期 lease。takeover 后，晚到 owner 即使已经得到 Provider answer 或 chained Pending Bundle，也因 generation/token 不匹配被 fence：丢弃整个 Bundle，不写消息/Pending/new Operation/undo，不发送 authoritative SSE event，并回读 winner 的 fallback。它不得重跑 continuation，也不得用旧 token 恢复 owner 身份。
+
+continuation 以现有普通 `Exception` failure 明确结束时，可以在 lease 未过期期间用自己的 fence 直接写 deterministic fallback；不需要等 120 秒。取消与其他 `BaseException` 继续传播并停止 heartbeat，不在异常路径抢写 fallback；进程崩溃、任务消失或无法续租同样保持 pending，等待 lease 到期后的 takeover。
+
+### 14.5 Delivery 状态
 
 领域 terminal 后：
 
 - 完整 ContinuationBundle、旧 Pending clear 或新 Pending/Operation replace、undo state 和 delivery manifest CAS 原子持久化：`delivery_status=completed`；
-- continuation 明确失败，或 replay 因原 owner 消失而使用 deterministic assistant fallback；同一 delivery transaction 持久 fallback bundle 并写 `delivery_status=failed` + 固定 code；
+- continuation 明确失败时由有效 owner，或 owner lease 过期时由 takeover CAS winner 使用 deterministic assistant fallback；同一 fenced delivery transaction 持久 fallback bundle 并写 `delivery_status=failed` + 固定 code；
 - 进程退出或结果未知：保持 `pending`；
 - rejection 与批准路径共用 ContinuationBundle delivery；不产生 Chat message 的 compensation 使用 `not_applicable`。
 
@@ -738,7 +810,7 @@ SQLite 使用 `BEGIN IMMEDIATE` 获取单 writer。并发相同 operation id：
 
 1. 丢弃当前 Session；
 2. 用新 Session 只读查询 operation id；
-3. 若 terminal 和完整性校验成立，返回 replay；
+3. 若 terminal 和完整性校验成立，绝不启动 continuation；若持久 owner fence 与本请求预生成的 generation/token 一致且 lease 有效，可在 fenced delivery transaction 中直接写 deterministic fallback，否则按 active/expired owner 规则返回 pending 或 takeover；
 4. 若仍是 proposed，返回 503 `operation_not_committed` 且 `retryable=true`，不在同一请求再次调用 executor；
 5. primary execution 对账若 Operation absent，违反“确认前 proposal 已独立提交”的不变量，返回 `operation_result_unknown` 并禁止自动重建；
 6. compensation 的 absent/proposed/terminal/unreadable 分支按 §18 的两阶段状态机处理；
@@ -750,7 +822,8 @@ Delivery transaction 的 commit 异常使用相同对账原则，但查询对象
 
 - terminal + completed/failed + message count/ordinal/manifest 完整：按 outcome 返回已记录的 final response 或 chained Pending，不再插入；
 - chained_pending 还必须存在匹配的 next Operation proposal 与 proposed transition；缺任一项均为完整性错误；
-- terminal + pending + 无 operation-bound message、无 next Operation：已知前次 delivery 未提交，可用内存中的 ContinuationBundle 或 deterministic fallback 重试短 delivery transaction，但不得再次运行 continuation/Provider/read tool；
+- terminal + pending + 无 operation-bound message、无 next Operation：已知前次 delivery 未提交；只有仍匹配 generation/token/未过期 lease 的原 owner可以重试内存 ContinuationBundle 或其 deterministic fallback，非 owner 在 lease 活跃时只返回 pending，lease 过期时只能通过 generation takeover 写 fallback；任何分支都不得再次运行 continuation/Provider/read tool；
+- delivery commit fresh read 发现 generation/token 已变化或 lease 已过期：丢弃内存 Bundle，按 §14.4 回读/takeover，不能覆盖 winner；
 - 只存在部分消息、孤立 next Operation、payload/manifest 不一致或数据库不可读：返回 `operation_delivery_unknown`，不覆盖、不补写、不运行 continuation，由完整性修复流程处理。
 
 ## 17. Legacy 集成
@@ -925,7 +998,7 @@ operation_projection_failed
 - Journal 失败：不改变 Operation outcome；
 - mandatory result codec、renderer、transport projector、required undo 或 byte budget 失败：整个 Operation transaction 回滚并保持 proposed，不持久 fallback/空 undo；
 - commit 结果未知：不自动重跑；
-- terminal commit 后的 Provider/delivery 失败：保留 committed，原子持久化 deterministic fallback 或保持 pending；
+- terminal commit 后的 Provider/delivery 普通失败：保留 terminal；有效 owner 用 fence 原子持久化 deterministic fallback，否则保持 pending；expired/late owner 不得写入；
 - replay 投影失败：使用已持久 `visible_result/transport_json`，不调用当前 renderer 或 executor。
 
 日志只允许：operation id、tool name、状态、固定 code、耗时和安全计数。禁止 result、undo、参数、token、异常正文。
@@ -941,10 +1014,11 @@ operation_projection_failed
 - 已有非空 Pending 的 lazy proposal adoption；
 - conversation 删除后 Operation 保留；
 - ChatMessage operation/delivery 私有列、kind/role/tool-call CHECK、跨表 trigger、部分唯一索引和已有消息 null backfill；
+- delivery generation/owner-token fingerprint/lease 字段、组合 CHECK、单调 generation trigger 和已有 Operation 的安全 backfill；
 - compensation parent trigger、role-aware Operation CHECK 与所有 UTF-8 BLOB byte CHECK；
 - 现有 0024 Journal 和 0025 confirmation claim 数据不变。
 
-本分支尚未发布，因此可以直接调整 0025 之后的模型/迁移顺序，但 migration version 仍固定记录为独立 `0026_write_operation_ledger`，不重写 0024/0025 的语义。
+本分支尚未发布，因此可以直接调整 0025 之后的模型/迁移顺序，但 migration version 仍固定记录为独立 `0026_write_operation_ledger`，不重写 0024/0025 的语义。`agent_checkpoints.sqlite` 不属于业务 migration：0026 不打开、复制或删除它；旧文件存在与否都不影响迁移结果。
 
 Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化失败时必须明确阻止 Agent 写入；不得用内存 Ledger 或旧 executor fallback 继续写。
 
@@ -974,10 +1048,13 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - primary 与 compensation 必须使用不同 request-kind envelope，compensation 不得依赖 confirmation token；
 - executor 事务内不存在 Provider、HTTP、浏览器、文件写入；
 - result/renderer/transport/required undo 不存在 fallback、空值降级或 terminal commit 后二次生成路径；
+- Chat/HITL runtime 不接受 persistent `checkpoint_path`，不打开 `agent_checkpoints.sqlite`，不使用 `SqliteSaver`、`Command(resume)` 或 checkpoint interrupt identity；Pending/Ledger 是唯一恢复真值；
+- delivery continuation 只能由匹配 generation/token/lease 的 owner 启动和提交；heartbeat、normal delivery、explicit fallback、expired takeover 均使用封闭 CAS，禁止无 fence 的 `delivery_status` 更新；
+- raw delivery owner token 不得进入数据库、State/checkpoint、日志、Journal、HTTP/SSE 或异常文本；
 - 不存在 `ledger_enabled` feature flag、shadow write、dual write、memory fallback 或旧路径 fallback；
 - Provider 第二期 golden byte/canonical 等价；
 - Journal 第一期开集不变；
-- checkpoint 中不存在 Ledger Session、Coordinator、OperationExecution、result、undo 或 key。
+- 瞬态 Graph State 中不存在 Ledger Session、Coordinator、OperationExecution、ContinuationBundle、delivery owner token、result、undo 或 key；persistent checkpoint 在 Chat/HITL 路径不存在。
 
 ## 23. 测试策略
 
@@ -995,6 +1072,7 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - chained next Operation 缺失、跨 conversation、非 primary/proposed 或与 Pending tool identity 不一致时 FK/trigger/Coordinator 拒绝；
 - operation-bound message 三列成组、kind/role/tool_call/ordinal shape CHECK、跨表 tool_call/conversation trigger 与 `(operation_id, delivery_ordinal)` 唯一；
 - delivery outcome/count/manifest/next-operation 组合 CHECK 与 terminal 后不可变；
+- delivery generation/owner/lease 的 proposed、terminal-pending、completed/failed/not-applicable 组合 CHECK，generation 只能按协议单调 +1；
 - HMAC key create/race/permission/missing-existing-key failure。
 
 ### 23.2 Repository / UoW
@@ -1027,6 +1105,11 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - 进程在领域 commit 后、Pending clear 前退出，下一请求只收敛 delivery；
 - 在 origin ToolMessage、每条 continuation message、旧 Pending clear、新 Pending/Operation replace、undo 和 delivery CAS 的每个边界注入 commit/response loss，整个 transaction 要么全有要么全无，ordinal 不重复；
 - delivery commit unknown 的 fresh Session 对账分别覆盖 final response、chained Pending、未提交和部分损坏；chained 分支必须验证新 Pending、Conversation 指针、新 Operation proposal/transition 与旧 Operation `delivery_next_operation_id`；
+- 双连接 delivery barrier：owner 正在 Provider/read-tool continuation 且 heartbeat lease 有效时，replay 只得到 `operation_delivery_pending`，消息/Pending/delivery 不变，Provider/read-tool 为零；
+- owner crash 后不续租：到期前 replay 不抢占，到期后两个连接同时 takeover 只有一个 generation CAS winner 原子写 fallback；
+- late Bundle：owner lease 到期并被 takeover 后才返回的 final/chained Bundle 因 generation/token fencing 被完整丢弃，不覆盖 fallback、不创建 chained Operation、不发送 authoritative SSE；
+- heartbeat CAS busy/失配/到期、正常 owner delivery、ordinary-Exception fallback、BaseException/cancellation 停止续租以及 commit-unknown fallback 的 generation、调用次数及最终状态；
+- pre-step fence 不可确认时该 Provider/read tool 调用为零；post-step fence 丢失时不再调用下一 step、不提交 Bundle，已发生的调用恰为一次；
 - 任一 terminal replay/delivery recovery 的 Provider 调用为零。
 
 ### 23.4 15 个主写 golden
@@ -1056,6 +1139,8 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - approve/reject → read tool → final response 的 sync/SSE golden 固定消息顺序、最终 payload、Provider/read-tool 次数和副作用；
 - approve → 新 write Pending 的 sync/SSE golden 固定 chained Pending、assistant ToolCall、Conversation 指针、新 Operation proposal/transition 与旧 delivery CAS 的原子结果；
 - SSE spy 证明 commit 前只允许基线非权威 delta，新的 Pending/operation id 与 authoritative final event 必须在 delivery commit 后发送；delivery 回滚不得暴露不可恢复的 Pending identity；
+- restart 后 approve/edit/reject 只从 Pending/Ledger 重建，不读取 checkpoint；删除、损坏、只读或预置不匹配的旧 `agent_checkpoints.sqlite` 结果完全相同；
+- approve A 产生 chained Pending B 后重启，即使旧 checkpoint 仍是 A 的 interrupt，B 的确认仍按新 operation id 成功；最终完成后的普通下一 turn 也不合并旧 graph state；
 - missing/foreign/malformed operation id；
 - old client live-Pending compatibility；
 - Pending 已清除的 terminal replay；
@@ -1070,6 +1155,7 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - 同 Session Journal SAVEPOINT 失败不影响 domain/Ledger；outer rollback 时 started 同步消失；
 - post-commit terminal Journal 失败只留下允许的不完整诊断，不影响 Operation；
 - Ledger/日志/Journal 不含 args、exception、token、Prompt、回答；
+- raw delivery owner token 的数据库/State/checkpoint/log/Journal/HTTP/SSE 负向扫描；只允许 Ledger HMAC fingerprint；
 - synthetic fixture 不保存真实用户内容或 key。
 
 ### 23.7 补偿
@@ -1096,7 +1182,7 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - 前端全量分组 aggregate；
 - Ruff、Mypy、frontend build、static smoke、local verify；
 - 一次受控 real-AI verify；
-- 本地浏览器 Chat 闭环：approve、edit、reject、approve/reject 后 read-tool continuation、生成 chained write Pending、sync、SSE、edited response-loss retry、undo retry；
+- 本地浏览器 Chat 闭环：approve、edit、reject、approve/reject 后 read-tool continuation、生成 chained write Pending、重启后再次确认、sync、SSE、edited response-loss retry、active-owner retry、owner-crash takeover、undo retry；
 - DB 证明领域行一次、Ledger terminal 一次、transition 序列正确、operation-bound message ordinal 唯一连续、final/chained Pending 原子收敛；
 - Provider/Tool 调用次数证明首次 continuation 保持基线循环、replay/delivery recovery 为零；
 - 独立 CR 无 P0/P1/P2；
@@ -1112,6 +1198,8 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 - Pipeline write 分支必须经过 Coordinator；
 - 相关 Repository 拆出 Session-bound 核心；
 - ChatMessage 增加 operation delivery identity 和部分唯一索引；
+- Chat/LangGraph 移除 persistent checkpoint confirmation resume；`agent_checkpoints.sqlite` 退出 Chat/HITL 路径，旧文件只是不被读取的可丢弃 cache artifact；
+- Ledger delivery 增加 owner token fingerprint、generation、lease 与 heartbeat/takeover fencing；
 - confirmation claim 改为外层业务事务内 CAS；
 - undo 从 API helper 移入 compensation adapter；
 - 旧的“executor commit 后再推断 undo/result”分支删除；
@@ -1128,13 +1216,14 @@ Ledger table 是业务真值，迁移失败不能 fail-open。数据库初始化
 3. 4 类现有补偿写入全部通过子 Operation；
 4. 相同 operation id 的领域事务最多 committed 一次；
 5. 编辑确认与拒绝反馈在 Pending 清除后通过 operation request fingerprint 精确重放，不需要原始 args；
-6. commit 后 HTTP/SSE/进程丢失能回读首次结果，executor 和 Provider 均不重跑，消息不重复；
+6. commit 后 HTTP/SSE/进程丢失能回读首次结果，executor 和 Provider 均不重跑，消息不重复；active delivery owner 不被并发 fallback 抢占，expired owner 的晚到 Bundle 被 fence；
 7. domain/Ledger 原子性、terminal payload 完整性和 crash matrix 通过；
 8. 四类 REQUIRED undo 与所有 replay 投影在领域提交前完整生成并通过聚合预算；
 9. infrastructure/internal failure 保持 proposed，确定性领域失败才形成 terminal failed；
 10. Journal 仍 fail-open，Ledger 写入 fail-closed；
 11. Provider、HITL、Pending、CAS、业务结果与调用次数满足兼容 golden，包括完整 read-tool continuation 和 chained write Pending；
-12. 没有未列明的 Agent write 或 Chat delivery bypass；
-13. 独立复审和完整发布门禁通过。
+12. Pending/Ledger 是写确认唯一恢复真值，重启、旧/坏 checkpoint 与 chained Pending 不改变结果；
+13. 没有未列明的 Agent write、persistent checkpoint resume 或 Chat delivery fencing bypass；
+14. 独立复审和完整发布门禁通过。
 
 完成第三期后，第四期 Context Projector 才能使用 Ledger 的 committed/failed/replayed 数据区分“模型提出动作”和“业务真正提交”，但第四期不属于本设计。
