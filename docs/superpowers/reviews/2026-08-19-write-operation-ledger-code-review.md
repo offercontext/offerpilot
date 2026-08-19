@@ -2,14 +2,15 @@
 
 ## Final readiness decision
 
-**No-Go for release.** No P0 or P1 remains. P1-03 through P1-08 and P2-06 through P2-08 are closed with focused code and test evidence. P2-09 remains: the fresh-session helper does not implement or test the design-mandated absent/proposed/unreadable commit-unknown branches.
+**No-Go for release.** No P0 or P1 remains. P1-03 through P1-08 and P2-06 through P2-09 are closed with focused code and test evidence, but new P2-10 remains in the primary deterministic-failure commit path.
 
-Open at this HEAD: **P2-09 only; no P0/P1**. The terminal commit-unknown replay fix is effective and the new matrix/API goldens close P2-07, but the remaining crash-matrix branch contract is a Phase 3 release blocker.
+Open at this HEAD: **P2-10 only; no P0/P1**. The normal success, rejection, legacy, and compensation commit-site mappings are covered, but `_commit_failure()` still bypasses the phase-aware commit-site reconciliation.
 
 ## Reviewed scope and method
 
 - Fixed baseline: `5e560580e86da7d1eb272e0df9d3d13304717499`.
-- Implementation HEAD: `2fb7bab` (`fix: AI reconcile ledger commit unknown`).
+- Implementation HEAD: `1ad4d24` (`fix: AI distinguish ledger reconciliation states`).
+- Included prior commit-unknown reconciliation fix: `2fb7bab` (`fix: AI reconcile ledger commit unknown`).
 - Included acceptance/concurrency commit: `c2c564a` (`test: AI cover ledger concurrency recovery`).
 - Included latest migration compatibility fix: `bdb32cd` (`fix: AI rebuild ledger chat schema with stale triggers`).
 - Previous reviewed implementation: `b358c66`.
@@ -27,7 +28,7 @@ Severity: P1 blocks release because behavior can violate a required Phase 3 guar
 
 - P0: none observed.
 - P1: P1-03 through P1-08 resolved with evidence.
-- P2: P2-06, P2-07, and P2-08 resolved; P2-09 open.
+- P2: P2-06 through P2-09 resolved; P2-10 open.
 - P3: none requiring a report finding.
 
 ## Previous open findings: resolution evidence
@@ -70,23 +71,29 @@ Terminal result/transport projections are built and persisted before terminal co
 
 **Resolved for terminal commit-unknown.** Design §16.1 requires a `session.commit()` exception to discard the current Session and fresh-read the operation. If the terminal row and integrity checks are present, the request must replay/recover the durable result (and use the delivery fence when needed), without rerunning the executor (`docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md:807-819`).
 
-The coordinator now routes OperationalError from primary, rejection, legacy, and compensation through `_reconcile_commit_unknown()` at `src/offerpilot/ai/write_operations.py:1060-1065`, `:1127-1132`, `:1226-1233`, and `:1377-1384`. The helper opens a fresh Session, reads the authoritative Ledger row, and calls `repository.replay()` for a valid terminal row at `:1388-1401`. This supplies the required first-call terminal replay without using Pending args, rerunning the executor, or rerunning Provider/read tools.
+The coordinator now routes OperationalError from primary, rejection, legacy, and compensation through `_reconcile_commit_unknown()` at `src/offerpilot/ai/write_operations.py:1060-1071`, `:1146-1154`, `:1258-1266`, and `:1438-1446`. The helper opens a fresh Session, reads the authoritative Ledger row, and calls `repository.replay()` for a valid terminal row at `:1462-1482`. This supplies the required first-call terminal replay without using Pending args, rerunning the executor, or rerunning Provider/read tools.
 
-The updated matrix injects “commit succeeds, response is lost” at `tests/test_write_operation_acceptance_matrix.py:372-408` and `:411-461`, and now requires the first call to return `OperationReplay`; a second call also replays and each executor runs once. The focused write/matrix run passed 37 tests. The remaining nonterminal branch gap is tracked separately as P2-09 below.
+The updated matrix injects “commit succeeds, response is lost” at `tests/test_write_operation_acceptance_matrix.py:373-409` and `:467-517`, and now requires the first call to return `OperationReplay`; a second call also replays and each executor runs once. The focused write/matrix run passed 38 tests. The nonterminal branch mapping is covered separately under P2-09 below.
 
-### P2-09 — Commit-unknown nonterminal branch mapping and coverage is incomplete
+### P2-09 — Commit-unknown nonterminal branch mapping and coverage
 
-**Open; release-blocking under the Phase 3 crash matrix.** The fresh helper collapses every nonterminal fresh read to retryable `operation_busy` at `src/offerpilot/ai/write_operations.py:1393-1401` (`operation is None` or `status != terminal`), and also maps a fresh-read `OperationalError` to `operation_busy` at `:1398-1401`. The design requires branch-specific reconciliation: primary proposed → `operation_not_committed`, primary absent/unreadable → `operation_result_unknown` (`docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md:809-817`); compensation proposal-create absent → `operation_not_committed`, compensation execution absent/unreadable → `operation_result_unknown`, and proposed is a no-second-executor continuation state (`:911-928`).
+**Resolved.** Commit-site catches now pass role/phase-specific codes while the outer catches retain `operation_busy` for non-commit lock/contention failures. Primary/rejection/legacy terminal commits use absent=`operation_result_unknown`, proposed=`operation_not_committed` at `src/offerpilot/ai/write_operations.py:1060-1084`, `:1146-1164`, and `:1258-1278`; compensation proposal commits use absent/proposed=`operation_not_committed` at `:1336-1359`, and compensation execution commits use absent=`operation_result_unknown`, proposed=`operation_not_committed` at `:1438-1458`. `_reconcile_commit_unknown()` returns the supplied absent/proposed code and maps a fresh-read OperationalError to `operation_result_unknown` at `:1462-1482`. These branches match design §16/§18 (`docs/superpowers/specs/2026-08-19-write-operation-ledger-design.md:809-817` and `:911-928`).
 
-The 37 passing tests cover only terminal-after-commit response loss. `tests/test_write_operation_acceptance_matrix.py:372-461` has no proposal-commit loss, proposed execution, absent, or unreadable injections, and the same helper is shared by primary/rejection/legacy/compensation. Returning a generic busy is retryable and does avoid an immediate duplicate executor, but it does not prove or preserve the required Ledger truth distinctions; in compensation, an absent proposal-commit result must not silently look like an execution retry, and an unreadable Ledger must not be reported as ordinary writer contention. Add phase-aware reconciliation plus the minimum primary terminal/proposed/absent/unreadable and compensation proposal/execution absent/proposed/terminal/unreadable tests before calling the crash matrix complete.
+`tests/test_write_operation_acceptance_matrix.py:412-464` now executes the primary proposed/absent, compensation proposal/execution absent, and unreadable fresh-read cases and asserts the required codes. The actual primary and compensation commit-response-loss tests at `:373-409` and `:467-517` require first-call `OperationReplay` with one executor call; code inspection confirms the rejection and legacy commit sites use the same terminal mapping. Non-commit writer-lock paths remain on the outer `operation_busy` handlers. P2-09 is closed.
+
+### P2-10 — Primary deterministic-failure commit bypasses phase-aware reconciliation
+
+**Open; release-blocking acceptance gap.** The normal primary success path now catches its terminal `session.commit()` at `src/offerpilot/ai/write_operations.py:1060-1071`, but `_commit_failure()` is also a primary terminal commit site and still calls `session.commit()` directly at `:1539-1576`. A commit response loss from a validator/domain deterministic failure therefore escapes to the outer handler at `:1073-1084`, which supplies `proposed_code="operation_busy"` rather than the commit-site `operation_not_committed`. If that failed terminal transaction is not durable and the fresh read sees the still-proposed operation, the observable code violates §16.1; the current matrix only injects response loss for the success path and its branch test calls the private helper directly, so it cannot catch this wiring omission.
+
+Wrap `_commit_failure()`'s commit at the commit site with the same absent=`operation_result_unknown`, proposed=`operation_not_committed` reconciliation and add a mapped validator/domain-failure commit-response-loss test asserting terminal replay when durable, proposed code when not durable, and one executor call.
 
 ### P2-07 — Required adapter/concurrency acceptance matrix
 
-**Resolved as an executable coverage gap.** `tests/test_write_operation_acceptance_matrix.py` now has 24 passing cases: `:165-200` enumerates all 12 typed adapters with one executor call and replay, `:203-228` covers all 3 legacy adapters, `:231-278` covers all 4 compensation kinds, `:281-337` covers late-owner fencing plus message/manifest tamper rejection, `:340-370` races two primary connections, `:373-410` injects primary commit response loss, `:413-487` covers compensation commit response loss and stable deterministic parent conflict, and `:490-528` races two expired delivery takeovers. The matrix file now passes both Ruff and strict mypy (`# mypy: disable-error-code` is limited to the test file's untyped test helpers).
+**Resolved as an executable coverage gap.** `tests/test_write_operation_acceptance_matrix.py` now has 25 passing cases: `:165-200` enumerates all 12 typed adapters with one executor call and replay, `:203-228` covers all 3 legacy adapters, `:231-278` covers all 4 compensation kinds, `:281-337` covers late-owner fencing plus message/manifest tamper rejection, `:340-370` races two primary connections, `:373-409` injects primary commit response loss, `:412-464` covers reconciliation branches, `:467-541` covers compensation commit response loss and stable deterministic parent conflict, and `:544-582` races two expired delivery takeovers. The matrix file now passes both Ruff and strict mypy (`# mypy: disable-error-code` is limited to the test file's untyped test helpers).
 
 The direct matrix intentionally isolates Ledger coordinator behavior: it replaces catalog executors with spies and uses `NullRunRecorder`. The required runtime integration is covered by the existing API goldens, so this harness scope is no longer an open P2. `tests/test_chat_api.py:1040-1117` runs deterministic confirmation retry for both sync and SSE, verifies delivery takeover replay, exactly one domain version, and `model.calls == 0`; `:5919-5990` runs the unrelated-generation race for both sync/SSE, verifies the single SSE origin event carries the operation id, and verifies the chained Pending, persisted history, and unchanged domain result. Those four focused API cases pass, so duplicating them in the Ledger-only matrix is unnecessary.
 
-The commit-unknown tests now close the terminal replay portion of P1-08; P2-09 separately records the missing nonterminal crash branches. Parent digest/trigger enforcement remains covered by the schema and compensation integrity tests described under P2-06. Therefore P2-07 is closed, with P2-09 still preventing release.
+The commit-unknown tests now close both the terminal replay and nonterminal branch portions of P1-08/P2-09. Parent digest/trigger enforcement remains covered by the schema and compensation integrity tests described under P2-06. Therefore P2-07 is closed.
 
 ### P2-08 — Legacy ChatMessage rebuild index retention
 
@@ -94,7 +101,7 @@ The commit-unknown tests now close the terminal replay portion of P1-08; P2-09 s
 
 ## Verification performed
 
-- `uv run pytest tests/test_write_operations.py tests/test_write_operation_acceptance_matrix.py -q` — **37 passed**, 1 warning.
+- `uv run pytest tests/test_write_operations.py tests/test_write_operation_acceptance_matrix.py -q` — **38 passed**, 1 warning.
 - `uv run pytest tests/test_schema_compatibility.py tests/test_write_operation_acceptance_matrix.py -q` — **39 passed**, 1 warning.
 - `uv run pytest tests/test_chat_api.py -q -k "deterministic_pilot_retries_same_key_after_chat_cas_failure or chat_confirm_ledger_delivery_survives_unrelated_conversation_generation_change"` — **4 passed**, 290 deselected, 25 warnings.
 - `uv run pytest tests/test_chat_api.py -q -k "confirm_stream_executes_pending_write_and_completes or chat_confirm_stream_recovers_committed_write_when_followup_model_fails or chat_confirm_ledger_delivery_persists_fallback_after_generation_change or chat_confirm_rejection_provider_failure_records_cancellation_once or chat_confirm_result_cas_loss_stays_stale_on_followup_failure or chat_confirm_tool_error_provider_failure_is_durable"` — **12 passed**, 282 deselected, 97 warnings.
@@ -109,4 +116,4 @@ The commit-unknown tests now close the terminal replay portion of P1-08; P2-09 s
 
 ## Final decision
 
-**No-Go.** P1-03 through P1-08 and P2-06 through P2-08 are closed with code/test evidence. No P0/P1 remains, but P2-09 is open: the terminal commit-unknown path now replays correctly, while the required proposed/absent/unreadable primary and compensation branch mapping and executable coverage are still missing. The Phase 3 gate is not green until those branches are phase-aware and verified.
+**No-Go.** P1-03 through P1-08 and P2-06 through P2-09 are closed with code/test evidence. No P0/P1 remains, but P2-10 is open because the deterministic primary-failure terminal commit still bypasses phase-aware commit-unknown reconciliation. The full long release gate is intentionally not repeated here and remains the parent task’s responsibility.
