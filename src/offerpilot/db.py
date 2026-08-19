@@ -1660,6 +1660,11 @@ def _rebuild_chat_messages_for_write_operation_integrity(engine) -> None:  # typ
         ).fetchall()
         if violations:
             raise RuntimeError("chat message foreign key migration failed")
+        # A previous 0026 attempt may already have installed this cross-table
+        # trigger. SQLite reparses it during ALTER TABLE, so remove it inside
+        # the same transaction before swapping chat_messages; the caller
+        # recreates the trigger immediately after the rebuild.
+        cursor.execute("DROP TRIGGER IF EXISTS trg_write_operation_chat_restrict")
         cursor.execute("DROP TABLE chat_messages")
         cursor.execute("ALTER TABLE chat_messages_0026 RENAME TO chat_messages")
         cursor.execute(

@@ -340,6 +340,48 @@ def test_write_operation_chat_rebuild_is_atomic_on_orphan_rows(tmp_path):
         assert "0026_write_operation_ledger" not in versions
 
 
+def test_write_operation_chat_rebuild_drops_stale_cross_table_trigger(tmp_path):
+    db_path = tmp_path / "stale-trigger.db"
+    init_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER trg_chat_message_operation_insert")
+        conn.execute("DROP TRIGGER trg_chat_message_operation_update")
+        conn.execute("DROP TRIGGER trg_chat_message_operation_bind")
+        conn.execute("DROP TRIGGER trg_write_operation_chat_restrict")
+        conn.execute("ALTER TABLE chat_messages RENAME TO chat_messages_current")
+        conn.execute(
+            "CREATE TABLE chat_messages ("
+            "id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, role TEXT NOT NULL,"
+            "content TEXT NOT NULL DEFAULT '', tool_calls TEXT NOT NULL DEFAULT '',"
+            "tool_call_id TEXT NOT NULL DEFAULT '', provider_blocks TEXT NOT NULL DEFAULT '',"
+            "operation_id TEXT, delivery_kind TEXT, delivery_ordinal INTEGER,"
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO chat_messages SELECT * FROM chat_messages_current"
+        )
+        conn.execute("DROP TABLE chat_messages_current")
+        conn.execute(
+            "CREATE TRIGGER trg_write_operation_chat_restrict "
+            "BEFORE DELETE ON write_operations "
+            "WHEN EXISTS (SELECT 1 FROM chat_messages WHERE operation_id = OLD.id) "
+            "BEGIN SELECT RAISE(ABORT, 'operation delivery messages exist'); END"
+        )
+
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_messages'"
+        ).fetchone()[0]
+        trigger = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND name='trg_write_operation_chat_restrict'"
+        ).fetchone()
+    assert "ck_chat_messages_delivery_group" in table_sql
+    assert trigger == ("trg_write_operation_chat_restrict",)
+
+
 def test_init_database_creates_idempotent_schema_migration_log(tmp_path):
     db_path = tmp_path / "data.db"
 
