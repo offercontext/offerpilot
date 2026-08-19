@@ -7,12 +7,11 @@ import json
 import os
 import secrets
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import Event, Thread
-from time import monotonic
 from typing import Any, Literal, NoReturn, SupportsIndex, cast
 from uuid import UUID, uuid4, uuid5
 
@@ -32,6 +31,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     UndoPolicy,
 )
 from offerpilot.ai.tool_runtime.rendering import render_compatibility
+from offerpilot.ai.tool_runtime.journal import project_tool_started_bound
 from offerpilot.ai.tool_runtime.transport import project_transport_event
 from offerpilot.ai.tool_runtime.validation import canonical_json
 from offerpilot.models import ChatMessage, Conversation, WriteOperation, WriteOperationTransition
@@ -92,12 +92,36 @@ class _Transient:
         raise TypeError("transient write operation value cannot be serialized")
 
 
-@dataclass(frozen=True)
 class DeliveryOwnership(_Transient):
-    operation_id: str
-    generation: int
-    raw_token: bytes = field(repr=False)
-    fingerprint: str
+    __slots__ = ("operation_id", "generation", "__raw_token", "fingerprint")
+
+    def __init__(
+        self, operation_id: str, generation: int, raw_token: bytes, fingerprint: str
+    ) -> None:
+        self.operation_id = operation_id
+        self.generation = generation
+        self.__raw_token = raw_token
+        self.fingerprint = fingerprint
+
+    @property
+    def raw_token(self) -> bytes:
+        return self.__raw_token
+
+    def __repr__(self) -> str:
+        return (
+            "DeliveryOwnership(operation_id="
+            f"{self.operation_id!r}, generation={self.generation!r}, "
+            f"fingerprint={self.fingerprint!r})"
+        )
+
+    def public_identity(self) -> dict[str, str | int]:
+        """Return the only representation safe for logs, events, and transport."""
+
+        return {
+            "operation_id": self.operation_id,
+            "generation": self.generation,
+            "fingerprint": self.fingerprint,
+        }
 
 
 class DeliveryHeartbeat(_Transient):
@@ -107,7 +131,6 @@ class DeliveryHeartbeat(_Transient):
         self._repository = repository
         self._ownership = ownership
         self._stop = Event()
-        self._deadline = monotonic() + DELIVERY_OWNER_LEASE_SECONDS
         self._thread = Thread(target=self._run, daemon=True)
 
     def start(self) -> "DeliveryHeartbeat":
@@ -123,9 +146,6 @@ class DeliveryHeartbeat(_Transient):
     def _run(self) -> None:
         try:
             while not self._stop.wait(DELIVERY_OWNER_HEARTBEAT_SECONDS):
-                if monotonic() >= self._deadline:
-                    self._stop.set()
-                    return
                 if not self._repository.heartbeat(self._ownership):
                     self._stop.set()
                     return
@@ -206,11 +226,15 @@ def load_or_create_ledger_key(
     temp_path = key_path.with_name(f".{LEDGER_KEY_FILENAME}.{uuid4().hex}.tmp")
     try:
         os.close(lock_fd)
+        if key_path.exists():
+            return _read_ledger_key(key_path)
+        with session_factory() as session:
+            existing = session.scalar(select(func.count()).select_from(WriteOperation)) or 0
+        if existing:
+            raise WriteOperationError("operation_unavailable")
         domain = LedgerKeyDomain(str(uuid4()), secrets.token_bytes(32))
         encoded = base64.urlsafe_b64encode(domain.secret).decode("ascii").rstrip("=")
-        payload = canonical_json(
-            {"schema_version": 1, "key_id": domain.key_id, "secret": encoded}
-        )
+        payload = canonical_json({"schema_version": 1, "key_id": domain.key_id, "secret": encoded})
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
         fd = os.open(temp_path, flags, 0o600)
         try:
@@ -434,8 +458,7 @@ def _valid_delivery_messages(
         or messages[0].tool_call_id != operation.tool_call_id
         or messages[0].delivery_kind != "origin_tool_result"
         or any(
-            item.operation_id != operation.id
-            or item.conversation_id != operation.conversation_id
+            item.operation_id != operation.id or item.conversation_id != operation.conversation_id
             for item in messages
         )
     ):
@@ -545,9 +568,8 @@ class WriteOperationRepository:
                 .order_by(ChatMessage.delivery_ordinal.asc())
             )
         )
-        if (
-            len(messages) != operation.delivery_message_count
-            or not _valid_delivery_messages(operation, messages)
+        if len(messages) != operation.delivery_message_count or not _valid_delivery_messages(
+            operation, messages
         ):
             raise WriteOperationError("operation_delivery_unknown")
         manifest_messages: list[JSONValue] = [
@@ -599,21 +621,19 @@ class WriteOperationRepository:
             "validated_undo_digest": _undo_digest(operation.undo_json),
             "chained_operation": _chained_manifest(child),
         }
-        digest = "sha256:" + hashlib.sha256(
-            canonical_json(manifest).encode("utf-8")
-        ).hexdigest()
+        digest = "sha256:" + hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
         if not hmac.compare_digest(digest, operation.delivery_manifest_sha256 or ""):
             raise WriteOperationError("operation_delivery_unknown")
-        final = next((item.content for item in reversed(messages) if item.role == "assistant"), None)
+        final = next(
+            (item.content for item in reversed(messages) if item.role == "assistant"), None
+        )
         if final is None:
             raise WriteOperationError("operation_delivery_unknown")
         return final
 
     def prepare_owner(self, operation_id: str, generation: int = 1) -> DeliveryOwnership:
         raw = secrets.token_bytes(32)
-        fingerprint = ledger_fingerprint(
-            self.key, "write-operation-delivery-owner-v1", raw
-        )
+        fingerprint = ledger_fingerprint(self.key, "write-operation-delivery-owner-v1", raw)
         return DeliveryOwnership(operation_id, generation, raw, fingerprint)
 
     def complete_delivery(
@@ -691,15 +711,11 @@ class WriteOperationRepository:
             "outcome": outcome,
             "failure_code": failure_code,
             "next_operation_id": next_operation_id,
-            "old_pending_disposition": (
-                "replaced" if outcome == "chained_pending" else "cleared"
-            ),
+            "old_pending_disposition": ("replaced" if outcome == "chained_pending" else "cleared"),
             "validated_undo_digest": _undo_digest(operation.undo_json),
             "chained_operation": _chained_manifest(child),
         }
-        digest = "sha256:" + hashlib.sha256(
-            canonical_json(manifest).encode("utf-8")
-        ).hexdigest()
+        digest = "sha256:" + hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
         operation.delivery_status = "failed" if outcome == "fallback" else "completed"
         operation.delivery_failure_code = failure_code if outcome == "fallback" else None
         operation.delivery_outcome = outcome
@@ -725,14 +741,10 @@ class WriteOperationRepository:
                 .where(WriteOperation.id == ownership.operation_id)
                 .where(WriteOperation.delivery_status == "pending")
                 .where(WriteOperation.delivery_generation == ownership.generation)
-                .where(
-                    WriteOperation.delivery_owner_token_fingerprint
-                    == ownership.fingerprint
-                )
+                .where(WriteOperation.delivery_owner_token_fingerprint == ownership.fingerprint)
                 .where(WriteOperation.delivery_lease_expires_at > func.unixepoch("now"))
                 .values(
-                    delivery_lease_expires_at=func.unixepoch("now")
-                    + DELIVERY_OWNER_LEASE_SECONDS
+                    delivery_lease_expires_at=func.unixepoch("now") + DELIVERY_OWNER_LEASE_SECONDS
                 )
             )
             session.commit()
@@ -807,9 +819,7 @@ class WriteOperationRepository:
                         delivery_ordinal=1,
                     )
                 )
-                takeover = self.prepare_owner(
-                    operation.id, operation.delivery_generation + 1
-                )
+                takeover = self.prepare_owner(operation.id, operation.delivery_generation + 1)
                 operation.delivery_generation = takeover.generation
                 operation.delivery_owner_token_fingerprint = takeover.fingerprint
                 operation.delivery_lease_expires_at = now_epoch + DELIVERY_OWNER_LEASE_SECONDS
@@ -953,6 +963,9 @@ class WriteOperationCoordinator:
                 self.repository.append_transition(session, operation_id, 3, "claimed")
                 try:
                     with session.begin_nested():
+                        started_recorded = project_tool_started_bound(
+                            bound_context.run_recorder, session, prepared
+                        )
                         undo_seed = (
                             undo_seed_builder(prepared, bound_context)
                             if undo_seed_builder is not None
@@ -1001,13 +1014,36 @@ class WriteOperationCoordinator:
                         self._set_terminal(operation, payload, owner)
                         self.repository.append_transition(session, operation_id, 4, "committed")
                         session.flush()
+                        record = ToolExecutionRecord(
+                            prepared,
+                            record.outcome,
+                            True,
+                            operation_id,
+                            False,
+                            True,
+                            payload.visible_result,
+                            cast(dict[str, JSONValue], json.loads(payload.transport_json)),
+                            started_recorded,
+                        )
                 except WriteOperationError:
                     raise
                 except Exception as exc:
                     failure = _map_exception(prepared, exc)
                     if failure.category == "internal_error":
-                        raise WriteOperationError("operation_not_committed", retryable=True) from exc
-                    record = ToolExecutionRecord(prepared, failure, True, operation_id, False)
+                        raise WriteOperationError(
+                            "operation_not_committed", retryable=True
+                        ) from exc
+                    record = ToolExecutionRecord(
+                        prepared,
+                        failure,
+                        True,
+                        operation_id,
+                        False,
+                        False,
+                        None,
+                        None,
+                        started_recorded,
+                    )
                     committed_failure = self._commit_failure(
                         session,
                         operation,
@@ -1072,7 +1108,11 @@ class WriteOperationCoordinator:
                     result_contract="rejection_json_v1",
                     result={"message": visible_result},
                     visible_result=visible_result,
-                    transport={"status": "cancelled", "tool_call_id": tool_call_id, "tool_name": tool_name},
+                    transport={
+                        "status": "cancelled",
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                    },
                     undo=None,
                     failure_category=None,
                     failure_code=None,
@@ -1158,13 +1198,20 @@ class WriteOperationCoordinator:
                 except ValueError as exc:
                     code = str(exc)
                     if not code.isascii() or not code or len(code) > 128:
-                        raise WriteOperationError("operation_not_committed", retryable=True) from exc
+                        raise WriteOperationError(
+                            "operation_not_committed", retryable=True
+                        ) from exc
                     payload = build_terminal_payload(
                         status="failed",
                         result_contract="legacy_string_v1",
                         result={"code": code},
                         visible_result="错误：" + code,
-                        transport={"tool_call_id": tool_call_id, "tool_name": tool_name, "status": "error", "summary": ""},
+                        transport={
+                            "tool_call_id": tool_call_id,
+                            "tool_name": tool_name,
+                            "status": "error",
+                            "summary": "",
+                        },
                         undo=None,
                         failure_category="conflict",
                         failure_code=code,
@@ -1216,7 +1263,7 @@ class WriteOperationCoordinator:
                         or parent.undo_json is None
                     ):
                         raise WriteOperationError("operation_identity_conflict")
-                    payload_from_operation(parent)
+                    parent_payload = payload_from_operation(parent)
                     undo = json.loads(parent.undo_json)
                     expected_kind = compensation_kind_for_undo(str(undo.get("kind") or ""))
                     if compensation_kind != expected_kind:
@@ -1225,6 +1272,7 @@ class WriteOperationCoordinator:
                         id=operation_id,
                         operation_role="compensation",
                         parent_operation_id=parent_operation_id,
+                        parent_terminal_payload_sha256=parent_payload.digest,
                         conversation_id=conversation_id,
                         tool_call_id=None,
                         tool_name=compensation_kind,
@@ -1257,10 +1305,21 @@ class WriteOperationCoordinator:
                     session.rollback()
                     return replay
                 parent = session.get(WriteOperation, parent_operation_id)
-                if parent is None or parent.undo_json is None:
+                if (
+                    parent is None
+                    or parent.operation_role != "primary"
+                    or parent.status != "committed"
+                    or parent.conversation_id != conversation_id
+                    or parent.undo_json is None
+                ):
                     raise WriteOperationError("operation_integrity_error")
                 parent_payload = payload_from_operation(parent)
                 undo = cast(dict[str, Any], json.loads(parent.undo_json))
+                if (
+                    operation.parent_terminal_payload_sha256 != parent_payload.digest
+                    or compensation_kind != compensation_kind_for_undo(str(undo.get("kind") or ""))
+                ):
+                    raise WriteOperationError("operation_integrity_error")
                 input_fingerprint = ledger_fingerprint(
                     self.repository.key,
                     "write-operation-input-v1",
@@ -1278,7 +1337,9 @@ class WriteOperationCoordinator:
                 except ValueError as exc:
                     code = str(exc)
                     if not code.isascii() or not code or len(code) > 128:
-                        raise WriteOperationError("operation_not_committed", retryable=True) from exc
+                        raise WriteOperationError(
+                            "operation_not_committed", retryable=True
+                        ) from exc
                     payload = build_terminal_payload(
                         status="failed",
                         result_contract="compensation_json_v1",
@@ -1321,24 +1382,18 @@ class WriteOperationCoordinator:
         except Exception:
             return OperationUnknown(operation_id, "operation_not_committed", True)
 
-    def _verify_compensation(
-        self, operation: WriteOperation, request_fingerprint: str
-    ) -> None:
+    def _verify_compensation(self, operation: WriteOperation, request_fingerprint: str) -> None:
         if (
             operation.operation_role != "compensation"
             or operation.adapter_kind != "compensation"
             or operation.fingerprint_key_id != self.repository.key.key_id
             or not operation.operation_request_fingerprint
-            or not hmac.compare_digest(
-                operation.operation_request_fingerprint, request_fingerprint
-            )
+            or not hmac.compare_digest(operation.operation_request_fingerprint, request_fingerprint)
         ):
             raise WriteOperationError("operation_input_conflict")
 
     @staticmethod
-    def _set_compensation_terminal(
-        operation: WriteOperation, payload: TerminalPayload
-    ) -> None:
+    def _set_compensation_terminal(operation: WriteOperation, payload: TerminalPayload) -> None:
         operation.status = payload.status
         operation.result_contract = payload.result_contract
         operation.result_json = payload.result_json
@@ -1420,7 +1475,18 @@ class WriteOperationCoordinator:
         self._set_terminal(operation, payload, owner)
         self.repository.append_transition(session, operation.id, 4, "failed")
         session.commit()
-        return OperationFailed(operation.id, payload, owner), resolved
+        persisted = ToolExecutionRecord(
+            prepared,
+            resolved.outcome,
+            resolved.execution_started,
+            operation.id,
+            False,
+            True,
+            payload.visible_result,
+            cast(dict[str, JSONValue], json.loads(payload.transport_json)),
+            resolved.journal_started_recorded,
+        )
+        return OperationFailed(operation.id, payload, owner), persisted
 
     @staticmethod
     def _set_terminal(

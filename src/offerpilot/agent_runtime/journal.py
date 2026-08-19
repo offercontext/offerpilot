@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from sqlalchemy.exc import OperationalError
@@ -208,9 +208,7 @@ class SafeRunRecorder:
         self.clock = clock
         self.segment_budget_seconds = segment_budget_seconds
         self.disposition_budget_seconds = disposition_budget_seconds
-        self._segment_started_at = (
-            clock() if segment_started_at is None else segment_started_at
-        )
+        self._segment_started_at = clock() if segment_started_at is None else segment_started_at
         self._segment_deadline = self._segment_started_at + segment_budget_seconds
         self._event_preparer = event_preparer or self._prepare_event
         self._context_preparer = context_preparer or self._prepare_context
@@ -352,6 +350,20 @@ class SafeRunRecorder:
             self._degrade("journal_event_invalid")
         except Exception:
             self._degrade("journal_event_write_failed")
+
+    def append_event_bound(self, session: Any, event: EventInput) -> bool:
+        """Best-effort Journal append inside an externally owned transaction."""
+
+        if self.recording_status == "degraded" or self._disposition_attempted:
+            return False
+        try:
+            draft = self._event_preparer(event, self._segment_deadline)
+            with session.begin_nested():
+                self.repository.append_event_bound(session, self.run_id, draft)
+            return True
+        except Exception:
+            self._degrade("journal_tool_projection_failed")
+            return False
 
     def resume(self, command: ResumedDisposition) -> None:
         if self.recording_status == "degraded" or self._disposition_attempted:

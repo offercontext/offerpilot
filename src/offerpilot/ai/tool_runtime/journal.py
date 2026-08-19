@@ -37,18 +37,28 @@ def project_tool_proposed(recorder: RunRecorder, spec: ToolSpec[Any, Any], call:
 
 
 def project_tool_started(recorder: RunRecorder, prepared: PreparedToolCall[Any, Any]) -> bool:
-    return _append(
-        recorder,
-        EventInput(
-            event_type="tool.started",
-            facts={
-                "tool_call_id": prepared.tool_call_id,
-                "tool_name": prepared.spec.name,
-                "result_contract": "legacy_string_v1",
-            },
-            source_ref_type="tool_call",
-            source_ref_id=prepared.tool_call_id,
-        ),
+    return _append(recorder, _tool_started_event(prepared))
+
+
+def project_tool_started_bound(
+    recorder: RunRecorder, session: Any, prepared: PreparedToolCall[Any, Any]
+) -> bool:
+    append_bound = getattr(recorder, "append_event_bound", None)
+    if callable(append_bound):
+        return bool(append_bound(session, _tool_started_event(prepared)))
+    return _append(recorder, _tool_started_event(prepared))
+
+
+def _tool_started_event(prepared: PreparedToolCall[Any, Any]) -> EventInput:
+    return EventInput(
+        event_type="tool.started",
+        facts={
+            "tool_call_id": prepared.tool_call_id,
+            "tool_name": prepared.spec.name,
+            "result_contract": "legacy_string_v1",
+        },
+        source_ref_type="tool_call",
+        source_ref_id=prepared.tool_call_id,
     )
 
 
@@ -70,7 +80,9 @@ def project_tool_terminal(
                 "tool_call_id": record.prepared.tool_call_id,
                 "tool_name": record.prepared.spec.name,
                 "failure_category": (
-                    "provider_error" if record.outcome.category == "provider_error" else "tool_error"
+                    "provider_error"
+                    if record.outcome.category == "provider_error"
+                    else "tool_error"
                 ),
             },
             source_ref_type="tool_call",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from hashlib import sha256
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -43,6 +44,15 @@ class ChatRepository:
 
     def bind(self, session: Session) -> "ChatRepository":
         return ChatRepository(self._session_factory, self._write_operations, session)
+
+    @contextmanager
+    def _operation_session(self) -> Any:
+        if self._session is not None:
+            yield self._session, False
+            return
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            yield session, True
 
     def create_conversation(
         self,
@@ -267,10 +277,7 @@ class ChatRepository:
         """Atomically persist a write proposal and make it the pending action."""
         if pending.operation_id and self._write_operations is None:
             return False
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
-            if pending.operation_id and self._write_operations is not None:
-                self._create_operation_for_pending(session, conversation_id, pending)
+        with self._operation_session() as (session, owned):
             result = session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -296,8 +303,11 @@ class ChatRepository:
                 )
             )
             if getattr(result, "rowcount", 0) != 1:
-                session.rollback()
+                if owned:
+                    session.rollback()
                 return False
+            if pending.operation_id and self._write_operations is not None:
+                self._create_operation_for_pending(session, conversation_id, pending)
             for message in messages:
                 session.add(
                     ChatMessage(
@@ -309,7 +319,8 @@ class ChatRepository:
                         provider_blocks=message.get("provider_blocks", ""),
                     )
                 )
-            session.commit()
+            if owned:
+                session.commit()
             return True
 
     def clear_pending_action(self, conversation_id: int) -> None:
@@ -399,8 +410,7 @@ class ChatRepository:
         if undo is not None:
             values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
             values["last_write_operation_id"] = expected.operation_id if undo else ""
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
+        with self._operation_session() as (session, owned):
             now = _next_conversation_timestamp(session, conversation_id)
             values["updated_at"] = now
             statement = (
@@ -417,12 +427,11 @@ class ChatRepository:
                     Conversation.pending_confirmation_claimed_at.is_(None),
                 )
             else:
-                statement = statement.where(
-                    Conversation.pending_confirmation_claim_id == claim_id
-                )
+                statement = statement.where(Conversation.pending_confirmation_claim_id == claim_id)
             result = session.execute(statement.values(**values))
             if getattr(result, "rowcount", 0) != 1:
-                session.rollback()
+                if owned:
+                    session.rollback()
                 return None
             session.add(
                 ChatMessage(
@@ -447,16 +456,15 @@ class ChatRepository:
                             else None
                         ),
                         delivery_kind=(
-                            "continuation_message"
-                            if delivery_ownership is not None
-                            else None
+                            "continuation_message" if delivery_ownership is not None else None
                         ),
                         delivery_ordinal=(1 if delivery_ownership is not None else None),
                     )
                 )
             if delivery_ownership is not None:
                 if self._write_operations is None:
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
                 session.flush()
                 if not self._write_operations.complete_delivery(
@@ -464,9 +472,11 @@ class ChatRepository:
                     delivery_ownership,
                     outcome="final_response",
                 ):
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
-            session.commit()
+            if owned:
+                session.commit()
             return now
 
     def replace_pending_confirmation(
@@ -499,10 +509,7 @@ class ChatRepository:
         if undo is not None:
             values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
             values["last_write_operation_id"] = expected.operation_id if undo else ""
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
-            if replacement.operation_id and self._write_operations is not None:
-                self._create_operation_for_pending(session, conversation_id, replacement)
+        with self._operation_session() as (session, owned):
             now = _next_conversation_timestamp(session, conversation_id)
             values["updated_at"] = now
             statement = (
@@ -517,13 +524,14 @@ class ChatRepository:
             if claim_id is None:
                 statement = statement.where(Conversation.pending_confirmation_claim_id == "")
             else:
-                statement = statement.where(
-                    Conversation.pending_confirmation_claim_id == claim_id
-                )
+                statement = statement.where(Conversation.pending_confirmation_claim_id == claim_id)
             result = session.execute(statement.values(**values))
             if getattr(result, "rowcount", 0) != 1:
-                session.rollback()
+                if owned:
+                    session.rollback()
                 return None
+            if replacement.operation_id and self._write_operations is not None:
+                self._create_operation_for_pending(session, conversation_id, replacement)
             session.add(
                 ChatMessage(
                     conversation_id=conversation_id,
@@ -541,14 +549,17 @@ class ChatRepository:
                         conversation_id=conversation_id,
                         role="assistant",
                         content=terminal_assistant_content,
-                        operation_id=(delivery_ownership.operation_id if delivery_ownership else None),
+                        operation_id=(
+                            delivery_ownership.operation_id if delivery_ownership else None
+                        ),
                         delivery_kind=("continuation_message" if delivery_ownership else None),
                         delivery_ordinal=(1 if delivery_ownership else None),
                     )
                 )
             if delivery_ownership is not None:
                 if self._write_operations is None:
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
                 session.flush()
                 if not self._write_operations.complete_delivery(
@@ -557,9 +568,11 @@ class ChatRepository:
                     outcome="chained_pending",
                     next_operation_id=replacement.operation_id,
                 ):
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
-            session.commit()
+            if owned:
+                session.commit()
             return now
 
     def persist_confirmation_continuation(
@@ -635,47 +648,40 @@ class ChatRepository:
         if expected_pending is not None and undo is not None:
             values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
             values["last_write_operation_id"] = expected_pending.operation_id if undo else ""
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
-            if pending is not None and pending.operation_id and self._write_operations is not None:
-                self._create_operation_for_pending(session, conversation_id, pending)
+        with self._operation_session() as (session, owned):
             now = _next_conversation_timestamp(session, conversation_id, expected_generation)
             values["updated_at"] = now
             statement = update(Conversation).where(Conversation.id == conversation_id)
             if expected_pending is not None:
                 statement = (
                     statement.where(
-                        Conversation.pending_tool_call_id
-                        == expected_pending.tool_call_id
+                        Conversation.pending_tool_call_id == expected_pending.tool_call_id
                     )
-                    .where(
-                        Conversation.pending_operation_id
-                        == expected_pending.operation_id
-                    )
+                    .where(Conversation.pending_operation_id == expected_pending.operation_id)
                     .where(Conversation.pending_tool_name == expected_pending.tool_name)
                     .where(Conversation.pending_args == expected_pending.args)
                 )
                 if claim_id is None:
-                    statement = statement.where(
-                        Conversation.pending_confirmation_claim_id == ""
-                    )
+                    statement = statement.where(Conversation.pending_confirmation_claim_id == "")
                 else:
                     statement = statement.where(
                         Conversation.pending_confirmation_claim_id == claim_id
                     )
             else:
-                statement = statement.where(
-                    Conversation.updated_at == expected_generation
-                )
+                statement = statement.where(Conversation.updated_at == expected_generation)
             if pending is not None:
                 statement = statement.where(Conversation.archived_at.is_(None))
             result = session.execute(statement.values(**values))
             if getattr(result, "rowcount", 0) != 1:
-                session.rollback()
+                if owned:
+                    session.rollback()
                 return None
+            if pending is not None and pending.operation_id and self._write_operations is not None:
+                self._create_operation_for_pending(session, conversation_id, pending)
             if delivery_ownership is not None:
                 if origin_message is None or expected_pending is None:
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
                 session.add(
                     ChatMessage(
@@ -703,16 +709,15 @@ class ChatRepository:
                             else None
                         ),
                         delivery_kind=(
-                            "continuation_message"
-                            if delivery_ownership is not None
-                            else None
+                            "continuation_message" if delivery_ownership is not None else None
                         ),
                         delivery_ordinal=(index if delivery_ownership is not None else None),
                     )
                 )
             if delivery_ownership is not None:
                 if self._write_operations is None:
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
                 session.flush()
                 chained_id = pending.operation_id if pending is not None else None
@@ -730,9 +735,11 @@ class ChatRepository:
                     next_operation_id=chained_id,
                     failure_code=delivery_failure_code,
                 ):
-                    session.rollback()
+                    if owned:
+                        session.rollback()
                     return None
-            session.commit()
+            if owned:
+                session.commit()
             return now
 
     def get_pending_clarification(self, conversation_id: int) -> tuple[PendingAction, str] | None:

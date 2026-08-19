@@ -214,9 +214,7 @@ def init_database(db_path: Path) -> SessionFactory:
     # KI-07：补齐 KnowledgeJob 持久队列所需列；旧库升级保证 attempt_token 存在，
     # 否则 lease claim 无法防迟到提交。
     knowledge_job_migrations = [
-        _ensure_column(
-            engine, "knowledge_jobs", "attempt_token", "TEXT DEFAULT ''"
-        ),
+        _ensure_column(engine, "knowledge_jobs", "attempt_token", "TEXT DEFAULT ''"),
     ]
     if any(knowledge_job_migrations):
         _record_migration(
@@ -721,7 +719,10 @@ def _reset_incompatible_v01_tables(engine) -> None:  # type: ignore[no-untyped-d
             ).fetchall()
         }
         application_event_columns = (
-            {row[1] for row in conn.execute(text("PRAGMA table_info(application_events)")).fetchall()}
+            {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(application_events)")).fetchall()
+            }
             if "application_events" in tables
             else set()
         )
@@ -775,15 +776,18 @@ def _reset_knowledge_legacy_tables(engine, data_dir: Path) -> None:  # type: ign
         existing = {
             row[0]
             for row in conn.execute(
-                text(
-                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
-                )
+                text("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
             ).fetchall()
         }
         legacy_present = any(table in existing for table in KNOWLEDGE_LEGACY_TABLES)
-        already_migrated = conn.execute(
-            text("SELECT version FROM schema_migrations WHERE version = 'knowledge_rewrite_reset'")
-        ).fetchone() is not None
+        already_migrated = (
+            conn.execute(
+                text(
+                    "SELECT version FROM schema_migrations WHERE version = 'knowledge_rewrite_reset'"
+                )
+            ).fetchone()
+            is not None
+        )
 
     knowledge_runtime_dir = data_dir / "knowledge"
     # KI-02 之后 knowledge/ 目录可能含有合法 Source 原件；只在尚未迁移（首次启动）且目录非空时
@@ -885,9 +889,7 @@ def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[
                 return
             existing_ids = {
                 int(row[0])
-                for row in conn.execute(
-                    text("SELECT id FROM knowledge_sources")
-                ).fetchall()
+                for row in conn.execute(text("SELECT id FROM knowledge_sources")).fetchall()
             }
         for child in sources_root.iterdir():
             try:
@@ -988,10 +990,7 @@ def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[
 def _delete_retrieval_traces_for_source(conn, source_id: int) -> None:  # type: ignore[no-untyped-def]
     """按 Trace 的结构化 filters/hits 清理指定 Source 的评估记录。"""
     rows = conn.execute(
-        text(
-            "SELECT id, filters_json, hits_json "
-            "FROM knowledge_retrieval_traces"
-        )
+        text("SELECT id, filters_json, hits_json FROM knowledge_retrieval_traces")
     ).fetchall()
     trace_ids: list[int] = []
     for trace_id, filters_json, hits_json in rows:
@@ -1010,9 +1009,7 @@ def _delete_retrieval_traces_for_source(conn, source_id: int) -> None:  # type: 
             trace_ids.append(int(trace_id))
             continue
         if isinstance(hits, list) and any(
-            isinstance(hit, dict)
-            and str(hit.get("source_id")) == str(source_id)
-            for hit in hits
+            isinstance(hit, dict) and str(hit.get("source_id")) == str(source_id) for hit in hits
         ):
             trace_ids.append(int(trace_id))
     for trace_id in trace_ids:
@@ -1065,9 +1062,7 @@ def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignor
         deleting_sources = [
             int(row[0])
             for row in conn.execute(
-                text(
-                    "SELECT id FROM knowledge_sources WHERE lifecycle = 'deleting'"
-                )
+                text("SELECT id FROM knowledge_sources WHERE lifecycle = 'deleting'")
             ).fetchall()
         ]
 
@@ -1103,9 +1098,7 @@ def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignor
                     {"sid": source_id},
                 )
                 conn.execute(
-                    text(
-                        "DELETE FROM knowledge_evidence_fts WHERE source_id = :sid"
-                    ),
+                    text("DELETE FROM knowledge_evidence_fts WHERE source_id = :sid"),
                     {"sid": source_id},
                 )
                 conn.execute(
@@ -1113,9 +1106,7 @@ def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignor
                     {"sid": source_id},
                 )
                 conn.execute(
-                    text(
-                        "DELETE FROM knowledge_extraction_snapshots WHERE source_id = :sid"
-                    ),
+                    text("DELETE FROM knowledge_extraction_snapshots WHERE source_id = :sid"),
                     {"sid": source_id},
                 )
                 conn.execute(
@@ -1129,16 +1120,12 @@ def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignor
                 # KI-09：Spec §5.4 删除时清理 Brief / Attempt；存在性检查避免旧库未建表。
                 if "knowledge_source_briefs" in tables:
                     conn.execute(
-                        text(
-                            "DELETE FROM knowledge_source_briefs WHERE source_id = :sid"
-                        ),
+                        text("DELETE FROM knowledge_source_briefs WHERE source_id = :sid"),
                         {"sid": source_id},
                     )
                 if "knowledge_brief_attempts" in tables:
                     conn.execute(
-                        text(
-                            "DELETE FROM knowledge_brief_attempts WHERE source_id = :sid"
-                        ),
+                        text("DELETE FROM knowledge_brief_attempts WHERE source_id = :sid"),
                         {"sid": source_id},
                     )
                 if "knowledge_retrieval_traces" in tables:
@@ -1213,7 +1200,52 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
     _ensure_column(engine, "chat_messages", "operation_id", "TEXT")
     _ensure_column(engine, "chat_messages", "delivery_kind", "TEXT")
     _ensure_column(engine, "chat_messages", "delivery_ordinal", "INTEGER")
+    _ensure_column(engine, "write_operations", "parent_terminal_payload_sha256", "TEXT")
     with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE write_operations AS child
+                SET parent_terminal_payload_sha256 = (
+                    SELECT parent.terminal_payload_sha256
+                    FROM write_operations AS parent
+                    WHERE parent.id = child.parent_operation_id
+                )
+                WHERE child.operation_role = 'compensation'
+                  AND child.parent_terminal_payload_sha256 IS NULL
+                """
+            )
+        )
+        invalid_delivery_rows = conn.scalar(
+            text(
+                """
+                SELECT count(*) FROM chat_messages AS message
+                LEFT JOIN write_operations AS operation
+                  ON operation.id = message.operation_id
+                WHERE (message.operation_id IS NULL AND
+                       (message.delivery_kind IS NOT NULL OR message.delivery_ordinal IS NOT NULL))
+                   OR (message.operation_id IS NOT NULL AND (
+                       operation.id IS NULL
+                       OR operation.conversation_id <> message.conversation_id
+                       OR message.delivery_kind IS NULL
+                       OR message.delivery_ordinal IS NULL
+                       OR NOT (
+                         (message.delivery_kind = 'origin_tool_result'
+                          AND message.delivery_ordinal = 0
+                          AND message.role = 'tool' AND message.tool_call_id <> ''
+                          AND operation.tool_call_id = message.tool_call_id)
+                         OR
+                         (message.delivery_kind = 'continuation_message'
+                          AND message.delivery_ordinal >= 1
+                          AND ((message.role = 'tool' AND message.tool_call_id <> '')
+                               OR (message.role = 'assistant' AND message.tool_call_id = '')))
+                       )
+                   ))
+                """
+            )
+        )
+        if invalid_delivery_rows:
+            raise RuntimeError("invalid legacy operation delivery rows")
         conn.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_messages_operation_ordinal "
@@ -1248,6 +1280,7 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
                     NEW.status <> OLD.status OR
                     NEW.operation_role IS NOT OLD.operation_role OR
                     NEW.parent_operation_id IS NOT OLD.parent_operation_id OR
+                    NEW.parent_terminal_payload_sha256 IS NOT OLD.parent_terminal_payload_sha256 OR
                     NEW.agent_run_id IS NOT OLD.agent_run_id OR
                     NEW.tool_call_id IS NOT OLD.tool_call_id OR
                     NEW.tool_name IS NOT OLD.tool_name OR
@@ -1363,6 +1396,81 @@ def _ensure_write_operation_ledger_schema(engine) -> None:  # type: ignore[no-un
                           AND child.status = 'proposed'
                           AND child.conversation_id = NEW.conversation_id
                     ) THEN RAISE(ABORT, 'invalid chained operation') END;
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_transition_insert"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_transition_insert
+                BEFORE INSERT ON write_operation_transitions
+                BEGIN
+                    SELECT CASE WHEN NOT (
+                      (NEW.seq = 1 AND NEW.state = 'proposed'
+                       AND NOT EXISTS (SELECT 1 FROM write_operation_transitions
+                                       WHERE operation_id = NEW.operation_id))
+                      OR
+                      (NEW.seq = 2 AND NEW.state IN ('approved','rejected')
+                       AND EXISTS (SELECT 1 FROM write_operation_transitions
+                                   WHERE operation_id = NEW.operation_id
+                                     AND seq = 1 AND state = 'proposed')
+                       AND EXISTS (SELECT 1 FROM write_operations
+                                   WHERE id = NEW.operation_id
+                                     AND ((NEW.state = 'approved' AND status = 'proposed')
+                                          OR status = 'rejected')))
+                      OR
+                      (NEW.seq = 3 AND NEW.state = 'claimed'
+                       AND EXISTS (SELECT 1 FROM write_operation_transitions
+                                   WHERE operation_id = NEW.operation_id
+                                     AND seq = 2 AND state = 'approved'))
+                      OR
+                      (NEW.seq = 4 AND NEW.state IN ('committed','failed')
+                       AND EXISTS (SELECT 1 FROM write_operation_transitions
+                                   WHERE operation_id = NEW.operation_id
+                                     AND seq = 3 AND state = 'claimed')
+                       AND EXISTS (SELECT 1 FROM write_operations
+                                   WHERE id = NEW.operation_id AND status = NEW.state))
+                    ) THEN RAISE(ABORT, 'invalid write operation transition') END;
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_transition_immutable"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_transition_immutable
+                BEFORE UPDATE ON write_operation_transitions
+                BEGIN
+                    SELECT RAISE(ABORT, 'write operation transition is immutable');
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_transition_delete"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_transition_delete
+                BEFORE DELETE ON write_operation_transitions
+                BEGIN
+                    SELECT RAISE(ABORT, 'write operation transition is immutable');
+                END
+                """
+            )
+        )
+        conn.execute(text("DROP TRIGGER IF EXISTS trg_write_operation_chat_restrict"))
+        conn.execute(
+            text(
+                """
+                CREATE TRIGGER trg_write_operation_chat_restrict
+                BEFORE DELETE ON write_operations
+                WHEN EXISTS (SELECT 1 FROM chat_messages
+                             WHERE operation_id = OLD.id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'operation delivery messages exist');
                 END
                 """
             )
@@ -1699,7 +1807,9 @@ def _rebuild_mock_interview_attempts_for_context(engine) -> None:  # type: ignor
             """
         )
         conn.exec_driver_sql("DROP TABLE mock_interview_attempts")
-        conn.exec_driver_sql("ALTER TABLE mock_interview_attempts_new RENAME TO mock_interview_attempts")
+        conn.exec_driver_sql(
+            "ALTER TABLE mock_interview_attempts_new RENAME TO mock_interview_attempts"
+        )
         conn.exec_driver_sql(
             "CREATE INDEX idx_mock_interview_attempts_event "
             "ON mock_interview_attempts(application_id, event_id)"
@@ -1770,7 +1880,9 @@ def _rebuild_voice_coaching_snapshots_for_context(engine) -> None:  # type: igno
             """
         )
         conn.exec_driver_sql("DROP TABLE voice_coaching_snapshots")
-        conn.exec_driver_sql("ALTER TABLE voice_coaching_snapshots_new RENAME TO voice_coaching_snapshots")
+        conn.exec_driver_sql(
+            "ALTER TABLE voice_coaching_snapshots_new RENAME TO voice_coaching_snapshots"
+        )
         conn.exec_driver_sql(
             "CREATE INDEX idx_voice_coaching_snapshots_created "
             "ON voice_coaching_snapshots(created_at, id)"
@@ -1804,15 +1916,25 @@ def _ensure_interview_review_history_schema(engine) -> bool:  # type: ignore[no-
     """Make review proposals survive note deletion without rewriting their payloads."""
     with engine.connect() as conn:
         columns = conn.execute(text("PRAGMA table_info(interview_review_proposals)")).fetchall()
-        foreign_keys = conn.execute(text("PRAGMA foreign_key_list(interview_review_proposals)")).fetchall()
+        foreign_keys = conn.execute(
+            text("PRAGMA foreign_key_list(interview_review_proposals)")
+        ).fetchall()
     note_column = next((row for row in columns if row[1] == "note_id"), None)
     note_foreign_key = next((row for row in foreign_keys if row[3] == "note_id"), None)
-    if note_column is None or (note_column[3] == 0 and note_foreign_key is not None and str(note_foreign_key[6]).upper() == "SET NULL"):
+    if note_column is None or (
+        note_column[3] == 0
+        and note_foreign_key is not None
+        and str(note_foreign_key[6]).upper() == "SET NULL"
+    ):
         return False
 
     with engine.connect() as conn:
         conn.execute(text("PRAGMA foreign_keys=OFF"))
-        conn.execute(text("ALTER TABLE interview_review_proposals RENAME TO interview_review_proposals_legacy"))
+        conn.execute(
+            text(
+                "ALTER TABLE interview_review_proposals RENAME TO interview_review_proposals_legacy"
+            )
+        )
         conn.execute(
             text(
                 """
@@ -1848,7 +1970,11 @@ def _ensure_interview_review_history_schema(engine) -> bool:  # type: ignore[no-
             )
         )
         conn.execute(text("DROP TABLE interview_review_proposals_legacy"))
-        conn.execute(text("CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"))
+        conn.execute(
+            text(
+                "CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"
+            )
+        )
         conn.commit()
         conn.execute(text("PRAGMA foreign_keys=ON"))
     return True
@@ -1859,7 +1985,9 @@ def _prepare_event_bound_mock_interview_migration(engine) -> bool:  # type: igno
 
     with engine.begin() as conn:
         already_migrated = conn.execute(
-            text("SELECT 1 FROM schema_migrations WHERE version = '0016_event_bound_mock_interview'")
+            text(
+                "SELECT 1 FROM schema_migrations WHERE version = '0016_event_bound_mock_interview'"
+            )
         ).first()
         if already_migrated is not None:
             return False
@@ -1887,15 +2015,23 @@ def _prepare_event_bound_mock_interview_migration(engine) -> bool:  # type: igno
                 ).fetchall()
             ]
         if conversation_ids and "chat_messages" in tables:
-            placeholders = ", ".join(f":conversation_{index}" for index in range(len(conversation_ids)))
-            params = {f"conversation_{index}": value for index, value in enumerate(conversation_ids)}
+            placeholders = ", ".join(
+                f":conversation_{index}" for index in range(len(conversation_ids))
+            )
+            params = {
+                f"conversation_{index}": value for index, value in enumerate(conversation_ids)
+            }
             conn.execute(
                 text(f"DELETE FROM chat_messages WHERE conversation_id IN ({placeholders})"),
                 params,
             )
         if conversation_ids and "conversations" in tables:
-            placeholders = ", ".join(f":conversation_{index}" for index in range(len(conversation_ids)))
-            params = {f"conversation_{index}": value for index, value in enumerate(conversation_ids)}
+            placeholders = ", ".join(
+                f":conversation_{index}" for index in range(len(conversation_ids))
+            )
+            params = {
+                f"conversation_{index}": value for index, value in enumerate(conversation_ids)
+            }
             conn.execute(
                 text(
                     f"DELETE FROM conversations WHERE id IN ({placeholders}) AND mode = 'mock_interview'"
@@ -2057,7 +2193,9 @@ def _backfill_application_lifecycle(engine) -> bool:  # type: ignore[no-untyped-
         }
         if "applications" not in tables:
             return False
-        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(applications)")).fetchall()}
+        columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(applications)")).fetchall()
+        }
         required = {
             "status",
             "applied_at",

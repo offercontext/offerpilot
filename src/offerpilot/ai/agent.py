@@ -343,7 +343,9 @@ class LangGraphAgentRunner:
                         self._failures.append(initial_prepared.failure)
                         result = render_compatibility(spec, initial_prepared.failure)
                         self._emit_tool_result(tool_call_id, tool_name, result, None)
-                        tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
+                        tool_message = Message(
+                            role="tool", content=result, tool_call_id=tool_call_id
+                        )
                         messages.append(_message_to_dict(tool_message))
                         added.append(_message_to_dict(tool_message))
                         continue
@@ -379,7 +381,9 @@ class LangGraphAgentRunner:
                             tool_call_id=tool_call_id,
                             tool_name=tool_name,
                             args=effective_args,
-                            human=_spec_confirmation_description(spec, effective_args, str(pending["human"])),
+                            human=_spec_confirmation_description(
+                                spec, effective_args, str(pending["human"])
+                            ),
                             operation_id=str(resume_value.get("operation_id") or ""),
                         )
                         self._emit_pending_tool_call(
@@ -413,6 +417,7 @@ class LangGraphAgentRunner:
                                 "pending tool no longer requires confirmation"
                             )
                         else:
+
                             def claim(
                                 prepared: PreparedToolCall[Any, Any],
                             ) -> ExecutionAuthorization | ToolFailure:
@@ -437,7 +442,9 @@ class LangGraphAgentRunner:
                                     )
                                 return ExecutionAuthorization(
                                     pending_identity=prepared.pending_identity,
-                                    pending_action_revision=cast(int, prepared.pending_action_revision),
+                                    pending_action_revision=cast(
+                                        int, prepared.pending_action_revision
+                                    ),
                                     tool_call_id=prepared.tool_call_id,
                                     tool_name=prepared.spec.name,
                                     arguments_digest=prepared.arguments_digest,
@@ -449,24 +456,19 @@ class LangGraphAgentRunner:
                                 confirmation_claimer=claim,
                             )
                             self._records.append(record)
-                            if (
-                                isinstance(record.outcome, ToolFailure)
-                                and record.outcome.code
-                                in {
-                                    "authorization_mismatch",
-                                    "confirmation_claim_failed",
-                                    "confirmation_claim_lost",
-                                    "fallback_confirmation_consumed",
-                                }
-                            ):
+                            if isinstance(record.outcome, ToolFailure) and record.outcome.code in {
+                                "authorization_mismatch",
+                                "confirmation_claim_failed",
+                                "confirmation_claim_lost",
+                                "fallback_confirmation_consumed",
+                            }:
                                 raise StalePendingActionError(
                                     "stale pending action: confirmation claim failed"
                                 )
                             if not record.execution_started:
                                 assert isinstance(record.outcome, ToolFailure)
                                 raise PendingActionValidationError(
-                                    record.outcome.compatibility_detail
-                                    or record.outcome.code
+                                    record.outcome.compatibility_detail or record.outcome.code
                                 )
                             result = render_compatibility(spec, record.outcome)
                     else:
@@ -546,8 +548,14 @@ class LangGraphAgentRunner:
                     record = None
                     result = "错误：只读工具不能请求确认"
 
-            emitted_record = record if spec is not None and spec.kind == "read" else (
-                self._records[-1] if self._records and self._records[-1].prepared.tool_call_id == tool_call_id else None
+            emitted_record = (
+                record
+                if spec is not None and spec.kind == "read"
+                else (
+                    self._records[-1]
+                    if self._records and self._records[-1].prepared.tool_call_id == tool_call_id
+                    else None
+                )
             )
             self._emit_tool_result(tool_call_id, tool_name, result, emitted_record)
             tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
@@ -646,8 +654,7 @@ class LangGraphAgentRunner:
             if not isinstance(prepared_result, ConfirmationRequired):
                 if isinstance(prepared_result, Rejected):
                     raise PendingActionValidationError(
-                        prepared_result.failure.compatibility_detail
-                        or prepared_result.failure.code
+                        prepared_result.failure.compatibility_detail or prepared_result.failure.code
                     )
                 raise PendingActionValidationError("pending tool no longer requires confirmation")
             self._emit_pending_tool_call(sink_pending, "approved")
@@ -659,7 +666,11 @@ class LangGraphAgentRunner:
                         return claimed
                     return ToolFailure("conflict", "confirmation_claim_failed")
                 if not _claim_fallback_confirmation(confirmation_lock_key, pending):
-                    return ToolFailure("stale_state", "fallback_confirmation_consumed", "stale pending action: fallback confirmation was already consumed")
+                    return ToolFailure(
+                        "stale_state",
+                        "fallback_confirmation_consumed",
+                        "stale pending action: fallback confirmation was already consumed",
+                    )
                 return ExecutionAuthorization(
                     pending_identity=prepared.pending_identity,
                     pending_action_revision=cast(int, prepared.pending_action_revision),
@@ -674,16 +685,12 @@ class LangGraphAgentRunner:
                 confirmation_claimer=claim,
             )
             self._records.append(record)
-            if (
-                isinstance(record.outcome, ToolFailure)
-                and record.outcome.code
-                in {
-                    "authorization_mismatch",
-                    "confirmation_claim_failed",
-                    "confirmation_claim_lost",
-                    "fallback_confirmation_consumed",
-                }
-            ):
+            if isinstance(record.outcome, ToolFailure) and record.outcome.code in {
+                "authorization_mismatch",
+                "confirmation_claim_failed",
+                "confirmation_claim_lost",
+                "fallback_confirmation_consumed",
+            }:
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
                 )
@@ -692,14 +699,12 @@ class LangGraphAgentRunner:
                 raise PendingActionValidationError(
                     record.outcome.compatibility_detail or record.outcome.code
                 )
-            result = render_compatibility(spec, record.outcome)
+            result = record.persisted_visible_result or render_compatibility(spec, record.outcome)
         else:
             if self._confirmation_attempt_sink is not None:
                 rejected_claim = self._confirmation_attempt_sink(pending, None)
                 if isinstance(rejected_claim, ToolFailure):
-                    raise StalePendingActionError(
-                        "stale pending action: rejection claim failed"
-                    )
+                    raise StalePendingActionError("stale pending action: rejection claim failed")
             elif not _claim_fallback_confirmation(confirmation_lock_key, pending):
                 raise StalePendingActionError(
                     "stale pending action: rejection was already consumed"
@@ -776,13 +781,19 @@ class LangGraphAgentRunner:
         record: ToolExecutionRecord[Any, Any] | None,
     ) -> None:
         spec = self._catalog.resolve(tool_name)
-        if spec is not None and record is not None:
+        payload: dict[str, Any]
+        if record is not None and record.persisted_transport is not None:
+            payload = cast(dict[str, Any], dict(record.persisted_transport))
+        elif spec is not None and record is not None:
             try:
                 payload = project_transport_event(spec, record)
             except Exception:
                 payload = _delivery_error_payload(tool_call_id, tool_name, result)
         else:
             payload = _delivery_error_payload(tool_call_id, tool_name, result)
+        payload.setdefault("tool_call_id", tool_call_id)
+        if record is not None and record.operation_id:
+            payload.setdefault("operation_id", record.operation_id)
         self._emit_event("tool_result", cast(dict[str, Any], payload))
 
     def _complete_model(
@@ -802,9 +813,7 @@ class LangGraphAgentRunner:
         stream_complete = getattr(self._model, "stream_complete", None)
         is_stream = callable(stream_complete)
         if snapshot_id is not None:
-            provider_kind, model_id, supports_json_schema = _journal_model_metadata(
-                self._model
-            )
+            provider_kind, model_id, supports_json_schema = _journal_model_metadata(self._model)
             model_id_fingerprint = self._fingerprint_model_id(model_id)
             self._append_journal_event(
                 EventInput(
@@ -859,9 +868,7 @@ class LangGraphAgentRunner:
                     facts={
                         "assistant_kind": assistant_kind,
                         "tool_call_count": len(assistant.tool_calls),
-                        "finish_category": (
-                            "tool_calls" if assistant.tool_calls else "stop"
-                        ),
+                        "finish_category": ("tool_calls" if assistant.tool_calls else "stop"),
                     },
                     model_step=model_step,
                     model_call_id=model_call_id,

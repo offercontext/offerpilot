@@ -31,7 +31,9 @@ class Application(Base):
     company_name: Mapped[str] = mapped_column(String, nullable=False)
     position_name: Mapped[str] = mapped_column(String, nullable=False)
     job_url: Mapped[str] = mapped_column(String, default="", server_default="")
-    status: Mapped[str] = mapped_column(String, nullable=False, default="applied", server_default="applied")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="applied", server_default="applied"
+    )
     source: Mapped[str] = mapped_column(String, nullable=False, default="cli", server_default="cli")
     notes: Mapped[str] = mapped_column(String, default="", server_default="")
     applied_at: Mapped[datetime] = mapped_column(
@@ -39,10 +41,18 @@ class Application(Base):
         nullable=False,
         server_default=func.current_timestamp(),
     )
-    first_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    first_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    first_written_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    first_interview_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_pending_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_written_test_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_interview_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     first_offer_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_reason: Mapped[str] = mapped_column(String, default="", server_default="")
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -149,9 +159,15 @@ class ApplicationOutcome(Base):
     stage: Mapped[str] = mapped_column(String, nullable=False)
     result: Mapped[str] = mapped_column(String, nullable=False)
     feedback_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    next_action_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    feedback_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    reflection_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    next_action_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    feedback_tags_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
     source_kind: Mapped[str] = mapped_column(String, nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
     request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
@@ -290,7 +306,9 @@ class OfferComparisonDimension(Base):
 class OfferComparisonValue(Base):
     __tablename__ = "offer_comparison_values"
     __table_args__ = (
-        UniqueConstraint("offer_id", "dimension_id", name="uq_offer_comparison_values_offer_dimension"),
+        UniqueConstraint(
+            "offer_id", "dimension_id", name="uq_offer_comparison_values_offer_dimension"
+        ),
         Index("idx_offer_comparison_values_offer", "offer_id"),
     )
 
@@ -316,7 +334,9 @@ class OfferComparisonValue(Base):
 class OfferNegotiationProposal(Base):
     __tablename__ = "offer_negotiation_proposals"
     __table_args__ = (
-        UniqueConstraint("offer_id", "idempotency_key", name="uq_offer_negotiation_proposals_offer_key"),
+        UniqueConstraint(
+            "offer_id", "idempotency_key", name="uq_offer_negotiation_proposals_offer_key"
+        ),
         Index("idx_offer_negotiation_proposals_offer", "offer_id"),
     )
 
@@ -324,16 +344,26 @@ class OfferNegotiationProposal(Base):
     offer_id: Mapped[int] = mapped_column(Integer, nullable=False)
     application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
-    attempt_status: Mapped[str] = mapped_column(String, nullable=False, default="generating", server_default="generating")
+    attempt_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="generating", server_default="generating"
+    )
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     proposal_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     proposal_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_states_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
-    provider_call_token: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_states_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    provider_call_token: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
-    invalidation_reason: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    invalidation_reason: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
@@ -351,7 +381,9 @@ class OfferNegotiationBrief(Base):
     proposal_id: Mapped[int] = mapped_column(Integer, nullable=False)
     offer_id: Mapped[int] = mapped_column(Integer, nullable=False)
     origin_application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    confirmation_key: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmation_key: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     selected_blocks_json: Mapped[str] = mapped_column(Text, nullable=False)
     edited_content_json: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
@@ -470,7 +502,9 @@ class ApplicationEvidenceBundle(Base):
     __tablename__ = "application_evidence_bundles"
     __table_args__ = (
         UniqueConstraint("application_id", "sequence", name="uq_evidence_bundle_sequence"),
-        UniqueConstraint("application_id", "idempotency_key", name="uq_evidence_bundle_idempotency"),
+        UniqueConstraint(
+            "application_id", "idempotency_key", name="uq_evidence_bundle_idempotency"
+        ),
         Index("idx_evidence_bundles_application", "application_id"),
     )
 
@@ -501,7 +535,9 @@ class ApplicationEvidenceBundle(Base):
 class MaterialRevisionProposal(Base):
     __tablename__ = "material_revision_proposals"
     __table_args__ = (
-        Index("idx_material_revision_proposals_application_created", "application_id", "created_at"),
+        Index(
+            "idx_material_revision_proposals_application_created", "application_id", "created_at"
+        ),
         UniqueConstraint("result_resume_id", name="uq_material_revision_proposals_result_resume"),
     )
 
@@ -520,8 +556,12 @@ class MaterialRevisionProposal(Base):
     jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     proposal_json: Mapped[str] = mapped_column(String, nullable=False)
     proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="draft", server_default="draft")
-    accepted_change_ids_json: Mapped[str] = mapped_column(String, nullable=False, default="[]", server_default="[]")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="draft", server_default="draft"
+    )
+    accepted_change_ids_json: Mapped[str] = mapped_column(
+        String, nullable=False, default="[]", server_default="[]"
+    )
     result_resume_id: Mapped[int | None] = mapped_column(
         ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
     )
@@ -563,7 +603,9 @@ class OpportunityFitReview(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
-    deep_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deep_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class OpportunityFitReviewSession(Base):
@@ -585,7 +627,9 @@ class OpportunityFitReviewSession(Base):
     proposal_schema_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=2, server_default="2"
     )
-    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
     jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
@@ -628,16 +672,24 @@ class OpportunityFitReviewStage(Base):
     proposal_json: Mapped[str] = mapped_column(String, nullable=False)
     jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="ready", server_default="ready")
-    stage_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="ready", server_default="ready"
+    )
+    stage_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     provider_call_token: Mapped[str] = mapped_column(
         String, nullable=False, default="", server_default=""
     )
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     confirmation_token_hash: Mapped[str] = mapped_column(
         String, nullable=False, default="", server_default=""
     )
-    confirmation_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmation_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
@@ -716,14 +768,18 @@ class AdaptivePracticePlan(Base):
     status: Mapped[str] = mapped_column(
         String, nullable=False, default="in_progress", server_default="in_progress"
     )
-    revision: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default="1"
-    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     response_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    self_assessment: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    reflection_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    self_assessment: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     completion_idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
-    completion_fingerprint: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    completion_fingerprint: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
@@ -782,9 +838,7 @@ class InterviewPreparationProposal(Base):
     source_fingerprint: Mapped[str] = mapped_column(
         String, default="", server_default="", nullable=False
     )
-    proposal_json: Mapped[str] = mapped_column(
-        Text, default="", server_default="", nullable=False
-    )
+    proposal_json: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     proposal_hash: Mapped[str] = mapped_column(
         String, default="", server_default="", nullable=False
     )
@@ -809,7 +863,9 @@ class InterviewKnowledgeCaptureAttempt(Base):
     attempt_key: Mapped[str] = mapped_column(String, nullable=False)
     note_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     selected_fragments_json: Mapped[str] = mapped_column(Text, nullable=False)
-    last_preview_mode: Mapped[str] = mapped_column(String, default="direct", server_default="direct")
+    last_preview_mode: Mapped[str] = mapped_column(
+        String, default="direct", server_default="direct"
+    )
     preview_status: Mapped[str] = mapped_column(
         String, default="not_requested", server_default="not_requested"
     )
@@ -928,7 +984,9 @@ class Question(Base):
     source_type: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
     status: Mapped[str] = mapped_column(String, default="new", server_default="new")
     practice_count: Mapped[int] = mapped_column(default=0, server_default="0")
-    last_practiced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_practiced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     next_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     question_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
@@ -991,7 +1049,9 @@ class InterviewPracticeCase(Base):
     )
     resume_content_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     resume_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
@@ -1019,7 +1079,9 @@ class MockInterviewAttempt(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    context_kind: Mapped[str] = mapped_column(String, nullable=False, default="application_event", server_default="application_event")
+    context_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="application_event", server_default="application_event"
+    )
     application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     practice_case_id: Mapped[int | None] = mapped_column(
@@ -1031,13 +1093,23 @@ class MockInterviewAttempt(Base):
     input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     attempt_status: Mapped[str] = mapped_column(String, nullable=False)
-    generation_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
-    provider_call_token: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    provider_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    current_turn_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    generation_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    provider_call_token: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    provider_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    current_turn_no: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     transcript_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     failure_category: Mapped[str] = mapped_column(String, default="", server_default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -1058,10 +1130,16 @@ class MockInterviewTurn(Base):
     turn_idempotency_key: Mapped[str] = mapped_column(String, default="", server_default="")
     question_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     answer_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    question_source_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
-    answer_sha256: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    question_source_snapshot_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    answer_sha256: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     turn_status: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
 
 
 class VoiceCoachingSnapshot(Base):
@@ -1087,7 +1165,9 @@ class VoiceCoachingSnapshot(Base):
     turn_id: Mapped[int] = mapped_column(
         ForeignKey("mock_interview_turns.id", ondelete="CASCADE"), nullable=False
     )
-    context_kind: Mapped[str] = mapped_column(String, nullable=False, default="application_event", server_default="application_event")
+    context_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="application_event", server_default="application_event"
+    )
     application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     practice_case_id: Mapped[int | None] = mapped_column(
@@ -1099,15 +1179,22 @@ class VoiceCoachingSnapshot(Base):
     confirmed_answer_text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
     answer_sha256: Mapped[str] = mapped_column(String, nullable=False)
     measurement_source: Mapped[str] = mapped_column(
-        String, nullable=False, default="local_browser_measurement", server_default="local_browser_measurement"
+        String,
+        nullable=False,
+        default="local_browser_measurement",
+        server_default="local_browser_measurement",
     )
     total_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     voiced_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     pause_count: Mapped[int] = mapped_column(Integer, nullable=False)
     longest_pause_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     speech_rate_cpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    filler_occurrences_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
-    reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    filler_occurrences_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    reflection_text: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     focus_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     origin_snapshot_id: Mapped[int | None] = mapped_column(
         ForeignKey("voice_coaching_snapshots.id", ondelete="SET NULL"), nullable=True
@@ -1134,7 +1221,9 @@ class MockInterviewFeedbackProposal(Base):
     proposal_hash: Mapped[str] = mapped_column(String, nullable=False)
     proposal_status: Mapped[str] = mapped_column(String, nullable=False)
     failure_category: Mapped[str] = mapped_column(String, default="", server_default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
 
 
 class MockInterviewReviewDraft(Base):
@@ -1153,8 +1242,12 @@ class MockInterviewReviewDraft(Base):
     selected_blocks_json: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="confirmed", server_default="confirmed")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="confirmed", server_default="confirmed"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
 
 
 class InterviewStory(Base):
@@ -1163,16 +1256,23 @@ class InterviewStory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
     # The current pointer intentionally is not an FK: Story/Version writes validate
     # ownership in the repository and Story has no physical-delete operation.
     current_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    story_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    story_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
     )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -1180,7 +1280,9 @@ class InterviewStory(Base):
 class InterviewStoryVersion(Base):
     __tablename__ = "interview_story_versions"
     __table_args__ = (
-        UniqueConstraint("story_id", "version_number", name="uq_interview_story_versions_story_number"),
+        UniqueConstraint(
+            "story_id", "version_number", name="uq_interview_story_versions_story_number"
+        ),
         Index("idx_interview_story_versions_story", "story_id", "version_number"),
     )
 
@@ -1224,9 +1326,13 @@ class InterviewStoryVersionEvidenceLink(Base):
     target_id: Mapped[str] = mapped_column(String, nullable=False)
     source_kind: Mapped[str] = mapped_column(String, nullable=False)
     source_stable_id: Mapped[str] = mapped_column(String, nullable=False)
-    source_version_or_snapshot: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    source_version_or_snapshot: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     source_path: Mapped[str] = mapped_column(String, nullable=False)
-    text_location: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    text_location: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     excerpt: Mapped[str] = mapped_column(Text, nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     link_hash: Mapped[str] = mapped_column(String, nullable=False)
@@ -1235,7 +1341,9 @@ class InterviewStoryVersionEvidenceLink(Base):
 class InterviewStoryUserAssertion(Base):
     __tablename__ = "interview_story_user_assertions"
     __table_args__ = (
-        UniqueConstraint("story_version_id", "statement_hash", name="uq_interview_story_assertion_hash"),
+        UniqueConstraint(
+            "story_version_id", "statement_hash", name="uq_interview_story_assertion_hash"
+        ),
         Index("idx_interview_story_assertions_version", "story_version_id"),
     )
 
@@ -1264,24 +1372,40 @@ class InterviewStoryProposalAttempt(Base):
     target_story_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
     entrypoint: Mapped[str] = mapped_column(String, nullable=False)
-    entry_context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    entry_context_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
     attempt_status: Mapped[str] = mapped_column(String, nullable=False)
-    generation_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
-    provider_call_token: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    provider_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    generation_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    provider_call_token: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    provider_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     proposal_json: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    proposal_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    proposal_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     # Bounded internal JSON-format repair count.  This is execution metadata,
     # not model text; it lets the browser acceptance audit attribute a second
     # Provider connection to the one allowed repair instead of inferring it.
     repair_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    failure_category: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    confirmation_token_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    confirmation_payload_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    failure_category: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    confirmation_token_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    confirmation_payload_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     confirmed_story_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confirmed_story_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1289,7 +1413,10 @@ class InterviewStoryProposalAttempt(Base):
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
     )
 
 
@@ -1338,10 +1465,16 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String, nullable=False, default="新对话", server_default="新对话")
-    title_source: Mapped[str] = mapped_column(String, nullable=False, default="fallback", server_default="fallback")
+    title: Mapped[str] = mapped_column(
+        String, nullable=False, default="新对话", server_default="新对话"
+    )
+    title_source: Mapped[str] = mapped_column(
+        String, nullable=False, default="fallback", server_default="fallback"
+    )
     mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
-    context_type: Mapped[str] = mapped_column(String, default="workspace", server_default="workspace")
+    context_type: Mapped[str] = mapped_column(
+        String, default="workspace", server_default="workspace"
+    )
     context_ref: Mapped[str] = mapped_column(String, default="", server_default="")
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1485,14 +1618,25 @@ class WriteOperation(Base):
     __tablename__ = "write_operations"
     __table_args__ = (
         CheckConstraint(_sqlite_uuid_check("id"), name="ck_write_operations_id_uuid"),
-        CheckConstraint("operation_role IN ('primary','compensation')", name="ck_write_operations_role"),
-        CheckConstraint("adapter_kind IN ('typed','legacy_deterministic','compensation')", name="ck_write_operations_adapter"),
-        CheckConstraint("status IN ('proposed','rejected','committed','failed')", name="ck_write_operations_status"),
-        CheckConstraint("delivery_status IN ('pending','completed','failed','not_applicable')", name="ck_write_operations_delivery_status"),
         CheckConstraint(
-            "(operation_role = 'primary' AND parent_operation_id IS NULL AND tool_call_id IS NOT NULL "
+            "operation_role IN ('primary','compensation')", name="ck_write_operations_role"
+        ),
+        CheckConstraint(
+            "adapter_kind IN ('typed','legacy_deterministic','compensation')",
+            name="ck_write_operations_adapter",
+        ),
+        CheckConstraint(
+            "status IN ('proposed','rejected','committed','failed')",
+            name="ck_write_operations_status",
+        ),
+        CheckConstraint(
+            "delivery_status IN ('pending','completed','failed','not_applicable')",
+            name="ck_write_operations_delivery_status",
+        ),
+        CheckConstraint(
+            "(operation_role = 'primary' AND parent_operation_id IS NULL AND parent_terminal_payload_sha256 IS NULL AND tool_call_id IS NOT NULL AND tool_call_id <> '' "
             "AND proposal_fingerprint IS NOT NULL AND confirmation_token_fingerprint IS NOT NULL) OR "
-            "(operation_role = 'compensation' AND parent_operation_id IS NOT NULL AND tool_call_id IS NULL "
+            "(operation_role = 'compensation' AND parent_operation_id IS NOT NULL AND parent_terminal_payload_sha256 IS NOT NULL AND tool_call_id IS NULL "
             "AND proposal_fingerprint IS NULL AND confirmation_token_fingerprint IS NULL)",
             name="ck_write_operations_role_identity",
         ),
@@ -1510,10 +1654,22 @@ class WriteOperation(Base):
             "'undo:create_application_event','undo:add_note'))",
             name="ck_write_operations_manifest",
         ),
-        CheckConstraint("result_json IS NULL OR length(CAST(result_json AS BLOB)) <= 524288", name="ck_write_operations_result_bytes"),
-        CheckConstraint("visible_result IS NULL OR length(CAST(visible_result AS BLOB)) <= 262144", name="ck_write_operations_visible_bytes"),
-        CheckConstraint("transport_json IS NULL OR length(CAST(transport_json AS BLOB)) <= 131072", name="ck_write_operations_transport_bytes"),
-        CheckConstraint("undo_json IS NULL OR length(CAST(undo_json AS BLOB)) <= 65536", name="ck_write_operations_undo_bytes"),
+        CheckConstraint(
+            "result_json IS NULL OR length(CAST(result_json AS BLOB)) <= 524288",
+            name="ck_write_operations_result_bytes",
+        ),
+        CheckConstraint(
+            "visible_result IS NULL OR length(CAST(visible_result AS BLOB)) <= 262144",
+            name="ck_write_operations_visible_bytes",
+        ),
+        CheckConstraint(
+            "transport_json IS NULL OR length(CAST(transport_json AS BLOB)) <= 131072",
+            name="ck_write_operations_transport_bytes",
+        ),
+        CheckConstraint(
+            "undo_json IS NULL OR length(CAST(undo_json AS BLOB)) <= 65536",
+            name="ck_write_operations_undo_bytes",
+        ),
         CheckConstraint(
             "coalesce(length(CAST(result_json AS BLOB)),0) + coalesce(length(CAST(visible_result AS BLOB)),0) + "
             "coalesce(length(CAST(transport_json AS BLOB)),0) + coalesce(length(CAST(undo_json AS BLOB)),0) <= 1048576",
@@ -1642,15 +1798,31 @@ class WriteOperation(Base):
             "OR (status = 'failed' AND delivered_at = failed_at)))",
             name="ck_write_operations_delivery_shape",
         ),
-        Index("uq_write_operations_primary_call", "conversation_id", "tool_call_id", unique=True, sqlite_where=text("operation_role = 'primary' AND conversation_id IS NOT NULL")),
-        Index("uq_write_operations_compensation_parent", "parent_operation_id", unique=True, sqlite_where=text("operation_role = 'compensation'")),
+        Index(
+            "uq_write_operations_primary_call",
+            "conversation_id",
+            "tool_call_id",
+            unique=True,
+            sqlite_where=text("operation_role = 'primary' AND conversation_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_write_operations_compensation_parent",
+            "parent_operation_id",
+            unique=True,
+            sqlite_where=text("operation_role = 'compensation'"),
+        ),
         Index("idx_write_operations_status", "status", "delivery_status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     operation_role: Mapped[str] = mapped_column(String, nullable=False)
-    parent_operation_id: Mapped[str | None] = mapped_column(ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True)
-    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    parent_operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True
+    )
+    parent_terminal_payload_sha256: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
     agent_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     tool_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -1674,35 +1846,48 @@ class WriteOperation(Base):
     delivery_outcome: Mapped[str | None] = mapped_column(String, nullable=True)
     delivery_message_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     delivery_manifest_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
-    delivery_next_operation_id: Mapped[str | None] = mapped_column(ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True)
+    delivery_next_operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("write_operations.id", ondelete="RESTRICT"), nullable=True
+    )
     delivery_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivery_owner_token_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
     delivery_lease_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.current_timestamp()
+    )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.current_timestamp()
+    )
 
 
 class WriteOperationTransition(Base):
     __tablename__ = "write_operation_transitions"
     __table_args__ = (
         CheckConstraint(_sqlite_uuid_check("id"), name="ck_write_operation_transitions_id_uuid"),
-        CheckConstraint("state IN ('proposed','approved','rejected','claimed','committed','failed')", name="ck_write_operation_transitions_state"),
+        CheckConstraint(
+            "state IN ('proposed','approved','rejected','claimed','committed','failed')",
+            name="ck_write_operation_transitions_state",
+        ),
         CheckConstraint("seq >= 1", name="ck_write_operation_transitions_seq"),
         UniqueConstraint("operation_id", "seq", name="uq_write_operation_transitions_seq"),
         Index("idx_write_operation_transitions_operation", "operation_id", "seq"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    operation_id: Mapped[str] = mapped_column(ForeignKey("write_operations.id", ondelete="CASCADE"), nullable=False)
+    operation_id: Mapped[str] = mapped_column(
+        ForeignKey("write_operations.id", ondelete="CASCADE"), nullable=False
+    )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.current_timestamp()
+    )
 
 
 class AgentRun(Base):
@@ -1714,9 +1899,7 @@ class AgentRun(Base):
             name="ck_agent_runs_key_uuid",
         ),
         CheckConstraint("last_seq >= 0", name="ck_agent_runs_last_seq"),
-        CheckConstraint(
-            "recording_error_count >= 0", name="ck_agent_runs_recording_error_count"
-        ),
+        CheckConstraint("recording_error_count >= 0", name="ck_agent_runs_recording_error_count"),
         CheckConstraint(
             "status IN ('running','waiting_confirmation','completed','failed','cancelled','timed_out')",
             name="ck_agent_runs_status",
@@ -1804,7 +1987,9 @@ class AgentEvent(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     dedupe_key: Mapped[str] = mapped_column(String, nullable=False)
     event_type: Mapped[str] = mapped_column(String, nullable=False)
-    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     execution_segment_id: Mapped[str] = mapped_column(String(36), nullable=False)
     model_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     model_call_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -1906,9 +2091,7 @@ class KnowledgeSource(Base):
     # display_title 承载 frontmatter title（可被用户 PATCH 覆盖）；author/published_at
     # 是从原文确定性提取的派生 provenance，非任意 metadata。
     author: Mapped[str] = mapped_column(String, default="", server_default="")
-    published_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     main_filename: Mapped[str] = mapped_column(String, nullable=False)
     main_media_type: Mapped[str] = mapped_column(
         String,
@@ -1926,32 +2109,18 @@ class KnowledgeSource(Base):
     extraction_status: Mapped[str] = mapped_column(
         String, nullable=False, default="pending", server_default="pending"
     )
-    extraction_error_code: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
-    extraction_error_message: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    extraction_error_code: Mapped[str] = mapped_column(String, default="", server_default="")
+    extraction_error_message: Mapped[str] = mapped_column(String, default="", server_default="")
     brief_status: Mapped[str] = mapped_column(
         String, nullable=False, default="not_started", server_default="not_started"
     )
-    brief_block_reason: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
-    brief_error_code: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
-    brief_error_message: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    brief_block_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    brief_error_code: Mapped[str] = mapped_column(String, default="", server_default="")
+    brief_error_message: Mapped[str] = mapped_column(String, default="", server_default="")
     active_snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active_brief_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    archived_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -1969,9 +2138,7 @@ class KnowledgeSourceOrigin(Base):
     """每次导入追加一条 file/paste/bundle 来源记录。"""
 
     __tablename__ = "knowledge_source_origins"
-    __table_args__ = (
-        Index("idx_knowledge_source_origins_source", "source_id"),
-    )
+    __table_args__ = (Index("idx_knowledge_source_origins_source", "source_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[int] = mapped_column(
@@ -1979,9 +2146,7 @@ class KnowledgeSourceOrigin(Base):
         nullable=False,
     )
     import_method: Mapped[str] = mapped_column(String, nullable=False)
-    original_filename: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    original_filename: Mapped[str] = mapped_column(String, default="", server_default="")
     origin_url: Mapped[str] = mapped_column(String, default="", server_default="")
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -2027,18 +2192,12 @@ class KnowledgeExtractionSnapshot(Base):
     encoding: Mapped[str] = mapped_column(
         String, nullable=False, default="utf-8", server_default="utf-8"
     )
-    detection_method: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    detection_method: Mapped[str] = mapped_column(String, default="", server_default="")
     canonical_text: Mapped[str] = mapped_column(Text, nullable=False)
-    structure_manifest: Mapped[str] = mapped_column(
-        Text, default="{}", server_default="{}"
-    )
+    structure_manifest: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
     # KBR-02：Snapshot 记录元数据提取版本，确定性重建可复现。空串表示旧 Snapshot
     # （由 _ensure_column 加列回填）。
-    metadata_extraction_version: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    metadata_extraction_version: Mapped[str] = mapped_column(String, default="", server_default="")
     digest: Mapped[str] = mapped_column(String, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -2075,17 +2234,13 @@ class KnowledgeEvidence(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     block_kind: Mapped[str] = mapped_column(String, nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    heading_path_json: Mapped[str] = mapped_column(
-        String, default="[]", server_default="[]"
-    )
+    heading_path_json: Mapped[str] = mapped_column(String, default="[]", server_default="[]")
     char_start: Mapped[int] = mapped_column(Integer, nullable=False)
     char_end: Mapped[int] = mapped_column(Integer, nullable=False)
     line_start: Mapped[int] = mapped_column(Integer, nullable=False)
     line_end: Mapped[int] = mapped_column(Integer, nullable=False)
     canonical_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
-    search_text: Mapped[str] = mapped_column(
-        String, nullable=False, default="", server_default=""
-    )
+    search_text: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     content_hash: Mapped[str] = mapped_column(String, nullable=False)
     asset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     previous_evidence_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -2171,33 +2326,19 @@ class KnowledgeJob(Base):
     )
     progress: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    next_retry_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    canceled: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="0"
-    )
-    lease_owner: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    lease_owner: Mapped[str] = mapped_column(String, default="", server_default="")
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    heartbeat_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # KI-07：每次 claim 生成新 attempt_token；complete/heartbeat 必须验证 token 匹配，
     # 防止迟到 lease 结果提交。Spec §12 "迟到的旧 lease 结果因 owner/Attempt 不匹配
     # 而拒绝提交"。
-    attempt_token: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
-    error_code: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
-    error_message: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    attempt_token: Mapped[str] = mapped_column(String, default="", server_default="")
+    error_code: Mapped[str] = mapped_column(String, default="", server_default="")
+    error_message: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -2231,9 +2372,7 @@ class KnowledgeLog(Base):
     result: Mapped[str] = mapped_column(
         String, nullable=False, default="succeeded", server_default="succeeded"
     )
-    error_code: Mapped[str] = mapped_column(
-        String, default="", server_default=""
-    )
+    error_code: Mapped[str] = mapped_column(String, default="", server_default="")
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -2250,9 +2389,7 @@ class KnowledgeSourceBrief(Base):
     """
 
     __tablename__ = "knowledge_source_briefs"
-    __table_args__ = (
-        Index("idx_knowledge_source_briefs_source", "source_id"),
-    )
+    __table_args__ = (Index("idx_knowledge_source_briefs_source", "source_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[int] = mapped_column(
@@ -2336,12 +2473,8 @@ class KnowledgeBriefAttempt(Base):
     validation_report_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="{}", server_default="{}"
     )
-    error_code: Mapped[str] = mapped_column(
-        String, nullable=False, default="", server_default=""
-    )
-    error_message: Mapped[str] = mapped_column(
-        Text, nullable=False, default="", server_default=""
-    )
+    error_code: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     repair_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -2363,18 +2496,14 @@ class KnowledgeBriefAttempt(Base):
     provider_retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    next_retry_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_input_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
     token_output_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    latency_ms: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -2409,16 +2538,32 @@ class KnowledgeBriefAttemptStep(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     phase: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="completed", server_default="completed")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="completed", server_default="completed"
+    )
     block_path: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     provider_id: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    provider_model: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    prompt_version: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
-    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    evidence_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
-    output_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
-    token_input_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    token_output_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    provider_model: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    prompt_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    evidence_ids_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    output_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    token_input_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    token_output_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     error_code: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
@@ -2449,18 +2594,12 @@ class KnowledgeRetrievalTrace(Base):
     filters_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="{}", server_default="{}"
     )
-    hits_json: Mapped[str] = mapped_column(
-        Text, nullable=False, default="[]", server_default="[]"
-    )
-    duration_ms: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    hits_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     evaluation_label: Mapped[str] = mapped_column(
         String, nullable=False, default="", server_default=""
     )
-    error_code: Mapped[str] = mapped_column(
-        String, nullable=False, default="", server_default=""
-    )
+    error_code: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

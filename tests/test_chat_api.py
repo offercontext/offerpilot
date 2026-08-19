@@ -5965,7 +5965,15 @@ def test_chat_confirm_ledger_delivery_survives_unrelated_conversation_generation
     )
 
     if endpoint.endswith("/stream"):
-        assert _parse_sse_events(response.text)[-1]["event"] == "completed"
+        stream_events = _parse_sse_events(response.text)
+        assert stream_events[-1]["event"] == "completed"
+        origin_results = [event for event in stream_events if event["event"] == "tool_result"]
+        assert len(origin_results) == 1
+        assert (
+            origin_results[0]["data"]["data"]["operation_id"]
+            == pending["pending_action"]["operation_id"]
+        )
+        assert stream_events.index(origin_results[0]) < len(stream_events) - 1
     else:
         assert response.status_code == 200
         assert response.json()["type"] == "confirmation_required"

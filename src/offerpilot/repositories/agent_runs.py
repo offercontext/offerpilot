@@ -198,7 +198,9 @@ class AgentRunRepository:
             replayed = self._replay_created_run(command, deadline=deadline, clock=clock)
             if replayed is not None:
                 return replayed
-            raise JournalConflictError("run creation conflicts with persisted journal state") from None
+            raise JournalConflictError(
+                "run creation conflicts with persisted journal state"
+            ) from None
 
     def attach_input_message(
         self,
@@ -220,7 +222,9 @@ class AgentRunRepository:
                     raise JournalConflictError("terminal run cannot attach an input message")
                 message = session.get(ChatMessage, message_id)
                 if message is None or message.conversation_id != run.conversation_id:
-                    raise JournalConflictError("input message does not belong to the run conversation")
+                    raise JournalConflictError(
+                        "input message does not belong to the run conversation"
+                    )
                 now = self._utc_now()
                 result = session.execute(
                     update(AgentRun)
@@ -282,7 +286,9 @@ class AgentRunRepository:
             )
             if replayed is not None:
                 return replayed
-            raise JournalConflictError("segment start conflicts with persisted journal state") from None
+            raise JournalConflictError(
+                "segment start conflicts with persisted journal state"
+            ) from None
 
     def append_event(
         self,
@@ -336,6 +342,20 @@ class AgentRunRepository:
             if replayed is not None:
                 return replayed
             raise JournalConflictError("event conflicts with persisted journal state") from None
+
+    def append_event_bound(self, session: Session, run_id: str, draft: EventDraft) -> AgentEvent:
+        """Append through a caller-owned transaction without committing it."""
+
+        self._validate_event_draft(draft)
+        if draft.event_type in _DISPOSITION_EVENT_TYPES:
+            raise JournalConflictError("disposition event requires its atomic repository method")
+        existing = self._existing_event(session, run_id, draft)
+        if existing is not None:
+            return existing
+        run = self._required_run(session, run_id)
+        if run.status in _TERMINAL_STATUSES:
+            raise JournalConflictError("terminal run cannot accept a new event")
+        return self._insert_event(session, run_id, draft, self._utc_now())
 
     def capture_context(
         self,
@@ -429,7 +449,9 @@ class AgentRunRepository:
             )
             if replayed is not None:
                 return replayed
-            raise JournalConflictError("context capture conflicts with persisted journal state") from None
+            raise JournalConflictError(
+                "context capture conflicts with persisted journal state"
+            ) from None
 
     def converge_disposition(
         self,
@@ -455,9 +477,7 @@ class AgentRunRepository:
                 run = self._required_run(session, run_id)
                 if all(item is not None for item in existing):
                     self._assert_disposition_projection(run, command)
-                    return tuple(
-                        self._detach(session, cast(AgentEvent, item)) for item in existing
-                    )
+                    return tuple(self._detach(session, cast(AgentEvent, item)) for item in existing)
 
                 self._assert_status_transition(run, command.target_status)
                 self._assert_disposition_matches_run(run, command)
@@ -490,7 +510,9 @@ class AgentRunRepository:
             )
             if replayed is not None:
                 return replayed
-            raise JournalConflictError("disposition conflicts with persisted journal state") from None
+            raise JournalConflictError(
+                "disposition conflicts with persisted journal state"
+            ) from None
 
     def mark_degraded(
         self,
@@ -838,9 +860,7 @@ class AgentRunRepository:
             if run is None:
                 return None
             self._assert_disposition_projection(run, command)
-            return tuple(
-                self._detach(session, cast(AgentEvent, event)) for event in events
-            )
+            return tuple(self._detach(session, cast(AgentEvent, event)) for event in events)
 
     @staticmethod
     def _required_run(session: Session, run_id: str) -> AgentRun:
@@ -933,9 +953,7 @@ class AgentRunRepository:
         if command.snapshot_kind == "model_input":
             if command.model_call_id is None or command.model_step is None:
                 raise JournalConflictError("model input snapshot requires model identity")
-            expected_key = (
-                f"model-input:{command.execution_segment_id}:{command.model_call_id}"
-            )
+            expected_key = f"model-input:{command.execution_segment_id}:{command.model_call_id}"
         elif command.snapshot_kind == "initial":
             if command.model_call_id is not None or command.model_step is not None:
                 raise JournalConflictError("initial snapshot cannot use model identity")

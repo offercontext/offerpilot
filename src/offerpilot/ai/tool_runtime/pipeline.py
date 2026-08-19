@@ -176,13 +176,15 @@ def execute_prepared(
             )
             if record.replayed or not record.execution_started:
                 return record
-            started_recorded = project_tool_started(context.run_recorder, prepared)
-            _stage(stage_sink, "tool.started")
+            started_recorded = record.journal_started_recorded
             project_tool_terminal(
                 context.run_recorder,
                 record,
                 started_recorded=started_recorded,
-                visible_result=render_compatibility(prepared.spec, record.outcome),
+                visible_result=(
+                    record.persisted_visible_result
+                    or render_compatibility(prepared.spec, record.outcome)
+                ),
             )
             return record
 

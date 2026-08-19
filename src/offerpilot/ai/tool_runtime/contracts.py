@@ -9,9 +9,7 @@ if TYPE_CHECKING:
     from offerpilot.ai.tool_runtime.context import ToolExecutionContext
 
 
-JSONValue: TypeAlias = (
-    None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
-)
+JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 ToolKind: TypeAlias = Literal["read", "write"]
 ConfirmationPolicy: TypeAlias = Literal["none", "required"]
 FailureCategory: TypeAlias = Literal[
@@ -145,9 +143,9 @@ class UndoPolicy(str, Enum):
 @dataclass(frozen=True)
 class WriteContract:
     adapter_kind: Literal["typed", "legacy_deterministic", "compensation"] = "typed"
-    result_contract: Literal[
-        "typed_json_v1", "legacy_string_v1", "compensation_json_v1"
-    ] = "typed_json_v1"
+    result_contract: Literal["typed_json_v1", "legacy_string_v1", "compensation_json_v1"] = (
+        "typed_json_v1"
+    )
     undo_policy: UndoPolicy = UndoPolicy.NONE
     result_bytes: int = 512 * 1024
     visible_bytes: int = 256 * 1024
@@ -163,10 +161,18 @@ class WriteContract:
 
 TRANSACTIONAL_TYPED_WRITE_NAMES = frozenset(
     {
-        "create_application", "update_application_status",
-        "create_application_event", "update_application_event", "delete_application_event",
-        "add_note", "update_note", "delete_note", "update_offer", "save_offer_assessment",
-        "resume_update_career_intent", "resume_rewrite_highlight",
+        "create_application",
+        "update_application_status",
+        "create_application_event",
+        "update_application_event",
+        "delete_application_event",
+        "add_note",
+        "update_note",
+        "delete_note",
+        "update_offer",
+        "save_offer_assessment",
+        "resume_update_career_intent",
+        "resume_rewrite_highlight",
     }
 )
 REQUIRED_UNDO_TOOL_NAMES = frozenset(
@@ -188,7 +194,9 @@ class ToolSpec(Generic[ArgsT, ResultT]):
     mutable_validator: ToolCheck[ArgsT] | None = field(default=None, repr=False, compare=False)
     declared_failure_categories: frozenset[FailureCategory] = field(default_factory=frozenset)
     exception_map: tuple[ToolExceptionMapping, ...] = field(default_factory=tuple)
-    success_renderer: SuccessRenderer[ResultT] | None = field(default=None, repr=False, compare=False)
+    success_renderer: SuccessRenderer[ResultT] | None = field(
+        default=None, repr=False, compare=False
+    )
     result_metadata: ResultMetadataProjector[ResultT] | None = field(
         default=None,
         repr=False,
@@ -257,6 +265,11 @@ class ToolExecutionRecord(TransientToolRuntimeValue, Generic[ArgsT, ResultT]):
     operation_id: str = ""
     replayed: bool = False
     terminal_persisted: bool = False
+    persisted_visible_result: str | None = None
+    persisted_transport: Mapping[str, JSONValue] | None = field(
+        default=None, repr=False, compare=False
+    )
+    journal_started_recorded: bool = False
 
 
 def heterogeneous_spec(spec: ToolSpec[ArgsT, ResultT]) -> ToolSpec[Any, Any]:

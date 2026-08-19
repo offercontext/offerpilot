@@ -65,8 +65,7 @@ class _ToolSet:
 
     def with_tool(self, definition: _ToolDefinition) -> "_ToolSet":
         return _ToolSet(
-            tuple(item for item in self.definitions if item.name != definition.name)
-            + (definition,)
+            tuple(item for item in self.definitions if item.name != definition.name) + (definition,)
         )
 
     def replace(self, name: str, **changes: Any) -> "_ToolSet":
@@ -110,7 +109,10 @@ def _test_runtime(tools: _ToolSet) -> tuple[ToolCatalog, ToolExecutionContext]:
         schema = definition.parameters or {"type": "object", "properties": {}}
         description = definition.description or name
         contract = ProviderToolContract(
-            payload={"type": "function", "function": {"name": name, "description": description, "parameters": schema}},
+            payload={
+                "type": "function",
+                "function": {"name": name, "description": description, "parameters": schema},
+            },
             name=name,
             description=description,
             parameters=schema,
@@ -141,8 +143,7 @@ def _test_runtime(tools: _ToolSet) -> tuple[ToolCatalog, ToolExecutionContext]:
                 return None
             try:
                 detail = str(
-                    validator(json.dumps(args, ensure_ascii=False, separators=(",", ":")))
-                    or ""
+                    validator(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or ""
                 )
             except Exception:
                 detail = "工具参数验证失败，请检查后重试。"
@@ -150,10 +151,14 @@ def _test_runtime(tools: _ToolSet) -> tuple[ToolCatalog, ToolExecutionContext]:
 
         describe = definition.confirmation_description
 
-        def confirmation_description(args: dict[str, Any], describe: Any = describe, name: str = name) -> str:
+        def confirmation_description(
+            args: dict[str, Any], describe: Any = describe, name: str = name
+        ) -> str:
             if not callable(describe):
                 return ""
-            return str(describe(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or name)
+            return str(
+                describe(json.dumps(args, ensure_ascii=False, separators=(",", ":"))) or name
+            )
 
         is_write = definition.kind == "write"
         specs.append(
@@ -167,7 +172,9 @@ def _test_runtime(tools: _ToolSet) -> tuple[ToolCatalog, ToolExecutionContext]:
                 preflight=preflight if validator is not None else None,
                 mutable_validator=preflight if validator is not None else None,
                 declared_failure_categories=frozenset({"validation_error", "internal_error"}),
-                exception_map=(ToolExceptionMapping(Exception, "internal_error", "test_handler_error", str),),
+                exception_map=(
+                    ToolExceptionMapping(Exception, "internal_error", "test_handler_error", str),
+                ),
                 success_renderer=lambda result: str(result),
                 confirmation_description=confirmation_description,
                 write_contract=WriteContract() if is_write else None,
@@ -386,19 +393,19 @@ def _editable_tools(calls=None, validate=None):
             "update_application_status",
             write=True,
             editable_fields=(
-            {"field": "status", "type": "enum", "options": ["offer", "rejected"]},
-            {"field": "title", "type": "string"},
-            {"field": "note", "type": "long_text"},
-            {"field": "score", "type": "number"},
-            {"field": "active", "type": "boolean"},
-            {"field": "scheduled_at", "type": "datetime"},
-            {
-                "field": "remind_at",
-                "type": "datetime",
-                "clearable": True,
-                "clear_value": "",
-            },
-            {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
+                {"field": "status", "type": "enum", "options": ["offer", "rejected"]},
+                {"field": "title", "type": "string"},
+                {"field": "note", "type": "long_text"},
+                {"field": "score", "type": "number"},
+                {"field": "active", "type": "boolean"},
+                {"field": "scheduled_at", "type": "datetime"},
+                {
+                    "field": "remind_at",
+                    "type": "datetime",
+                    "clearable": True,
+                    "clear_value": "",
+                },
+                {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
             ),
             executor=lambda args: calls.append(args) or '{"ok":true}',
             validator=validate,
@@ -662,189 +669,6 @@ def test_in_memory_checkpoint_executes_effective_args():
     assert new_pending is None
 
 
-@pytest.mark.parametrize(
-    ("stale_tool_call_id", "stale_tool_name"),
-    [("other-call", "update_application_status"), ("w1", "other_write_tool")],
-)
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event(
-    stale_tool_call_id, stale_tool_name
-):
-    calls = []
-    events = []
-    registry = _editable_tools(calls)
-    registry = registry.with_tool(
-        _tool(
-            "other_write_tool",
-            write=True,
-            executor=lambda args: calls.append("other:" + args) or '{"ok":true}',
-        )
-    )
-    runner = LangGraphAgentRunner(
-        ScriptedModel(
-            [
-                Assistant(
-                    tool_calls=[
-                        ToolCall(
-                            id="w1",
-                            name="update_application_status",
-                            args=json.dumps({"id": 7, "status": "offer"}),
-                        )
-                    ]
-                ),
-                Assistant(content="stale confirmation rejected"),
-            ]
-        ),
-        registry,
-        event_sink=events.append,
-    )
-    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
-    assert pending is not None
-    stale_pending = PendingAction(
-        tool_call_id=stale_tool_call_id,
-        tool_name=stale_tool_name,
-        args=pending.args,
-        human=pending.human,
-    )
-
-    events_before_stale_resume = list(events)
-    with pytest.raises(StalePendingActionError, match="stale pending action"):
-        runner.resume_after_confirm(
-            [], stale_pending, approved=True, auto_approve=False, max_iter=8
-        )
-
-    assert calls == []
-    assert events == events_before_stale_resume
-    assert not any(
-        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-        for event in events
-    )
-
-    added, reply, new_pending = runner.resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
-
-    assert calls == ['{"id":7,"status":"offer"}']
-    assert reply == "stale confirmation rejected"
-    assert new_pending is None
-    assert added[0].role == "tool"
-    assert (
-        sum(
-            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-            for event in events
-        )
-        == 1
-    )
-
-
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
-    calls = []
-    events = []
-    registry = _editable_tools(calls)
-    runner = LangGraphAgentRunner(
-        ScriptedModel(
-            [
-                Assistant(
-                    tool_calls=[
-                        ToolCall(
-                            id="call-a",
-                            name="update_application_status",
-                            args=json.dumps({"id": 7, "status": "offer"}),
-                        )
-                    ]
-                ),
-                Assistant(
-                    tool_calls=[
-                        ToolCall(
-                            id="call-b",
-                            name="update_application_status",
-                            args=json.dumps({"id": 7, "status": "rejected"}),
-                        )
-                    ]
-                ),
-                Assistant(content="replacement completed"),
-            ]
-        ),
-        registry,
-        event_sink=events.append,
-    )
-    _, _, pending_a = runner.run_turn([], auto_approve=False, max_iter=8)
-    assert pending_a is not None
-
-    original_compile = runner._compile_graph
-    replacement = {}
-
-    def compile_with_race(checkpointer):
-        graph = original_compile(checkpointer)
-
-        class RaceGraph:
-            def get_state(self, config):
-                snapshot = graph.get_state(config)
-                if snapshot.interrupts:
-                    replacement["interrupt_id"] = snapshot.interrupts[0].id
-                return snapshot
-
-            def invoke(self, value, config):
-                if "pending" not in replacement:
-                    replacement_result = graph.invoke(
-                        agent_module.Command(
-                            resume={
-                                replacement["interrupt_id"]: {
-                                    "approved": True,
-                                    "tool_call_id": pending_a.tool_call_id,
-                                    "tool_name": pending_a.tool_name,
-                                    "effective_args": pending_a.args,
-                                    "rejection_feedback": "",
-                                    "resume_attempt_id": "concurrent-confirmation",
-                                }
-                            }
-                        ),
-                        config,
-                    )
-                    _, _, pending_b = runner._result_from_state(replacement_result)
-                    assert pending_b is not None
-                    replacement["pending"] = pending_b
-                return graph.invoke(value, config)
-
-        return RaceGraph()
-
-    monkeypatch.setattr(runner, "_compile_graph", compile_with_race)
-
-    with pytest.raises(StalePendingActionError, match="stale pending action"):
-        runner.resume_after_confirm([], pending_a, approved=True, auto_approve=False, max_iter=8)
-
-    assert calls == ['{"id":7,"status":"offer"}']
-    assert (
-        sum(
-            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-            for event in events
-        )
-        == 1
-    )
-
-    pending_b = replacement["pending"]
-    added, reply, new_pending = runner.resume_after_confirm(
-        [], pending_b, approved=True, auto_approve=False, max_iter=8
-    )
-
-    assert calls == [
-        '{"id":7,"status":"offer"}',
-        '{"id":7,"status":"rejected"}',
-    ]
-    assert [message.role for message in added] == ["tool", "assistant"]
-    assert added[0].tool_call_id == "call-b"
-    assert reply == "replacement completed"
-    assert new_pending is None
-    assert (
-        sum(
-            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-            for event in events
-        )
-        == 2
-    )
-
-
 def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
     calls = []
     registry = _editable_tools(calls)
@@ -898,55 +722,6 @@ def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
     assert new_pending is None
 
 
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_missing_resume_identity_preserves_checkpoint(monkeypatch):
-    calls = []
-    registry = _editable_tools(calls)
-    runner = LangGraphAgentRunner(
-        ScriptedModel(
-            [
-                Assistant(
-                    tool_calls=[
-                        ToolCall(
-                            id="w1",
-                            name="update_application_status",
-                            args=json.dumps({"id": 7, "status": "offer"}),
-                        )
-                    ]
-                ),
-                Assistant(content="done"),
-            ]
-        ),
-        registry,
-    )
-    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
-    assert pending is not None
-    original_command = agent_module.Command
-
-    def command_without_identity(*, resume):
-        stripped_resume_map = {}
-        for interrupt_id, payload in resume.items():
-            stripped_payload = dict(payload)
-            stripped_payload.pop("tool_call_id")
-            stripped_payload.pop("tool_name")
-            stripped_resume_map[interrupt_id] = stripped_payload
-        return original_command(resume=stripped_resume_map)
-
-    monkeypatch.setattr(agent_module, "Command", command_without_identity)
-    with pytest.raises(StalePendingActionError, match="stale pending action"):
-        runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
-
-    assert calls == []
-    monkeypatch.setattr(agent_module, "Command", original_command)
-    _, reply, new_pending = runner.resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
-
-    assert calls == ['{"id":7,"status":"offer"}']
-    assert reply == "done"
-    assert new_pending is None
-
-
 def test_checkpoint_validator_exception_fails_before_claim_without_leaking_details():
     calls = []
     validation_count = 0
@@ -980,9 +755,7 @@ def test_checkpoint_validator_exception_fails_before_claim_without_leaking_detai
     assert pending is not None
 
     with pytest.raises(PendingActionValidationError, match="工具参数验证失败"):
-        runner.resume_after_confirm(
-            [], pending, approved=True, auto_approve=False, max_iter=8
-        )
+        runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == []
 
@@ -1138,68 +911,6 @@ def test_missing_checkpoint_fallback_executes_effective_args():
     assert calls == ['{"id":7,"status":"rejected"}']
     assert reply == "done"
     assert new_pending is None
-
-
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_concurrent_sqlite_confirmations_execute_handler_at_most_once(tmp_path):
-    calls = []
-    calls_lock = Lock()
-
-    def handler(args):
-        with calls_lock:
-            calls.append(args)
-        return '{"ok":true}'
-
-    registry = _editable_tools()
-    registry = registry.replace("update_application_status", executor=handler)
-    checkpoint_path = tmp_path / "concurrent_confirmations.sqlite"
-    thread_id = "conversation:concurrent-sqlite"
-    creator = LangGraphAgentRunner(
-        ScriptedModel(
-            [
-                Assistant(
-                    tool_calls=[
-                        ToolCall(
-                            id="shared-write",
-                            name="update_application_status",
-                            args=json.dumps({"id": 7, "status": "offer"}),
-                        )
-                    ]
-                )
-            ]
-        ),
-        registry,
-        checkpoint_path=checkpoint_path,
-        thread_id=thread_id,
-    )
-    _, _, pending = creator.run_turn([], auto_approve=False, max_iter=8)
-    assert pending is not None
-    runners = [
-        LangGraphAgentRunner(
-            ScriptedModel([Assistant(content=f"done-{index}")]),
-            registry,
-            checkpoint_path=checkpoint_path,
-            thread_id=thread_id,
-        )
-        for index in range(2)
-    ]
-    start = Barrier(3)
-
-    def confirm(runner):
-        start.wait(timeout=5)
-        try:
-            runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
-        except StalePendingActionError:
-            return "stale"
-        return "success"
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(confirm, runner) for runner in runners]
-        start.wait(timeout=5)
-        outcomes = [future.result(timeout=10) for future in futures]
-
-    assert calls == ['{"id":7,"status":"offer"}']
-    assert sorted(outcomes) == ["stale", "success"]
 
 
 def test_concurrent_fallback_confirmations_execute_handler_at_most_once():
@@ -1401,73 +1112,6 @@ def test_fallback_duplicate_argument_key_remains_retryable_without_consuming_cla
 
     assert calls == []
     assert outcomes == []
-
-
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_checkpoint_prehandler_validation_failure_keeps_interrupt_retryable(
-    tmp_path,
-    monkeypatch,
-):
-    calls = []
-    outcomes = []
-    pending = _pending()
-    checkpoint_path = tmp_path / "prehandler-validation.sqlite"
-    model = ScriptedModel(
-        [
-            Assistant(
-                tool_calls=[
-                    ToolCall(
-                        id=pending.tool_call_id,
-                        name=pending.tool_name,
-                        args=pending.args,
-                    )
-                ]
-            ),
-            Assistant(content="done"),
-        ]
-    )
-    registry = _editable_tools(calls)
-    _, _, stored_pending = run_turn(
-        model,
-        registry,
-        [],
-        auto_approve=False,
-        checkpoint_path=checkpoint_path,
-        thread_id="conversation:prehandler-validation",
-    )
-    original = agent_module._validated_resumed_args
-    monkeypatch.setattr(
-        agent_module,
-        "_validated_resumed_args",
-        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("pre-handler invalid")),
-    )
-
-    with pytest.raises(ValueError, match="pre-handler invalid"):
-        LangGraphAgentRunner(
-            model,
-            registry,
-            checkpoint_path=checkpoint_path,
-            thread_id="conversation:prehandler-validation",
-            confirmation_result_sink=lambda *args: outcomes.append(args),
-        ).resume_after_confirm([], stored_pending, approved=True, auto_approve=False, max_iter=8)
-
-    assert calls == []
-    assert outcomes == []
-    monkeypatch.setattr(agent_module, "_validated_resumed_args", original)
-
-    added, reply, new_pending = LangGraphAgentRunner(
-        model,
-        registry,
-        checkpoint_path=checkpoint_path,
-        thread_id="conversation:prehandler-validation",
-        confirmation_result_sink=lambda *args: outcomes.append(args),
-    ).resume_after_confirm([], stored_pending, approved=True, auto_approve=False, max_iter=8)
-
-    assert calls == [pending.args.replace(" ", "")]
-    assert len(outcomes) == 1
-    assert added[0].role == "tool"
-    assert reply == "done"
-    assert new_pending is None
 
 
 def test_confirmation_locks_are_scoped_by_thread_id():
@@ -1747,56 +1391,6 @@ def test_empty_rejection_feedback_keeps_generic_rejection_message():
     assert added[0].content == "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
 
 
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path):
-    calls = []
-    outcomes = []
-    checkpoint_path = tmp_path / "agent.sqlite"
-    pending = _pending()
-    model = FailAfterPendingModel(
-        ToolCall(
-            id=pending.tool_call_id,
-            name=pending.tool_name,
-            args=pending.args,
-        )
-    )
-    _, _, stored_pending = run_turn(
-        model,
-        _editable_tools(calls),
-        [],
-        auto_approve=False,
-        checkpoint_path=checkpoint_path,
-        thread_id="conversation:result-sink",
-    )
-
-    with pytest.raises(RuntimeError, match="provider failed after confirmed tool"):
-        resume_after_confirm(
-            model,
-            _editable_tools(calls),
-            [],
-            stored_pending,
-            approved=True,
-            auto_approve=False,
-            checkpoint_path=checkpoint_path,
-            thread_id="conversation:result-sink",
-            confirmation_result_sink=lambda effective, approved, message, record: outcomes.append(
-                (effective, approved, message, record)
-            ),
-        )
-
-    assert len(calls) == 1
-    assert len(outcomes) == 1
-    effective, approved, message, record = outcomes[0]
-    assert effective.tool_call_id == stored_pending.tool_call_id
-    assert effective.tool_name == stored_pending.tool_name
-    assert json.loads(effective.args) == json.loads(stored_pending.args)
-    assert approved is True
-    assert message.role == "tool"
-    assert message.tool_call_id == stored_pending.tool_call_id
-    assert message.content == '{"ok":true}'
-    assert record is not None
-
-
 def test_confirmation_result_sink_records_approved_tool_error():
     outcomes = []
     registry = _editable_tools()
@@ -2053,9 +1647,7 @@ def test_journal_records_read_tool_loop_and_increments_model_step():
     recorder = RecordingRunRecorder()
     model = ScriptedModel(
         [
-            Assistant(
-                tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]
-            ),
+            Assistant(tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]),
             Assistant(content="done"),
         ]
     )
@@ -2166,9 +1758,7 @@ def test_journal_records_typed_tool_error_without_changing_agent_result():
     recorder = RecordingRunRecorder()
     model = RecordingScriptedModel(
         [
-            Assistant(
-                tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]
-            ),
+            Assistant(tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]),
             Assistant(content="recovered"),
         ]
     )
@@ -2178,9 +1768,7 @@ def test_journal_records_typed_tool_error_without_changing_agent_result():
         _tools(
             _tool(
                 "list_applications",
-                executor=lambda _args: (_ for _ in ()).throw(
-                    ValueError("typed failure")
-                ),
+                executor=lambda _args: (_ for _ in ()).throw(ValueError("typed failure")),
             )
         ),
         [],
@@ -2268,9 +1856,7 @@ def test_multi_tool_call_selection_matches_baseline_matrix(
         ToolCall(id=label, name=definition.name, args="{}")
         for label, definition in zip(("first", "second"), tools.definitions, strict=True)
     ]
-    model = ScriptedModel(
-        [Assistant(tool_calls=tool_calls), Assistant(content="done")]
-    )
+    model = ScriptedModel([Assistant(tool_calls=tool_calls), Assistant(content="done")])
 
     added, reply, pending = run_turn(
         model,
@@ -2374,11 +1960,7 @@ def test_every_write_pauses_even_when_auto_approve_is_enabled():
         )
     )
     model = ScriptedModel(
-        [
-            Assistant(
-                tool_calls=[ToolCall(id="write-1", name="write_tool", args="{}")]
-            )
-        ]
+        [Assistant(tool_calls=[ToolCall(id="write-1", name="write_tool", args="{}")])]
     )
 
     added, reply, pending = run_turn(model, registry, [], auto_approve=True, max_iter=8)
@@ -2576,65 +2158,3 @@ def test_event_sink_emits_tool_events_when_confirm_resumes_without_checkpoint():
     assert [event["event"] for event in events] == ["tool_call", "tool_result"]
     assert events[0]["data"]["confirm_mode"] == "approved"
     assert events[1]["data"]["status"] == "success"
-
-
-@pytest.mark.skip(reason="persistent HITL checkpoint recovery was replaced by the write ledger")
-def test_langgraph_runner_resumes_pending_write_from_sqlite_checkpoint(tmp_path):
-    calls = []
-    registry = _tools(
-        _tool(
-            "update_application_status",
-            write=True,
-            confirmation_description=lambda args: "change status",
-            executor=lambda args: calls.append(args) or '{"ok":true}',
-        )
-    )
-    checkpoint_path = tmp_path / "agent_checkpoints.sqlite"
-    thread_id = "conversation:1"
-
-    first_runner = LangGraphAgentRunner(
-        ScriptedModel(
-            [
-                Assistant(
-                    tool_calls=[
-                        ToolCall(
-                            id="w1",
-                            name="update_application_status",
-                            args=json.dumps({"id": 1, "status": "offer"}),
-                        )
-                    ]
-                )
-            ]
-        ),
-        registry,
-        checkpoint_path=checkpoint_path,
-        thread_id=thread_id,
-    )
-
-    added, reply, pending = first_runner.run_turn([], auto_approve=False, max_iter=8)
-
-    assert reply == ""
-    assert isinstance(pending, PendingAction)
-    assert pending.tool_call_id == "w1"
-    assert calls == []
-    assert checkpoint_path.exists()
-
-    second_runner = LangGraphAgentRunner(
-        ScriptedModel([Assistant(content="done")]),
-        registry,
-        checkpoint_path=checkpoint_path,
-        thread_id=thread_id,
-    )
-
-    added_after_confirm, reply_after_confirm, new_pending = second_runner.resume_after_confirm(
-        [],
-        pending,
-        approved=True,
-        auto_approve=False,
-        max_iter=8,
-    )
-
-    assert calls == ['{"id":1,"status":"offer"}']
-    assert added_after_confirm[0].role == "tool"
-    assert reply_after_confirm == "done"
-    assert new_pending is None

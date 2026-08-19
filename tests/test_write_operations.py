@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+from dataclasses import asdict
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from offerpilot.agent_runtime.journal import NullRunRecorder
 from offerpilot.ai.agent import PendingAction
@@ -24,6 +27,8 @@ from offerpilot.ai.write_operations import (
     LEGACY_WRITE_OPERATION_NAMES,
     REQUIRED_UNDO_OPERATION_NAMES,
     TYPED_WRITE_OPERATION_NAMES,
+    DeliveryHeartbeat,
+    DeliveryOwnership,
     OperationFailed,
     WriteOperationCoordinator,
     WriteOperationError,
@@ -39,6 +44,7 @@ from offerpilot.repositories.jd import JDAnalysesRepository
 from offerpilot.repositories.notes import NotesRepository
 from offerpilot.repositories.offers import OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
+from offerpilot.models import Conversation, WriteOperationTransition
 
 
 def test_write_operation_manifests_are_exact() -> None:
@@ -91,6 +97,143 @@ def test_ledger_key_is_independent_and_missing_key_fails_closed(tmp_path) -> Non
     key_path.unlink()
     with pytest.raises(WriteOperationError, match="operation_unavailable"):
         load_or_create_ledger_key(tmp_path, sessions)
+
+
+def test_ledger_key_creation_rechecks_after_winning_lock(tmp_path, monkeypatch) -> None:
+    seed_dir = tmp_path / "seed"
+    target_dir = tmp_path / "target"
+    sessions = init_database(tmp_path / "offerpilot.db")
+    seed = load_or_create_ledger_key(seed_dir, sessions)
+    seed_payload = (seed_dir / LEDGER_KEY_FILENAME).read_bytes()
+    target_key = target_dir / LEDGER_KEY_FILENAME
+    target_lock = target_dir / f".{LEDGER_KEY_FILENAME}.lock"
+    real_open = os.open
+
+    def racing_open(path, flags, mode=0o777):
+        if os.fspath(path) == os.fspath(target_lock):
+            target_key.write_bytes(seed_payload)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    loaded = load_or_create_ledger_key(target_dir, sessions)
+
+    assert loaded == seed
+    assert target_key.read_bytes() == seed_payload
+
+
+def test_delivery_heartbeat_renews_until_fenced(monkeypatch) -> None:
+    import offerpilot.ai.write_operations as ledger_module
+
+    monkeypatch.setattr(ledger_module, "monotonic", lambda: 10_000, raising=False)
+    calls: list[int] = []
+
+    class Repository:
+        def heartbeat(self, _ownership):
+            calls.append(len(calls) + 1)
+            return len(calls) < 3
+
+    class ImmediateEvent:
+        def wait(self, _seconds):
+            return False
+
+        def set(self):
+            return None
+
+        def is_set(self):
+            return False
+
+    ownership = DeliveryOwnership("operation", 1, b"secret", "fingerprint")
+    heartbeat = DeliveryHeartbeat(Repository(), ownership)  # type: ignore[arg-type]
+    heartbeat._stop = ImmediateEvent()  # type: ignore[assignment]
+    heartbeat._run()
+
+    assert calls == [1, 2, 3]
+
+
+def test_delivery_owner_has_only_fingerprint_public_serialization() -> None:
+    ownership = DeliveryOwnership("operation", 2, b"raw-secret", "hmac-sha256:public")
+
+    assert ownership.public_identity() == {
+        "operation_id": "operation",
+        "generation": 2,
+        "fingerprint": "hmac-sha256:public",
+    }
+    assert b"raw-secret" not in repr(ownership).encode()
+    with pytest.raises(TypeError):
+        asdict(ownership)  # type: ignore[arg-type]
+
+
+def test_bound_chat_operation_uses_caller_transaction(tmp_path) -> None:
+    sessions = init_database(tmp_path / "offerpilot.db")
+    key = load_or_create_ledger_key(tmp_path, sessions)
+    repository = WriteOperationRepository(sessions, key)
+    chat = ChatRepository(sessions, repository)
+    conversation = chat.create_conversation("workspace", "", "general")
+    pending = PendingAction(
+        tool_call_id="bound-write",
+        tool_name="update_application_status",
+        args='{"id":1,"status":"offer"}',
+        human="update",
+        operation_id=str(uuid4()),
+    )
+
+    with sessions() as session:
+        assert chat.bind(session).persist_pending_action(conversation.id, pending, [])
+        assert (
+            session.get(Conversation, conversation.id).pending_operation_id == pending.operation_id
+        )
+        session.rollback()
+
+    assert chat.get_conversation(conversation.id).pending_operation_id == ""
+
+
+def test_transition_trigger_rejects_out_of_order_state(tmp_path) -> None:
+    sessions = init_database(tmp_path / "offerpilot.db")
+    key = load_or_create_ledger_key(tmp_path, sessions)
+    repository = WriteOperationRepository(sessions, key)
+    chat = ChatRepository(sessions, repository)
+    conversation = chat.create_conversation("workspace", "", "general")
+    operation_id = str(uuid4())
+    assert chat.persist_pending_action(
+        conversation.id,
+        PendingAction(
+            tool_call_id="transition-write",
+            tool_name="update_application_status",
+            args='{"id":1,"status":"offer"}',
+            human="update",
+            operation_id=operation_id,
+        ),
+        [],
+    )
+
+    with sessions() as session, pytest.raises(IntegrityError):
+        session.add(
+            WriteOperationTransition(
+                id=str(uuid4()), operation_id=operation_id, seq=3, state="claimed"
+            )
+        )
+        session.commit()
+
+
+def test_primary_operation_rejects_empty_tool_call_id(tmp_path) -> None:
+    sessions = init_database(tmp_path / "offerpilot.db")
+    key = load_or_create_ledger_key(tmp_path, sessions)
+    repository = WriteOperationRepository(sessions, key)
+    chat = ChatRepository(sessions, repository)
+    conversation = chat.create_conversation("workspace", "", "general")
+
+    with pytest.raises(IntegrityError):
+        chat.persist_pending_action(
+            conversation.id,
+            PendingAction(
+                tool_call_id="",
+                tool_name="update_application_status",
+                args='{"id":1,"status":"offer"}',
+                human="update",
+                operation_id=str(uuid4()),
+            ),
+            [],
+        )
 
 
 def test_mapped_domain_failure_rolls_back_executor_savepoint(tmp_path) -> None:
