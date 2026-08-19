@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import re
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+from offerpilot.ai.tool_runtime.contracts import ProviderToolContract
+from offerpilot.ai.types import Assistant, Message
+from offerpilot.config import AIProviderProfile
+from offerpilot.context_projector.binding import BoundProviderResponse
+from offerpilot.context_projector.budget import (
+    ADAPTER_REQUEST_BODY_BYTE_CAP,
+    DEFAULT_OUTPUT_RESERVE,
+    PROVIDER_FRAMING_RESERVE,
+    ProviderBudget,
+    canonical_messages,
+    conservative_units,
+)
+from offerpilot.context_projector.contracts import (
+    FrozenModelSurface,
+    ProjectionError,
+    canonical_json,
+    sha256_hex,
+)
+
+ENDPOINT_NORMALIZATION_VERSION = "provider-endpoint-v1"
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
+_PATH = re.compile(r"(?:/[A-Za-z0-9._~-]+)*")
+
+
+def normalize_provider_endpoint(value: str) -> str:
+    if not value or "\\" in value or _CONTROL.search(value):
+        raise ProjectionError("invalid_provider_endpoint")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ProjectionError("invalid_provider_endpoint") from exc
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ProjectionError("invalid_provider_endpoint_scheme")
+    if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise ProjectionError("invalid_provider_endpoint_authority")
+    if parsed.query or parsed.fragment or "%" in parsed.hostname:
+        raise ProjectionError("invalid_provider_endpoint_components")
+    path = parsed.path.rstrip("/")
+    if (
+        any(segment in {".", ".."} for segment in path.split("/"))
+        or "//" in path
+        or _PATH.fullmatch(path) is None
+    ):
+        raise ProjectionError("invalid_provider_endpoint_path")
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    elif _HOST.fullmatch(host) is None:
+        raise ProjectionError("invalid_provider_endpoint_authority")
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    authority = host if port in {None, default_port} else f"{host}:{port}"
+    return urlunsplit((parsed.scheme.lower(), authority, path, "", ""))
+
+
+@dataclass(frozen=True)
+class FrozenProviderCandidate:
+    provider_id: str
+    provider_kind: str
+    model: str
+    endpoint: str
+    context_window: int
+    output_reserve: int
+    supports_json_schema: bool
+    credential: str = field(repr=False)
+
+    @classmethod
+    def freeze(cls, profile: AIProviderProfile) -> FrozenProviderCandidate:
+        context_window = 32_768 if profile.context_window == 0 else profile.context_window
+        output_reserve = (
+            DEFAULT_OUTPUT_RESERVE if profile.max_output_tokens == 0 else profile.max_output_tokens
+        )
+        # Constructing the budget here validates every component before any
+        # frozen chain or credential-bearing candidate can escape.
+        ProviderBudget(context_window=context_window, output_reserve=output_reserve)
+        return cls(
+            provider_id=profile.id,
+            provider_kind=profile.provider,
+            model=profile.model,
+            endpoint=normalize_provider_endpoint(profile.base_url),
+            context_window=context_window,
+            output_reserve=output_reserve,
+            supports_json_schema=profile.supports_json_schema,
+            credential=profile.api_key,
+        )
+
+    def budget(self) -> ProviderBudget:
+        return ProviderBudget(
+            context_window=self.context_window,
+            output_reserve=self.output_reserve,
+            framing_reserve=PROVIDER_FRAMING_RESERVE,
+        )
+
+
+@dataclass(frozen=True)
+class FrozenProviderExecutionChain:
+    candidates: tuple[FrozenProviderCandidate, ...]
+    chain_fingerprint: str
+
+    @classmethod
+    def freeze(cls, profiles: list[AIProviderProfile]) -> FrozenProviderExecutionChain:
+        candidates = tuple(
+            FrozenProviderCandidate.freeze(profile)
+            for profile in profiles
+            if profile.enabled and profile.api_key
+        )
+        if not candidates:
+            raise ProjectionError("provider_chain_empty")
+        public = [
+            {
+                "provider_id": candidate.provider_id,
+                "provider_kind": candidate.provider_kind,
+                "model": candidate.model,
+                "endpoint": candidate.endpoint,
+                "context_window": candidate.context_window,
+                "output_reserve": candidate.output_reserve,
+                "supports_json_schema": candidate.supports_json_schema,
+            }
+            for candidate in candidates
+        ]
+        return cls(candidates, sha256_hex(canonical_json(public)))
+
+
+CompleteOne = Callable[
+    [FrozenProviderCandidate, list[Message], list[ProviderToolContract], dict[str, Any] | None],
+    Assistant,
+]
+StreamOne = Callable[
+    [FrozenProviderCandidate, list[Message], list[ProviderToolContract], Callable[[str], None]],
+    Assistant,
+]
+
+
+class SingleCandidateAgentTransport:
+    def __init__(self, complete_one: CompleteOne, stream_one: StreamOne):
+        self._complete = complete_one
+        self._stream = stream_one
+
+    def complete_one(
+        self,
+        candidate: FrozenProviderCandidate,
+        surface: FrozenModelSurface,
+        response_format: dict[str, Any] | None = None,
+    ) -> Assistant:
+        self._preflight(candidate, surface, response_format, stream=False)
+        return self._complete(
+            candidate, surface.thaw_messages(), list(surface.tools), response_format
+        )
+
+    def stream_one(
+        self,
+        candidate: FrozenProviderCandidate,
+        surface: FrozenModelSurface,
+        on_delta: Callable[[str], None],
+    ) -> Assistant:
+        self._preflight(candidate, surface, None, stream=True)
+        return self._stream(candidate, surface.thaw_messages(), list(surface.tools), on_delta)
+
+    @staticmethod
+    def _preflight(
+        candidate: FrozenProviderCandidate,
+        surface: FrozenModelSurface,
+        response_format: dict[str, Any] | None,
+        *,
+        stream: bool,
+    ) -> None:
+        normalized = normalize_provider_endpoint(candidate.endpoint)
+        if normalized != candidate.endpoint:
+            raise ProjectionError("provider_endpoint_changed")
+        body = canonical_json(
+            {
+                "model": candidate.model,
+                "messages": [message.canonical_value() for message in surface.messages],
+                "tools": [dict(tool.payload) for tool in surface.tools],
+                "response_format": response_format,
+                "stream": stream,
+            }
+        )
+        if len(body) > ADAPTER_REQUEST_BODY_BYTE_CAP:
+            raise ProjectionError("adapter_request_body_byte_cap_exceeded")
+        estimated = conservative_units(canonical_messages(surface.messages)) + conservative_units(
+            canonical_json([dict(tool.payload) for tool in surface.tools])
+        )
+        if estimated > candidate.budget().input_limit:
+            raise ProjectionError("adapter_context_window_exceeded")
+
+
+class AgentProviderGatewaySession:
+    def __init__(
+        self, chain: FrozenProviderExecutionChain, transport: SingleCandidateAgentTransport
+    ):
+        self._chain = chain
+        self._transport = transport
+
+    @property
+    def budgets(self) -> tuple[ProviderBudget, ...]:
+        return tuple(candidate.budget() for candidate in self._chain.candidates)
+
+    @property
+    def manifest_identities(self) -> tuple[str, ...]:
+        return tuple(
+            f"{candidate.provider_id}:{candidate.provider_kind}:{candidate.model}:{candidate.endpoint}"
+            for candidate in self._chain.candidates
+        )
+
+    def preflight(
+        self,
+        surface: FrozenModelSurface,
+        response_format: dict[str, Any] | None = None,
+        *,
+        stream: bool = False,
+    ) -> None:
+        # The projector used the minimum budget of this exact frozen chain, so
+        # one deterministic preflight is sufficient before model.requested.
+        SingleCandidateAgentTransport._preflight(
+            self._chain.candidates[0], surface, response_format, stream=stream
+        )
+
+    def complete(
+        self, surface: FrozenModelSurface, response_format: dict[str, Any] | None = None
+    ) -> BoundProviderResponse:
+        last_error: Exception | None = None
+        for ordinal, candidate in enumerate(self._chain.candidates):
+            attempt_id = uuid.uuid4().hex
+            try:
+                response = self._transport.complete_one(candidate, surface, response_format)
+                return BoundProviderResponse(
+                    surface.model_call_id,
+                    ordinal,
+                    attempt_id,
+                    surface.runtime_surface_fingerprint,
+                    response,
+                )
+            except Exception as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+    def stream(
+        self, surface: FrozenModelSurface, on_delta: Callable[[str], None]
+    ) -> BoundProviderResponse:
+        last_error: Exception | None = None
+        for ordinal, candidate in enumerate(self._chain.candidates):
+            attempt_id = uuid.uuid4().hex
+            visible = False
+
+            def emit(value: str) -> None:
+                nonlocal visible
+                if value:
+                    visible = True
+                    on_delta(value)
+
+            try:
+                response = self._transport.stream_one(candidate, surface, emit)
+                return BoundProviderResponse(
+                    surface.model_call_id,
+                    ordinal,
+                    attempt_id,
+                    surface.runtime_surface_fingerprint,
+                    response,
+                )
+            except Exception as exc:
+                if visible:
+                    raise
+                last_error = exc
+        assert last_error is not None
+        raise last_error

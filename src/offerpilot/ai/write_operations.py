@@ -7,11 +7,13 @@ import json
 import os
 import secrets
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import Event, Thread
+from time import monotonic
 from typing import Any, Literal, NoReturn, SupportsIndex, cast
 from uuid import UUID, uuid4, uuid5
 
@@ -35,6 +37,7 @@ from offerpilot.ai.tool_runtime.journal import project_tool_started_bound
 from offerpilot.ai.tool_runtime.transport import project_transport_event
 from offerpilot.ai.tool_runtime.validation import canonical_json
 from offerpilot.models import ChatMessage, Conversation, WriteOperation, WriteOperationTransition
+from offerpilot.context_projector.loader import WORK_DEADLINE_SECONDS, database_coordinator
 
 
 TYPED_WRITE_OPERATION_NAMES = tuple(sorted(TRANSACTIONAL_TYPED_WRITE_NAMES))
@@ -477,6 +480,9 @@ class WriteOperationRepository:
     def __init__(self, session_factory: sessionmaker[Session], key: LedgerKeyDomain):
         self.session_factory = session_factory
         self.key = key
+        bind = session_factory.kw.get("bind")
+        database = getattr(getattr(bind, "url", None), "database", None)
+        self._database_gate = database_coordinator(str(database)) if database else None
 
     def get(self, operation_id: str) -> WriteOperation | None:
         with self.session_factory() as session:
@@ -735,20 +741,33 @@ class WriteOperationRepository:
         )
         if not hmac.compare_digest(expected, ownership.fingerprint):
             return False
-        with self.session_factory() as session:
-            result = session.execute(
-                update(WriteOperation)
-                .where(WriteOperation.id == ownership.operation_id)
-                .where(WriteOperation.delivery_status == "pending")
-                .where(WriteOperation.delivery_generation == ownership.generation)
-                .where(WriteOperation.delivery_owner_token_fingerprint == ownership.fingerprint)
-                .where(WriteOperation.delivery_lease_expires_at > func.unixepoch("now"))
-                .values(
-                    delivery_lease_expires_at=func.unixepoch("now") + DELIVERY_OWNER_LEASE_SECONDS
-                )
+        try:
+            gate = (
+                self._database_gate.writer(monotonic() + WORK_DEADLINE_SECONDS)
+                if self._database_gate is not None
+                else nullcontext()
             )
-            session.commit()
-            return getattr(result, "rowcount", 0) == 1
+            with gate:
+                with self.session_factory() as session:
+                    result = session.execute(
+                        update(WriteOperation)
+                        .where(WriteOperation.id == ownership.operation_id)
+                        .where(WriteOperation.delivery_status == "pending")
+                        .where(WriteOperation.delivery_generation == ownership.generation)
+                        .where(
+                            WriteOperation.delivery_owner_token_fingerprint
+                            == ownership.fingerprint
+                        )
+                        .where(WriteOperation.delivery_lease_expires_at > func.unixepoch("now"))
+                        .values(
+                            delivery_lease_expires_at=func.unixepoch("now")
+                            + DELIVERY_OWNER_LEASE_SECONDS
+                        )
+                    )
+                    session.commit()
+                    return getattr(result, "rowcount", 0) == 1
+        except Exception:
+            return False
 
     def converge_expired_delivery(self, operation_id: str) -> OperationReplay | OperationUnknown:
         try:

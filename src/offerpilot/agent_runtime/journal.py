@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from sqlalchemy.exc import OperationalError
@@ -29,6 +29,9 @@ from offerpilot.repositories.agent_runs import (
     StartRunCommand,
     StartSegmentCommand,
 )
+
+if TYPE_CHECKING:
+    from offerpilot.context_projector.contracts import RuntimeSurfaceAudit
 
 RecordingStatus = Literal["healthy", "degraded"]
 TerminalStatus = Literal["completed", "failed", "cancelled", "timed_out"]
@@ -109,6 +112,16 @@ class RunRecorder(Protocol):
         token_estimator_version: str | None = None,
     ) -> str | None: ...
 
+    def capture_surface_context(
+        self,
+        logical_input: object,
+        audit: RuntimeSurfaceAudit,
+        provider_identities: tuple[str, ...],
+        *,
+        model_step: int,
+        model_call_id: str,
+    ) -> str | None: ...
+
     def append_event(self, event: EventInput) -> None: ...
 
     def resume(self, command: ResumedDisposition) -> None: ...
@@ -161,6 +174,18 @@ class NullRunRecorder:
         return None
 
     def append_event(self, _event: EventInput) -> None:
+        return None
+
+    def capture_surface_context(
+        self,
+        _logical_input: object,
+        _audit: RuntimeSurfaceAudit,
+        _provider_identities: tuple[str, ...],
+        *,
+        model_step: int,
+        model_call_id: str,
+    ) -> None:
+        del model_step, model_call_id
         return None
 
     def resume(self, _command: ResumedDisposition) -> None:
@@ -350,6 +375,71 @@ class SafeRunRecorder:
             self._degrade("journal_event_invalid")
         except Exception:
             self._degrade("journal_event_write_failed")
+
+    def capture_surface_context(
+        self,
+        logical_input: object,
+        audit: RuntimeSurfaceAudit,
+        provider_identities: tuple[str, ...],
+        *,
+        model_step: int,
+        model_call_id: str,
+    ) -> str | None:
+        """Project transient audit to V2; every failure remains journal-only."""
+
+        if self.recording_status == "degraded" or self._disposition_attempted:
+            return None
+        try:
+            from offerpilot.context_projector.manifest import prepare_surface_manifest_v2
+
+            self._require_budget(self._segment_deadline)
+            identity = prepare_context_snapshot(
+                logical_input,
+                ContextManifestInput((), (), (), ()),
+                key=self.key,
+                budget_check=lambda: self._require_budget(self._segment_deadline),
+            )
+            manifest = prepare_surface_manifest_v2(
+                audit,
+                key_id=self.key.key_id,
+                secret=self.key.secret,
+                provider_identities=provider_identities,
+            )
+            prepared = PreparedSnapshot(
+                manifest_schema_version=2,
+                manifest_json=manifest.manifest_json,
+                manifest_digest=manifest.manifest_digest,
+                logical_input_fingerprint=identity.logical_input_fingerprint,
+                fingerprint_key_id=self.key.key_id,
+            )
+            snapshot_id = self._uuid_factory()
+            command = CaptureContextCommand(
+                snapshot_id=snapshot_id,
+                execution_segment_id=self.segment_id,
+                snapshot_key=f"model-input:{self.segment_id}:{model_call_id}",
+                snapshot_kind="model_input",
+                model_step=model_step,
+                model_call_id=model_call_id,
+                prepared=prepared,
+                estimated_token_count=audit.estimated_input_units,
+                token_estimator_name="surface_conservative",
+                token_estimator_version="utf8-upper-bound-v1",
+            )
+            self.repository.capture_context(
+                self.run_id,
+                command,
+                deadline=self._segment_deadline,
+                clock=self.clock,
+            )
+            self._require_budget(self._segment_deadline)
+            return snapshot_id
+        except JournalBudgetExhausted:
+            self._degrade("journal_budget_exhausted")
+        except JournalDeadlineExceeded:
+            self._degrade("journal_budget_exhausted")
+        except Exception:
+            self._degrade("journal_context_write_failed")
+        return None
 
     def prepare_event_draft(self, event: EventInput) -> EventDraft | None:
         """Prepare canonical Journal bytes before an external business transaction."""

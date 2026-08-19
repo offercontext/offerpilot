@@ -575,12 +575,22 @@ def prepare_context_snapshot(
 
 
 def validate_context_manifest_json(manifest_json: str) -> dict[str, object]:
-    """Return a canonical, privacy-bounded v1 manifest or raise a safe validation error."""
+    """Return a canonical, privacy-bounded v1/v2 manifest or raise a safe error."""
 
     try:
         manifest = json.loads(manifest_json)
     except (json.JSONDecodeError, TypeError):
         raise JournalEventValidationError("invalid context manifest") from None
+    if type(manifest) is dict and manifest.get("manifest_schema_version") == 2:
+        from offerpilot.context_projector.manifest import (
+            ManifestV2ValidationError,
+            validate_surface_manifest_v2,
+        )
+
+        try:
+            return cast(dict[str, object], validate_surface_manifest_v2(manifest_json))
+        except ManifestV2ValidationError as exc:
+            raise JournalEventValidationError(str(exc)) from None
     if type(manifest) is not dict or set(manifest) != {
         "manifest_schema_version",
         "conversation",

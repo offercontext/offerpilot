@@ -1350,7 +1350,7 @@ def test_missing_checkpoint_does_not_treat_non_boolean_approval_as_approved():
     assert added[0].content.startswith("用户拒绝")
 
 
-def test_rejection_feedback_reaches_next_model_turn_without_handler_execution():
+def test_rejection_feedback_is_provider_free_and_does_not_run_handler():
     calls = []
     model = RecordingScriptedModel([Assistant(content="understood")])
 
@@ -1366,11 +1366,11 @@ def test_rejection_feedback_reaches_next_model_turn_without_handler_execution():
     )
 
     assert calls == []
-    assert reply == "understood"
+    assert "保持不变" in reply
     assert new_pending is None
     assert "用户拒绝" in added[0].content
     assert "Keep it in offer status." in added[0].content
-    assert "Keep it in offer status." in model.message_batches[0][-1].content
+    assert model.message_batches == []
 
 
 def test_empty_rejection_feedback_keeps_generic_rejection_message():
@@ -1557,7 +1557,7 @@ def test_reject_does_not_execute_pending_write():
 
     assert calls == []
     assert "用户拒绝了该操作" in added[0].content
-    assert reply == "cancelled"
+    assert "已取消这次操作" in reply
     assert new_pending is None
 
 

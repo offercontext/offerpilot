@@ -32,9 +32,26 @@ from offerpilot.ai.tool_runtime.pipeline import Rejected, execute_prepared, prep
 from offerpilot.ai.tool_runtime.rendering import render_compatibility
 from offerpilot.ai.tool_runtime.transport import project_transport_event
 from offerpilot.ai.tool_runtime.validation import ArgumentValidationError, parse_arguments
+from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_NAMES
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.agent_runtime.events import ContextManifestInput
 from offerpilot.agent_runtime.journal import EventInput, NullRunRecorder, RunRecorder
+from offerpilot.context_projector.binding import BoundProviderResponse, ModelCallSurfaceBinding
+from offerpilot.context_projector.budget import ProviderBudget
+from offerpilot.context_projector.chunking import chunk_structured_source
+from offerpilot.context_projector.contracts import (
+    CONTRIBUTOR_ORDER,
+    ContributorResult,
+    ContributorStatus,
+    FrozenMessage,
+    FrozenModelSurface,
+    FrozenSource,
+    canonical_json,
+    sha256_hex,
+)
+from offerpilot.context_projector.projector import ModelSurfaceProjector, ProjectionRequest
+from offerpilot.context_projector.selector import ToolSelectionSignals
+from offerpilot.context_projector.signals import RuntimeSignalSink
 
 DEFAULT_MAX_ITERATIONS = 20
 _DEFAULT_THREAD_ID = "conversation:ephemeral"
@@ -88,6 +105,48 @@ class StreamingChatModel(Protocol):
     ) -> Assistant: ...
 
 
+class _InjectedSurfaceAdapter:
+    """Keep the explicit test/in-process injection seam behind the Surface boundary."""
+
+    agent_provider_budgets = (ProviderBudget(),)
+
+    def __init__(self, inner: ChatModel):
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def preflight_agent_surface(self, surface: FrozenModelSurface, *, stream: bool) -> None:
+        del surface, stream
+
+    def complete_agent_surface(self, surface: FrozenModelSurface) -> BoundProviderResponse:
+        response = self._inner.complete(surface.thaw_messages(), list(surface.tools))
+        return BoundProviderResponse(
+            model_call_id=surface.model_call_id,
+            candidate_ordinal=0,
+            provider_attempt_id=str(uuid4()),
+            runtime_surface_fingerprint=surface.runtime_surface_fingerprint,
+            response=response,
+        )
+
+    def stream_agent_surface(
+        self, surface: FrozenModelSurface, on_delta: AssistantDeltaSink
+    ) -> BoundProviderResponse:
+        stream = getattr(self._inner, "stream_complete", None)
+        response = (
+            stream(surface.thaw_messages(), list(surface.tools), on_delta)
+            if callable(stream)
+            else self._inner.complete(surface.thaw_messages(), list(surface.tools))
+        )
+        return BoundProviderResponse(
+            model_call_id=surface.model_call_id,
+            candidate_ordinal=0,
+            provider_attempt_id=str(uuid4()),
+            runtime_surface_fingerprint=surface.runtime_surface_fingerprint,
+            response=response,
+        )
+
+
 @dataclass
 class PendingAction:
     tool_call_id: str
@@ -120,6 +179,7 @@ ConfirmationAttemptSink = Callable[
     ExecutionAuthorization | ToolFailure | None,
 ]
 DeliveryFence = Callable[[], bool]
+ContinuationMessageLoader = Callable[[], list[Message]]
 
 
 @contextmanager
@@ -173,7 +233,7 @@ class _GraphState(TypedDict, total=False):
 class LangGraphAgentRunner:
     def __init__(
         self,
-        model: ChatModel,
+        model: ChatModel | None,
         catalog: ToolCatalog,
         tool_context: ToolExecutionContext,
         *,
@@ -184,8 +244,20 @@ class LangGraphAgentRunner:
         confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
         run_recorder: RunRecorder | None = None,
         delivery_fence: DeliveryFence | None = None,
+        runtime_signal_sink: RuntimeSignalSink[str] | None = None,
+        continuation_message_loader: ContinuationMessageLoader | None = None,
     ):
-        self._model = model
+        production_catalog = (
+            tuple(contract.name for contract in catalog.provider_contracts()) == MODEL_TOOL_NAMES
+        )
+        self._model = (
+            model
+            if model is None
+            or callable(getattr(model, "complete_agent_surface", None))
+            or callable(getattr(model, "stream_agent_surface", None))
+            or not production_catalog
+            else _InjectedSurfaceAdapter(model)
+        )
         self._catalog = catalog
         self._tool_context = tool_context
         self._thread_id = thread_id
@@ -195,9 +267,12 @@ class LangGraphAgentRunner:
         self._confirmation_attempt_sink = confirmation_attempt_sink
         self._run_recorder = run_recorder or NullRunRecorder()
         self._delivery_fence = delivery_fence
+        self._runtime_signal_sink = runtime_signal_sink
+        self._continuation_message_loader = continuation_message_loader
         self._memory_saver = InMemorySaver()
         self._records: list[ToolExecutionRecord[Any, Any]] = []
         self._failures: list[ToolFailure] = []
+        self._model_surface_tool_names: frozenset[str] | None = None
 
     def run_turn(
         self,
@@ -315,7 +390,12 @@ class LangGraphAgentRunner:
             tool_name = str(tool_call["name"])
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
-            spec = self._catalog.resolve(tool_name)
+            spec = (
+                self._catalog.resolve(tool_name)
+                if self._model_surface_tool_names is None
+                or tool_name in self._model_surface_tool_names
+                else None
+            )
             has_mapped_resume = False
 
             if spec is None:
@@ -714,7 +794,7 @@ class LangGraphAgentRunner:
                 raise StalePendingActionError(
                     "stale pending action: rejection was already consumed"
                 )
-            self._emit_pending_tool_call(pending, "rejected")
+            self._emit_rejected_tool_call(pending)
             result = _rejection_result(rejection_feedback)
             self._failures.append(
                 ToolFailure(
@@ -731,8 +811,27 @@ class LangGraphAgentRunner:
             self._confirmation_result_sink(sink_pending, approved, tool_message, record)
         first_records = tuple(self._records)
         first_failures = tuple(self._failures)
+        if not approved:
+            reply = (
+                "已取消这次操作，并会按你的反馈保持不变。"
+                if isinstance(rejection_feedback, str) and rejection_feedback.strip()
+                else "已取消这次操作。你可以告诉我下一步想怎么做。"
+            )
+            added.append(Message(role="assistant", content=reply))
+            return AgentTurnResult(
+                added,
+                reply,
+                None,
+                first_records,
+                first_failures,
+            )
+        continuation_messages = (
+            self._continuation_message_loader()
+            if self._continuation_message_loader is not None
+            else messages
+        )
         continuation = self.run_turn(
-            [*messages, tool_message],
+            [*continuation_messages, tool_message],
             auto_approve=auto_approve,
             max_iter=max_iter,
         )
@@ -778,6 +877,20 @@ class LangGraphAgentRunner:
             },
         )
 
+    def _emit_rejected_tool_call(self, pending: PendingAction) -> None:
+        self._emit_event(
+            "tool_call",
+            {
+                "tool_call_id": pending.tool_call_id,
+                "tool_name": pending.tool_name,
+                "public_label": "已取消的写入操作",
+                "kind": "write",
+                "confirm_mode": "rejected",
+                "summary": "用户已拒绝，操作未执行。",
+                "args_summary": {},
+            },
+        )
+
     def _emit_tool_result(
         self,
         tool_call_id: str,
@@ -785,13 +898,12 @@ class LangGraphAgentRunner:
         result: str,
         record: ToolExecutionRecord[Any, Any] | None,
     ) -> None:
-        spec = self._catalog.resolve(tool_name)
         payload: dict[str, Any]
         if record is not None and record.terminal_persisted:
             if record.persisted_transport is None:
                 raise RuntimeError("persisted operation transport is missing")
             payload = cast(dict[str, Any], dict(record.persisted_transport))
-        elif spec is not None and record is not None:
+        elif record is not None and (spec := self._catalog.resolve(tool_name)) is not None:
             try:
                 payload = project_transport_event(spec, record)
             except Exception:
@@ -810,17 +922,37 @@ class LangGraphAgentRunner:
         *,
         model_step: int,
     ) -> Assistant:
+        if self._model is None:
+            raise RuntimeError("provider-free confirmation cannot call a model")
         model_call_id = str(uuid4())
+        surface = None
+        complete_surface = getattr(self._model, "complete_agent_surface", None)
+        stream_surface = getattr(self._model, "stream_agent_surface", None)
+        surface_aware = callable(complete_surface) or callable(stream_surface)
+        if surface_aware:
+            surface = self._project_model_surface(messages, tools, model_call_id=model_call_id)
+            messages = surface.thaw_messages()
+            tools = list(surface.tools)
+            self._model_surface_tool_names = frozenset(tool.name for tool in surface.tools)
+        else:
+            self._model_surface_tool_names = None
         snapshot_id = self._capture_model_input(
             messages,
             tools,
             model_step=model_step,
             model_call_id=model_call_id,
+            surface=surface,
         )
         stream_complete = getattr(self._model, "stream_complete", None)
-        is_stream = callable(stream_complete)
+        is_stream = callable(stream_surface) if surface is not None else callable(stream_complete)
+        if surface is not None:
+            preflight = getattr(self._model, "preflight_agent_surface", None)
+            if callable(preflight):
+                preflight(surface, stream=is_stream)
         if snapshot_id is not None:
-            provider_kind, model_id, supports_json_schema = _journal_model_metadata(self._model)
+            provider_kind, model_id, supports_json_schema = _journal_model_metadata(
+                cast(ChatModel, self._model)
+            )
             model_id_fingerprint = self._fingerprint_model_id(model_id)
             self._append_journal_event(
                 EventInput(
@@ -843,14 +975,20 @@ class LangGraphAgentRunner:
             )
         try:
             self._require_delivery_fence()
-            if is_stream:
+            if surface is not None and is_stream:
+                bound = cast(Any, stream_surface)(surface, self._emit_assistant_delta)
+                assistant = ModelCallSurfaceBinding.from_surface(surface).validate_response(bound)
+            elif surface is not None:
+                bound = cast(Any, complete_surface)(surface)
+                assistant = ModelCallSurfaceBinding.from_surface(surface).validate_response(bound)
+            elif is_stream:
                 assistant = cast(StreamingChatModel, self._model).stream_complete(
                     messages,
                     tools,
                     self._emit_assistant_delta,
                 )
             else:
-                assistant = self._model.complete(messages, tools)
+                assistant = cast(ChatModel, self._model).complete(messages, tools)
             self._require_delivery_fence()
         except Exception as exc:
             if snapshot_id is not None:
@@ -881,7 +1019,145 @@ class LangGraphAgentRunner:
                     model_call_id=model_call_id,
                 )
             )
+        if self._runtime_signal_sink is not None and (
+            assistant.content.strip() or assistant.tool_calls
+        ):
+            self._runtime_signal_sink.try_emit("first_complete_agent_response")
         return assistant
+
+    def _project_model_surface(
+        self,
+        messages: list[Message],
+        tools: list[ProviderToolContract],
+        *,
+        model_call_id: str,
+    ) -> FrozenModelSurface:
+        system = tuple(
+            FrozenMessage.freeze(message)
+            for message in messages
+            if message.surface_contributor == "static_policy"
+        )
+        if not system:
+            system = tuple(
+                FrozenMessage.freeze(message) for message in messages if message.role == "system"
+            )
+        user_indexes = [index for index, message in enumerate(messages) if message.role == "user"]
+        if not user_indexes:
+            raise RuntimeError("Agent model input requires a current user request")
+        request_index = user_indexes[-1]
+        current_group = tuple(FrozenMessage.freeze(message) for message in messages[request_index:])
+        current = current_group[0]
+        history = tuple(
+            FrozenMessage.freeze(message, source_message_id=index + 1)
+            for index, message in enumerate(messages[:request_index])
+            if message.surface_contributor in {"", "conversation_history"}
+            and message.role != "system"
+        )
+        control = tuple(
+            FrozenMessage.freeze(message)
+            for message in messages
+            if message.surface_contributor == "active_control"
+        )
+        routed = {
+            name: tuple(
+                FrozenMessage.freeze(message)
+                for message in messages[:request_index]
+                if message.surface_contributor == name
+            )
+            for name in (
+                "current_scope",
+                "request_page_context",
+                "request_attachments",
+            )
+        }
+        contributors: list[ContributorResult] = []
+        for name in CONTRIBUTOR_ORDER:
+            status: ContributorStatus = "not_applicable"
+            contributor_messages: tuple[FrozenMessage, ...] = ()
+            if name == "static_policy":
+                status, contributor_messages = (
+                    "ready",
+                    system or (FrozenMessage.freeze(Message(role="system", content="")),),
+                )
+            elif name == "active_control" and control:
+                status, contributor_messages = "ready", control
+            elif name in routed and routed[name]:
+                status, contributor_messages = "ready", routed[name]
+            elif name == "conversation_history":
+                status = "ready"
+            elif name == "current_request":
+                status, contributor_messages = "ready", current_group
+            elif name in {
+                "confirmed_memory",
+                "knowledge_context",
+                "older_conversation_summary",
+            }:
+                status = "disabled"
+            contributors.append(ContributorResult(name, status, contributor_messages))
+        budgets = getattr(self._model, "agent_provider_budgets", (ProviderBudget(),))
+        trusted_domains = tuple(
+            dict.fromkeys(
+                signal
+                for message in messages
+                for signal in message.surface_signal.split(",")
+                if signal
+            )
+        )
+        page_kinds = tuple(
+            dict.fromkeys(
+                message.surface_page_kind for message in messages if message.surface_page_kind
+            )
+        )
+        if len(page_kinds) > 1:
+            raise RuntimeError("multiple page kinds in one model call")
+        attachment_kinds = tuple(
+            dict.fromkeys(
+                kind
+                for message in messages
+                for kind in message.surface_attachment_kinds.split(",")
+                if kind
+            )
+        )
+        sources: list[FrozenSource] = []
+        for name in ("current_scope", "request_page_context", "request_attachments"):
+            routed_messages = routed[name]
+            if not routed_messages:
+                continue
+            content = {"messages": [message.canonical_value() for message in routed_messages]}
+            revisions = tuple(
+                dict.fromkeys(
+                    message.surface_revision
+                    for message in messages[:request_index]
+                    if message.surface_contributor == name and message.surface_revision
+                )
+            )
+            revision_identity = sha256_hex(
+                canonical_json({"source": name, "revisions": revisions or ("request-local",)})
+            )
+            sources.append(
+                FrozenSource.present(
+                    kind=name,
+                    revision_identity=f"snapshot:{revision_identity}",
+                    content=content,
+                    chunks=chunk_structured_source(content),
+                )
+            )
+        return ModelSurfaceProjector().project(
+            ProjectionRequest(
+                model_call_id=model_call_id,
+                contributors=tuple(contributors),
+                history=history,
+                provider_tools=tuple(tools),
+                tool_signals=ToolSelectionSignals(
+                    current_request=current.content,
+                    page_kind=page_kinds[0] if page_kinds else "workspace",
+                    attachment_kinds=attachment_kinds,
+                    trusted_domains=trusted_domains,
+                ),
+                provider_budgets=tuple(budgets),
+                sources=tuple(sources),
+            )
+        )
 
     def _require_delivery_fence(self) -> None:
         if self._delivery_fence is not None and not self._delivery_fence():
@@ -894,8 +1170,22 @@ class LangGraphAgentRunner:
         *,
         model_step: int,
         model_call_id: str,
+        surface: FrozenModelSurface | None = None,
     ) -> str | None:
         try:
+            capture_surface = getattr(self._run_recorder, "capture_surface_context", None)
+            if surface is not None and callable(capture_surface):
+                provider_identities = tuple(
+                    getattr(self._model, "agent_provider_manifest_identities", ("agent-provider",))
+                )
+                captured = cast(Any, capture_surface)(
+                    _journal_model_input(messages, tools),
+                    surface.audit,
+                    provider_identities,
+                    model_step=model_step,
+                    model_call_id=model_call_id,
+                )
+                return captured if type(captured) is str else None
             return self._run_recorder.capture_context(
                 _journal_model_input(messages, tools),
                 ContextManifestInput(
@@ -953,6 +1243,7 @@ def run_turn(
     cancel_check: CancelCheck | None = None,
     run_recorder: RunRecorder | None = None,
     delivery_fence: DeliveryFence | None = None,
+    runtime_signal_sink: RuntimeSignalSink[str] | None = None,
     tool_context: ToolExecutionContext,
 ) -> AgentTurnResult:
     return LangGraphAgentRunner(
@@ -964,6 +1255,7 @@ def run_turn(
         cancel_check=cancel_check,
         run_recorder=run_recorder,
         delivery_fence=delivery_fence,
+        runtime_signal_sink=runtime_signal_sink,
     ).run_turn(messages, auto_approve=auto_approve, max_iter=max_iter)
 
 
@@ -984,6 +1276,7 @@ def resume_after_confirm(
     confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
     run_recorder: RunRecorder | None = None,
     delivery_fence: DeliveryFence | None = None,
+    continuation_message_loader: ContinuationMessageLoader | None = None,
     tool_context: ToolExecutionContext,
 ) -> AgentTurnResult:
     return LangGraphAgentRunner(
@@ -997,6 +1290,7 @@ def resume_after_confirm(
         confirmation_attempt_sink=confirmation_attempt_sink,
         run_recorder=run_recorder,
         delivery_fence=delivery_fence,
+        continuation_message_loader=continuation_message_loader,
     ).resume_after_confirm(
         messages,
         pending,
@@ -1397,6 +1691,11 @@ def _message_to_dict(message: Message) -> dict[str, Any]:
         "tool_calls": [_tool_call_to_dict(tool_call) for tool_call in message.tool_calls],
         "tool_call_id": message.tool_call_id,
         "provider_blocks": dict(message.provider_blocks),
+        "surface_contributor": message.surface_contributor,
+        "surface_signal": message.surface_signal,
+        "surface_revision": message.surface_revision,
+        "surface_page_kind": message.surface_page_kind,
+        "surface_attachment_kinds": message.surface_attachment_kinds,
     }
 
 
@@ -1407,4 +1706,9 @@ def _message_from_dict(raw: dict[str, Any]) -> Message:
         tool_calls=[_tool_call_from_dict(tool_call) for tool_call in raw.get("tool_calls", [])],
         tool_call_id=str(raw.get("tool_call_id") or ""),
         provider_blocks=cast(dict[str, Any], raw.get("provider_blocks") or {}),
+        surface_contributor=str(raw.get("surface_contributor") or ""),
+        surface_signal=str(raw.get("surface_signal") or ""),
+        surface_revision=str(raw.get("surface_revision") or ""),
+        surface_page_kind=str(raw.get("surface_page_kind") or ""),
+        surface_attachment_kinds=str(raw.get("surface_attachment_kinds") or ""),
     )

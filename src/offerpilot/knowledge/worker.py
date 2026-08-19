@@ -39,7 +39,6 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Callable, Generator, Optional
 
-from litellm import completion as litellm_completion
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.config import AIProviderProfile, Config
@@ -95,6 +94,7 @@ from offerpilot.knowledge.repository import (
     SourceRecord,
     commit_extraction,
 )
+from offerpilot.knowledge.provider import build_knowledge_brief_provider_client
 from offerpilot.knowledge.tokenizer import max_token_limit
 from offerpilot.models import KnowledgeJob, KnowledgeSource
 
@@ -1094,7 +1094,9 @@ class BriefWorker:
     ) -> None:
         self._repository = repository
         self._config = config
-        self._model_client = model_client or litellm_completion
+        self._model_client = (
+            model_client or build_knowledge_brief_provider_client().complete_once
+        )
         # Spec §11.4 退避 sleep；测试注入同步 no-op 以避免真实等待。
         self._sleep = sleeper or time.sleep
         # heartbeat 间隔，测试注入小值避免真实 30s 等待。

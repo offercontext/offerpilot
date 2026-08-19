@@ -15,6 +15,21 @@ from litellm import completion
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.ai.tool_runtime.contracts import ProviderToolContract
 from offerpilot.config import AIProviderProfile, Config
+from offerpilot.context_projector.binding import BoundProviderResponse
+from offerpilot.context_projector.budget import (
+    ADAPTER_REQUEST_BODY_BYTE_CAP,
+    DEFAULT_OUTPUT_RESERVE,
+    PROVIDER_FRAMING_RESERVE,
+    ProviderBudget,
+)
+from offerpilot.context_projector.contracts import FrozenModelSurface, ProjectionError
+from offerpilot.context_projector.gateway import (
+    AgentProviderGatewaySession,
+    FrozenProviderCandidate,
+    FrozenProviderExecutionChain,
+    SingleCandidateAgentTransport,
+    normalize_provider_endpoint,
+)
 
 
 class ProviderCallError(RuntimeError):
@@ -31,10 +46,72 @@ class ConfiguredAIClient:
         self._on_provider_event = on_provider_event
         if not any(provider.enabled and provider.api_key for provider in self._providers):
             raise ValueError("AI is not configured: run `oc config` to set your API key")
+        try:
+            chain = FrozenProviderExecutionChain.freeze(self._providers)
+        except ProjectionError as exc:
+            raise ValueError(f"AI provider configuration is invalid: {exc.code}") from exc
+        self._agent_gateway = AgentProviderGatewaySession(
+            chain,
+            SingleCandidateAgentTransport(
+                self._complete_with_frozen_candidate,
+                self._stream_with_frozen_candidate,
+            ),
+        )
 
     @property
     def supports_json_schema(self) -> bool:
         return any(provider.supports_json_schema for provider in self._candidate_providers())
+
+    @property
+    def agent_provider_budgets(self) -> tuple[ProviderBudget, ...]:
+        return self._agent_gateway.budgets
+
+    @property
+    def agent_provider_manifest_identities(self) -> tuple[str, ...]:
+        return self._agent_gateway.manifest_identities
+
+    def preflight_agent_surface(self, surface: FrozenModelSurface, *, stream: bool) -> None:
+        self._agent_gateway.preflight(surface, stream=stream)
+
+    def complete_agent_surface(self, surface: FrozenModelSurface) -> BoundProviderResponse:
+        return self._agent_gateway.complete(surface)
+
+    def stream_agent_surface(
+        self,
+        surface: FrozenModelSurface,
+        on_delta: Callable[[str], None],
+    ) -> BoundProviderResponse:
+        return self._agent_gateway.stream(surface, on_delta)
+
+    def _complete_with_frozen_candidate(
+        self,
+        candidate: FrozenProviderCandidate,
+        messages: list[Message],
+        tools: list[ProviderToolContract],
+        response_format: dict[str, Any] | None,
+    ) -> Assistant:
+        return self._complete_with_provider(
+            _profile_from_frozen_candidate(candidate),
+            messages,
+            tools,
+            response_format,
+            force_api_base=True,
+        )
+
+    def _stream_with_frozen_candidate(
+        self,
+        candidate: FrozenProviderCandidate,
+        messages: list[Message],
+        tools: list[ProviderToolContract],
+        on_delta: Callable[[str], None],
+    ) -> Assistant:
+        return self._stream_with_provider(
+            _profile_from_frozen_candidate(candidate),
+            messages,
+            tools,
+            on_delta,
+            force_api_base=True,
+        )
 
     def complete(
         self,
@@ -143,13 +220,17 @@ class ConfiguredAIClient:
         messages: list[Message],
         tools: list[ProviderToolContract],
         response_format: dict[str, Any] | None = None,
+        *,
+        force_api_base: bool = False,
     ) -> Assistant:
         payload: dict[str, Any] = {
             "model": _litellm_model(provider),
             "messages": [_openai_message(message) for message in messages],
             "api_key": provider.api_key,
         }
-        api_base = _litellm_api_base(provider)
+        api_base = (
+            provider.base_url.rstrip("/") if force_api_base else _litellm_api_base(provider)
+        )
         if api_base:
             payload["api_base"] = api_base
         if tools:
@@ -158,6 +239,7 @@ class ConfiguredAIClient:
         if response_format is not None and provider.supports_json_schema:
             payload["response_format"] = response_format
 
+        _adapter_preflight_payload(provider, payload)
         _try_audit_provider_endpoint(provider.base_url)
         _try_audit_provider_request(provider, payload)
         response = completion(**payload)
@@ -188,6 +270,8 @@ class ConfiguredAIClient:
         messages: list[Message],
         tools: list[ProviderToolContract],
         on_delta: Callable[[str], None],
+        *,
+        force_api_base: bool = False,
     ) -> Assistant:
         payload: dict[str, Any] = {
             "model": _litellm_model(provider),
@@ -195,13 +279,16 @@ class ConfiguredAIClient:
             "api_key": provider.api_key,
             "stream": True,
         }
-        api_base = _litellm_api_base(provider)
+        api_base = (
+            provider.base_url.rstrip("/") if force_api_base else _litellm_api_base(provider)
+        )
         if api_base:
             payload["api_base"] = api_base
         if tools:
             payload["tools"] = [_openai_tool(tool) for tool in tools]
             payload["tool_choice"] = "auto"
 
+        _adapter_preflight_payload(provider, payload)
         _try_audit_provider_endpoint(provider.base_url)
         _try_audit_provider_request(provider, payload)
         content_parts: list[str] = []
@@ -261,6 +348,20 @@ def _litellm_model(provider: AIProviderProfile) -> str:
     if provider.provider:
         return f"{provider.provider}/{provider.model}"
     return provider.model
+
+
+def _profile_from_frozen_candidate(candidate: FrozenProviderCandidate) -> AIProviderProfile:
+    return AIProviderProfile(
+        id=candidate.provider_id,
+        provider=candidate.provider_kind,
+        api_key=candidate.credential,
+        base_url=candidate.endpoint,
+        model=candidate.model,
+        enabled=True,
+        context_window=candidate.context_window,
+        max_output_tokens=candidate.output_reserve,
+        supports_json_schema=candidate.supports_json_schema,
+    )
 
 
 def _audit_provider_endpoint(base_url: str) -> None:
@@ -400,6 +501,32 @@ def _sha256_json(value: Any) -> str:
 
 def _json_bytes(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _adapter_preflight_payload(provider: AIProviderProfile, payload: dict[str, Any]) -> None:
+    frozen_endpoint = normalize_provider_endpoint(provider.base_url)
+    actual_base = str(payload.get("api_base") or "")
+    if actual_base and normalize_provider_endpoint(actual_base) != frozen_endpoint:
+        raise ProjectionError("provider_endpoint_changed")
+    public_payload = {
+        key: value for key, value in payload.items() if key not in {"api_key", "api_base"}
+    }
+    if _json_bytes(public_payload) > ADAPTER_REQUEST_BODY_BYTE_CAP:
+        raise ProjectionError("adapter_request_body_byte_cap_exceeded")
+    input_units = _json_bytes(payload.get("messages", [])) + _json_bytes(payload.get("tools", []))
+    context_window = 32_768 if provider.context_window == 0 else provider.context_window
+    output_reserve = (
+        DEFAULT_OUTPUT_RESERVE
+        if provider.max_output_tokens == 0
+        else provider.max_output_tokens
+    )
+    budget = ProviderBudget(
+        context_window=context_window,
+        output_reserve=output_reserve,
+        framing_reserve=PROVIDER_FRAMING_RESERVE,
+    )
+    if input_units > budget.input_limit:
+        raise ProjectionError("adapter_context_window_exceeded")
 
 
 def _provider_failure_diagnostic(

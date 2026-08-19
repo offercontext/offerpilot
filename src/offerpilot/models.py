@@ -2025,9 +2025,13 @@ class AgentContextSnapshot(Base):
             _sqlite_uuid_check("fingerprint_key_id"),
             name="ck_agent_context_key_uuid",
         ),
-        CheckConstraint("manifest_schema_version = 1", name="ck_agent_context_manifest_schema"),
         CheckConstraint(
-            "length(CAST(manifest_json AS BLOB)) <= 16384",
+            "manifest_schema_version IN (1, 2)",
+            name="ck_agent_context_manifest_schema",
+        ),
+        CheckConstraint(
+            "(manifest_schema_version = 1 AND length(CAST(manifest_json AS BLOB)) <= 16384) "
+            "OR (manifest_schema_version = 2 AND length(CAST(manifest_json AS BLOB)) <= 65536)",
             name="ck_agent_context_manifest_size",
         ),
         CheckConstraint(

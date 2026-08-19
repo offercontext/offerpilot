@@ -939,10 +939,12 @@ class AgentRunRepository:
     def _validate_snapshot_command(command: CaptureContextCommand) -> None:
         prepared = command.prepared
         try:
-            validate_context_manifest_json(prepared.manifest_json)
+            manifest = validate_context_manifest_json(prepared.manifest_json)
         except JournalEventValidationError:
             raise JournalConflictError("context manifest is not canonical") from None
-        if prepared.manifest_schema_version != 1:
+        if prepared.manifest_schema_version not in {1, 2} or manifest.get(
+            "manifest_schema_version"
+        ) != prepared.manifest_schema_version:
             raise JournalConflictError("unsupported context manifest schema")
         expected_digest = hashlib.sha256(prepared.manifest_json.encode("utf-8")).hexdigest()
         if prepared.manifest_digest != expected_digest:

@@ -464,7 +464,10 @@ def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeRepor
             chat_model=_SmokeChatModel(application_id),
         )
     )
-    pending = chat_client.post("/api/chat", json={"message": "move to offer", "conversation_id": 0})
+    pending = chat_client.post(
+        "/api/chat",
+        json={"message": "move this application to offer", "conversation_id": 0},
+    )
     _assert_status(pending.status_code, 200, "chat_pending")
     pending_body = pending.json()
     if pending_body.get("type") != "confirmation_required":
@@ -4075,7 +4078,10 @@ def _run_deterministic_chat_smoke(
     steps: list[SmokeStep],
     application_id: int,
 ) -> None:
-    pending = client.post("/api/chat", json={"message": "move to offer", "conversation_id": 0})
+    pending = client.post(
+        "/api/chat",
+        json={"message": "move this application to offer", "conversation_id": 0},
+    )
     _assert_status(pending.status_code, 200, "http_chat_pending")
     pending_body = pending.json()
     if pending_body.get("type") != "confirmation_required":

@@ -420,10 +420,10 @@ def knowledge_acceptance(
         model_client = None
         real_mode = False
         if real_ai:
-            from litellm import completion as litellm_completion
+            from offerpilot.knowledge.provider import build_knowledge_brief_provider_client
 
             cfg = load_config(data_dir)
-            model_client = litellm_completion
+            model_client = build_knowledge_brief_provider_client().complete_once
             real_mode = True
         else:
             # stub 模式：注入合格 stub Provider，Brief 用 perfect stub model_client

@@ -64,6 +64,7 @@ def init_database(db_path: Path) -> SessionFactory:
     mock_interview_migration_needed = _prepare_event_bound_mock_interview_migration(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    _ensure_context_projector_manifest_v2_schema(engine)
     _ensure_write_operation_ledger_schema(engine)
     _ensure_column(
         engine,
@@ -86,6 +87,11 @@ def init_database(db_path: Path) -> SessionFactory:
         engine,
         "0024_durable_execution_journal",
         "Add fail-open durable Agent Run journal tables",
+    )
+    _record_migration(
+        engine,
+        "0027_context_projector_manifest_v2",
+        "Allow privacy-bounded Context Projector manifests up to 64 KiB",
     )
     if mock_interview_migration_needed:
         _record_migration(
@@ -1189,6 +1195,51 @@ def _record_migration(engine, version: str, description: str) -> None:  # type: 
                 """
             ),
             {"version": version, "description": description},
+        )
+
+
+def _ensure_context_projector_manifest_v2_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Rebuild only the snapshot table when an existing database still has V1 checks."""
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'agent_context_snapshots'"
+            )
+        ).first()
+        if row is None or row[0] is None:
+            return
+        create_sql = str(row[0])
+        if "manifest_schema_version IN (1, 2)" in create_sql:
+            return
+        if "manifest_schema_version = 1" not in create_sql:
+            raise RuntimeError("unsupported agent_context_snapshots schema")
+        rebuilt_sql = create_sql.replace(
+            "manifest_schema_version = 1",
+            "manifest_schema_version IN (1, 2)",
+        ).replace(
+            "length(CAST(manifest_json AS BLOB)) <= 16384",
+            "((manifest_schema_version = 1 AND length(CAST(manifest_json AS BLOB)) <= 16384) "
+            "OR (manifest_schema_version = 2 AND length(CAST(manifest_json AS BLOB)) <= 65536))",
+        )
+        columns = [
+            str(item[1])
+            for item in conn.execute(text("PRAGMA table_info(agent_context_snapshots)"))
+        ]
+        quoted = ", ".join(f'"{column}"' for column in columns)
+        conn.exec_driver_sql(
+            "ALTER TABLE agent_context_snapshots RENAME TO agent_context_snapshots_0027"
+        )
+        conn.exec_driver_sql(rebuilt_sql)
+        conn.exec_driver_sql(
+            f"INSERT INTO agent_context_snapshots ({quoted}) "
+            f"SELECT {quoted} FROM agent_context_snapshots_0027"
+        )
+        conn.exec_driver_sql("DROP TABLE agent_context_snapshots_0027")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_agent_context_segment_step "
+            "ON agent_context_snapshots (run_id, execution_segment_id, model_step)"
         )
 
 
