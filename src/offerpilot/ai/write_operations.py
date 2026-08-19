@@ -1546,7 +1546,7 @@ class WriteOperationCoordinator:
         owner: DeliveryOwnership,
         *,
         record: ToolExecutionRecord[Any, Any] | None = None,
-    ) -> tuple[OperationExecution, ToolExecutionRecord[Any, Any]]:
+    ) -> tuple[OperationExecution, ToolExecutionRecord[Any, Any] | None]:
         if failure.category == "internal_error":
             raise WriteOperationError("operation_not_committed", retryable=True)
         # A validator failure discovered inside the ledger transaction already
@@ -1573,7 +1573,18 @@ class WriteOperationCoordinator:
         )
         self._set_terminal(operation, payload, owner)
         self.repository.append_transition(session, operation.id, 4, "failed")
-        session.commit()
+        try:
+            session.commit()
+        except OperationalError:
+            return (
+                self._reconcile_commit_unknown(
+                    operation.id,
+                    request_fingerprint,
+                    absent_code="operation_result_unknown",
+                    proposed_code="operation_not_committed",
+                ),
+                None,
+            )
         persisted = ToolExecutionRecord(
             prepared,
             resolved.outcome,

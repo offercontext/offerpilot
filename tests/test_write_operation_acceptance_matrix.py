@@ -19,6 +19,7 @@ from offerpilot.ai.tool_runtime.contracts import (
     ExecutionAuthorization,
     PreparedToolCall,
     REQUIRED_UNDO_TOOL_NAMES,
+    ToolExceptionMapping,
 )
 from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG
 from offerpilot.ai.write_operations import (
@@ -407,6 +408,63 @@ def test_primary_commit_unknown_reconciles_without_second_executor_call(
     assert isinstance(reconciled, OperationReplay)
     assert isinstance(replay, OperationReplay)
     assert calls == ["delete_note"]
+
+
+def test_deterministic_failure_commit_unknown_replays_failed_terminal(
+    tmp_path, monkeypatch
+) -> None:
+    _sessions, _repository, chat, context, coordinator = _harness(tmp_path)
+    conversation, operation_id, tool_call_id = _propose(chat, "delete_note")
+    calls = 0
+    prepared = _prepared("delete_note", tool_call_id, [])
+
+    def fail(_args, _context):
+        nonlocal calls
+        calls += 1
+        raise ValueError("conflict")
+
+    prepared = replace(
+        prepared,
+        spec=replace(
+            prepared.spec,
+            executor=fail,
+            declared_failure_categories=frozenset({"conflict"}),
+            exception_map=(ToolExceptionMapping(ValueError, "conflict", "domain_conflict"),),
+        ),
+    )
+    real_commit = Session.commit
+    injected = False
+
+    def commit_then_lose_response(session):
+        nonlocal injected
+        failed_terminal = any(
+            isinstance(item, WriteOperation) and item.status == "failed"
+            for item in session.identity_map.values()
+        )
+        real_commit(session)
+        if failed_terminal and not injected:
+            injected = True
+            raise OperationalError("COMMIT", {}, RuntimeError("response lost"))
+
+    monkeypatch.setattr(Session, "commit", commit_then_lose_response)
+    arguments = dict(
+        operation_id=operation_id,
+        conversation_id=conversation.id,
+        prepared=prepared,
+        context=context,
+        authorization=_authorization(prepared, operation_id),
+        request_fingerprint="hmac-sha256:" + "9" * 64,
+    )
+    reconciled, reconciled_record = coordinator.execute_primary(**arguments)
+    replay, replay_record = coordinator.execute_primary(**arguments)
+
+    assert isinstance(reconciled, OperationReplay)
+    assert reconciled.payload.status == "failed"
+    assert reconciled.payload.failure_code == "domain_conflict"
+    assert reconciled_record is None
+    assert isinstance(replay, OperationReplay)
+    assert replay_record is None
+    assert calls == 1
 
 
 def test_commit_unknown_reconciliation_distinguishes_primary_and_compensation_states(
