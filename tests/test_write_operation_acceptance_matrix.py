@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+# mypy: disable-error-code="no-untyped-def,no-untyped-call"
+
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Lock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 
 from offerpilot.agent_runtime.journal import NullRunRecorder
 from offerpilot.ai.agent import PendingAction
@@ -20,7 +25,9 @@ from offerpilot.ai.write_operations import (
     LEGACY_WRITE_OPERATION_NAMES,
     TYPED_WRITE_OPERATION_NAMES,
     OperationCommitted,
+    OperationFailed,
     OperationReplay,
+    OperationUnknown,
     WriteOperationCoordinator,
     WriteOperationRepository,
     load_or_create_ledger_key,
@@ -328,3 +335,194 @@ def test_expired_takeover_fences_late_owner_and_detects_message_and_manifest_tam
     stable = repository.get(operation_id)
     assert stable is not None
     assert repository.replay(stable, request_fingerprint).final_message == replay.final_message
+
+
+def test_two_connections_choose_one_primary_executor_winner(tmp_path) -> None:
+    _sessions, _repository, chat, context, coordinator = _harness(tmp_path)
+    conversation, operation_id, tool_call_id = _propose(chat, "delete_note")
+    calls: list[str] = []
+    call_lock = Lock()
+    prepared = _prepared("delete_note", tool_call_id, calls)
+    original_executor = prepared.spec.executor
+
+    def synchronized_executor(args, bound_context):
+        with call_lock:
+            return original_executor(args, bound_context)
+
+    prepared = replace(prepared, spec=replace(prepared.spec, executor=synchronized_executor))
+    authorization = _authorization(prepared, operation_id)
+
+    def approve():
+        return coordinator.execute_primary(
+            operation_id=operation_id,
+            conversation_id=conversation.id,
+            prepared=prepared,
+            context=context,
+            authorization=authorization,
+            request_fingerprint="hmac-sha256:" + "6" * 64,
+        )[0]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = [future.result() for future in (pool.submit(approve), pool.submit(approve))]
+
+    assert calls == ["delete_note"]
+    assert sum(isinstance(item, OperationCommitted) for item in outcomes) == 1
+    assert sum(isinstance(item, OperationReplay) for item in outcomes) == 1
+
+
+def test_primary_commit_unknown_reconciles_without_second_executor_call(
+    tmp_path, monkeypatch
+) -> None:
+    _sessions, _repository, chat, context, coordinator = _harness(tmp_path)
+    conversation, operation_id, tool_call_id = _propose(chat, "delete_note")
+    calls: list[str] = []
+    prepared = _prepared("delete_note", tool_call_id, calls)
+    authorization = _authorization(prepared, operation_id)
+    real_commit = Session.commit
+    injected = False
+
+    def commit_then_lose_response(session):
+        nonlocal injected
+        terminal = any(
+            isinstance(item, WriteOperation) and item.status == "committed"
+            for item in session.identity_map.values()
+        )
+        real_commit(session)
+        if terminal and not injected:
+            injected = True
+            raise OperationalError("COMMIT", {}, RuntimeError("response lost"))
+
+    monkeypatch.setattr(Session, "commit", commit_then_lose_response)
+    arguments = dict(
+        operation_id=operation_id,
+        conversation_id=conversation.id,
+        prepared=prepared,
+        context=context,
+        authorization=authorization,
+        request_fingerprint="hmac-sha256:" + "7" * 64,
+    )
+    unknown, _ = coordinator.execute_primary(**arguments)
+    replay, _ = coordinator.execute_primary(**arguments)
+
+    assert isinstance(unknown, OperationUnknown)
+    assert unknown.code == "operation_busy"
+    assert isinstance(replay, OperationReplay)
+    assert calls == ["delete_note"]
+
+
+def test_compensation_commit_unknown_and_parent_conflict_are_stable(
+    tmp_path, monkeypatch
+) -> None:
+    (
+        _sessions,
+        _repository,
+        _chat,
+        _context,
+        coordinator,
+        conversation,
+        parent_operation_id,
+        _prepared_call,
+        _request_fingerprint,
+        _parent_calls,
+        _parent_execution,
+    ) = _execute_typed_parent(tmp_path, "add_note")
+    calls: list[str] = []
+    real_commit = Session.commit
+    injected = False
+
+    def commit_then_lose_response(session):
+        nonlocal injected
+        terminal_compensation = any(
+            isinstance(item, WriteOperation)
+            and item.operation_role == "compensation"
+            and item.status == "committed"
+            for item in session.identity_map.values()
+        )
+        real_commit(session)
+        if terminal_compensation and not injected:
+            injected = True
+            raise OperationalError("COMMIT", {}, RuntimeError("response lost"))
+
+    monkeypatch.setattr(Session, "commit", commit_then_lose_response)
+
+    def compensate(_session, _undo):
+        calls.append("delete_note")
+        return "compensated"
+
+    arguments = dict(
+        parent_operation_id=parent_operation_id,
+        conversation_id=conversation.id,
+        compensation_kind="undo:add_note",
+        executor=compensate,
+    )
+    unknown = coordinator.execute_compensation(**arguments)
+    replay = coordinator.execute_compensation(**arguments)
+
+    assert isinstance(unknown, OperationUnknown)
+    assert isinstance(replay, OperationReplay)
+    assert calls == ["delete_note"]
+
+    conflict_parent = _execute_typed_parent(tmp_path / "conflict", "add_note")
+    conflict_coordinator = conflict_parent[4]
+    conflict_conversation = conflict_parent[5]
+    conflict_operation_id = conflict_parent[6]
+    conflict_calls = 0
+
+    def conflict(_session, _undo):
+        nonlocal conflict_calls
+        conflict_calls += 1
+        raise ValueError("parent_conflict")
+
+    conflict_arguments = dict(
+        parent_operation_id=conflict_operation_id,
+        conversation_id=conflict_conversation.id,
+        compensation_kind="undo:add_note",
+        executor=conflict,
+    )
+    failed = conflict_coordinator.execute_compensation(**conflict_arguments)
+    failed_replay = conflict_coordinator.execute_compensation(**conflict_arguments)
+    assert isinstance(failed, OperationFailed)
+    assert failed.payload.failure_code == "parent_conflict"
+    assert isinstance(failed_replay, OperationReplay)
+    assert conflict_calls == 1
+
+
+def test_two_expired_takeover_connections_converge_to_one_generation(tmp_path) -> None:
+    (
+        sessions,
+        repository,
+        _chat,
+        _context,
+        _coordinator,
+        _conversation,
+        operation_id,
+        _prepared_call,
+        _request_fingerprint,
+        _calls,
+        _first_execution,
+    ) = _execute_typed_parent(tmp_path, "delete_note")
+    with sessions() as session:
+        operation = session.get(WriteOperation, operation_id)
+        assert operation is not None
+        operation.delivery_lease_expires_at = 0
+        session.commit()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = [
+            future.result()
+            for future in (
+                pool.submit(repository.converge_expired_delivery, operation_id),
+                pool.submit(repository.converge_expired_delivery, operation_id),
+            )
+        ]
+
+    assert all(isinstance(item, OperationReplay) for item in outcomes)
+    assert {item.delivery_generation for item in outcomes if isinstance(item, OperationReplay)} == {
+        2
+    }
+    with sessions() as session:
+        messages = session.query(ChatMessage).filter_by(operation_id=operation_id).all()
+    assert [(item.delivery_kind, item.delivery_ordinal) for item in messages] == [
+        ("origin_tool_result", 0),
+        ("continuation_message", 1),
+    ]
