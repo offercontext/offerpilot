@@ -1,6 +1,6 @@
 # Write Operation Ledger 设计
 
-状态：待复审
+状态：已复审通过
 
 日期：2026-08-19
 
