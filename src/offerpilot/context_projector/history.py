@@ -6,7 +6,12 @@ from offerpilot.context_projector.budget import (
     OPTIONAL_HISTORY_MESSAGE_BYTE_CAP,
     canonical_messages,
 )
-from offerpilot.context_projector.contracts import FrozenMessage, ProjectionError, sha256_hex
+from offerpilot.context_projector.contracts import (
+    FrozenMessage,
+    ProjectionError,
+    canonical_json,
+    sha256_hex,
+)
 
 RELEVANCE_VERSION = "bounded-bilingual-relevance-v1"
 
@@ -80,7 +85,8 @@ def group_history(
         first = min(message_ids) if message_ids else ordinal
         last = max(message_ids) if message_ids else ordinal
         oversized = any(
-            len(message.content.encode("utf-8")) > OPTIONAL_HISTORY_MESSAGE_BYTE_CAP
+            len(canonical_json(message.canonical_value()))
+            > OPTIONAL_HISTORY_MESSAGE_BYTE_CAP
             for message in frozen
         )
         group_id = (

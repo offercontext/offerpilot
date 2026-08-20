@@ -10,7 +10,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from fastapi.testclient import TestClient
 
-from offerpilot.agent_runtime.events import validate_context_manifest_json
+from offerpilot.agent_runtime.events import (
+    JournalEventValidationError,
+    validate_context_manifest_json,
+)
 from offerpilot.ai.tool_specs.catalog import MODEL_TOOL_CATALOG, MODEL_TOOL_NAMES
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.context_projector.binding import (
@@ -18,7 +21,11 @@ from offerpilot.context_projector.binding import (
     ModelCallSurfaceBinding,
 )
 from offerpilot.context_projector.chunking import chunk_structured_source
-from offerpilot.context_projector.budget import ProviderBudget, optional_shares
+from offerpilot.context_projector.budget import (
+    OPTIONAL_HISTORY_MESSAGE_BYTE_CAP,
+    ProviderBudget,
+    optional_shares,
+)
 from offerpilot.context_projector.contracts import (
     CONTRIBUTOR_ORDER,
     ContributorResult,
@@ -168,6 +175,37 @@ def test_history_skips_oversize_or_nonfitting_group_and_continues() -> None:
     )
     selected = select_history(groups, current_request="offer", budget_bytes=200)
     assert [group.last_message_id for group in selected] == [4]
+
+
+@pytest.mark.parametrize("large_field", ["tool_args", "provider_blocks"])
+def test_history_marks_complete_canonical_message_over_one_mib_as_oversized(
+    large_field: str,
+) -> None:
+    oversized = "x" * (OPTIONAL_HISTORY_MESSAGE_BYTE_CAP + 1)
+    if large_field == "tool_args":
+        messages = (
+            frozen("user", "request", message_id=1),
+            FrozenMessage.freeze(
+                Message(
+                    "assistant",
+                    tool_calls=[ToolCall("large", "list_offers", oversized)],
+                ),
+                source_message_id=2,
+            ),
+            FrozenMessage.freeze(
+                Message("tool", "[]", tool_call_id="large"), source_message_id=3
+            ),
+        )
+    else:
+        messages = (
+            frozen("user", "request", message_id=1),
+            FrozenMessage.freeze(
+                Message("assistant", "ok", provider_blocks={"reasoning": oversized}),
+                source_message_id=2,
+            ),
+        )
+
+    assert group_history(messages)[0].oversized is True
 
 
 def test_budget_rounding_remainder_enters_shared_pool() -> None:
@@ -349,6 +387,64 @@ def test_manifest_v2_rejects_65537_bytes() -> None:
     }
     with pytest.raises(ManifestV2ValidationError, match="64 KiB"):
         validate_surface_manifest_v2(json.dumps(base, separators=(",", ":"), sort_keys=True))
+
+
+@pytest.mark.parametrize("field", ["tools", "signals"])
+def test_manifest_v2_safely_rejects_non_string_set_members(field: str) -> None:
+    audit = RuntimeSurfaceAudit(
+        "model-surface-budget-v1",
+        tuple((name, "ready") for name in CONTRIBUTOR_ORDER),
+        (),
+        MODEL_TOOL_NAMES,
+        (),
+        1,
+        1,
+        1,
+        False,
+    )
+    prepared = prepare_surface_manifest_v2(
+        audit,
+        key_id="11111111-1111-4111-8111-111111111111",
+        secret=b"secret",
+        provider_identities=("provider",),
+        signals=("trusted_page",),
+    )
+    manifest = json.loads(prepared.manifest_json)
+    manifest[field] = [[]]
+    malformed = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+    with pytest.raises(ManifestV2ValidationError):
+        validate_surface_manifest_v2(malformed)
+    with pytest.raises(JournalEventValidationError):
+        validate_context_manifest_json(malformed)
+
+
+def test_manifest_v2_safely_rejects_non_string_contributor_status() -> None:
+    audit = RuntimeSurfaceAudit(
+        "model-surface-budget-v1",
+        tuple((name, "ready") for name in CONTRIBUTOR_ORDER),
+        (),
+        MODEL_TOOL_NAMES,
+        (),
+        1,
+        1,
+        1,
+        False,
+    )
+    prepared = prepare_surface_manifest_v2(
+        audit,
+        key_id="11111111-1111-4111-8111-111111111111",
+        secret=b"secret",
+        provider_identities=("provider",),
+    )
+    manifest = json.loads(prepared.manifest_json)
+    manifest["contributors"][0]["status"] = []
+    malformed = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+    with pytest.raises(ManifestV2ValidationError):
+        validate_surface_manifest_v2(malformed)
+    with pytest.raises(JournalEventValidationError):
+        validate_context_manifest_json(malformed)
 
 
 def test_maximal_semantic_manifest_reaches_every_array_limit_under_cap() -> None:

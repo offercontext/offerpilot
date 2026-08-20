@@ -56,6 +56,17 @@ function Assert-ExitCode([string]$label) {
   if ($LASTEXITCODE -ne 0) { throw "$label failed with exit code $LASTEXITCODE." }
 }
 
+function Get-Sha256([string]$Path) {
+  $stream = [IO.File]::OpenRead([IO.Path]::GetFullPath($Path))
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($algorithm.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Stop-Tree([object]$process, [string]$label = 'local process') {
   if ($null -eq $process) { return }
   $processId = [int]$process.Id
@@ -704,7 +715,7 @@ function Assert-StoryScreenshotMatrix([string]$directory, [string]$manifestPath)
         file = $name
         width = $image.Width
         height = $image.Height
-        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = Get-Sha256 $path
         visual_review = 'operator-required'
       }
     } finally {

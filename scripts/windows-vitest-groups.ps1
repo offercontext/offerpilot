@@ -72,7 +72,14 @@ function Get-GroupForFile([string]$File) {
 }
 
 function Get-Sha256([string]$Path) {
-    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    $stream = [IO.File]::OpenRead([IO.Path]::GetFullPath($Path))
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
 }
 
 function Get-TextSha256([string]$Value) {

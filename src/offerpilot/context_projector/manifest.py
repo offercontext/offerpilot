@@ -189,20 +189,27 @@ def validate_surface_manifest_v2(value: str) -> dict[str, Any]:
             or set(item) != {"name", "status"}
             or type(item["name"]) is not str
             or _SAFE_NAME.fullmatch(item["name"]) is None
+            or type(item["status"]) is not str
             or item["status"] not in _STATUSES
         ):
             raise ManifestV2ValidationError("invalid contributor")
     if tuple(item["name"] for item in contributors) != CONTRIBUTOR_ORDER:
         raise ManifestV2ValidationError("invalid contributor order")
     tools = manifest["tools"]
-    if type(tools) is not list or len(tools) > 25 or len(set(tools)) != len(tools):
+    if type(tools) is not list or len(tools) > 25:
         raise ManifestV2ValidationError("invalid tools")
     if any(type(item) is not str or _SAFE_NAME.fullmatch(item) is None for item in tools):
         raise ManifestV2ValidationError("invalid tool")
+    if len(set(tools)) != len(tools):
+        raise ManifestV2ValidationError("invalid tools")
     if any(item not in MODEL_TOOL_NAMES for item in tools):
         raise ManifestV2ValidationError("unapproved tool")
     signals = manifest["signals"]
-    if type(signals) is not list or len(signals) > 32 or len(set(signals)) != len(signals):
+    if type(signals) is not list or len(signals) > 32:
+        raise ManifestV2ValidationError("invalid signals")
+    if any(type(signal) is not str for signal in signals):
+        raise ManifestV2ValidationError("invalid signal")
+    if len(set(signals)) != len(signals):
         raise ManifestV2ValidationError("invalid signals")
     if any(signal not in _SIGNALS for signal in signals):
         raise ManifestV2ValidationError("invalid signal")
